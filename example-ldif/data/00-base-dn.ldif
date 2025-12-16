@@ -1,0 +1,29 @@
+# ============================================================================
+# Base DN Entry
+#
+# NOTE: @BASE_DN@, @ORGANISATION@, and @FIRST_DC@ are substituted at runtime
+#       during container startup (load-ldif.sh). This behavior id not part of
+#       built-in LDIF or OpenLDAP functionality.
+#
+# Creates the root/base DN entry for the LDAP directory tree. This is the
+# top-level entry that all other entries branch from.
+#
+# Object classes:
+#   - top: Required base class for all entries
+#   - dcObject: Provides the dc (domain component) attribute
+#   - organization: Provides the o (organization) attribute
+#
+# The base DN must exist before any child entries (OUs, users, etc.) can be
+# created. Without this entry, attempts to add child entries will fail with
+# "No such object" (error 32). Therefore the "00-" prefix to ensure it loads
+# FIRST alphabetically, before all other data LDIFs that depend on it.
+#
+# Manual apply: ldapadd -x -H ldap:/// -D "cn=admin,@BASE_DN@" -W -f <filename>
+# ============================================================================
+
+dn: @BASE_DN@
+objectClass: top
+objectClass: dcObject
+objectClass: organization
+o: @ORGANISATION@
+dc: @FIRST_DC@

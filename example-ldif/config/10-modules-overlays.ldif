@@ -1,0 +1,89 @@
+# ============================================================================
+# Load required modules and configure overlays
+#
+# IMPORTANT: Overlays have to be applied BEFORE adding any data as they only
+#            affect entries created AFTER activation.
+#
+# Manual apply: sudo ldapmodify -Q -Y EXTERNAL -H ldapi:/// -f <filename>
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# Load memberof module:
+# Auto-populates memberOf attribute on users when added to groups
+#
+# This is essential for an Active Directory-like behavior where Users
+# automatically "know" which groups they belong to (memberOf).
+# ----------------------------------------------------------------------------
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: memberof
+
+
+# ----------------------------------------------------------------------------
+# memberOf overlay configuration:
+#
+# - When user is added to a group -> user gets memberOf attribute
+# - When user is removed from group -> memberOf attribute removed
+# - Enables queries like: (&(objectClass=inetOrgPerson)(memberOf=cn=admins,...))
+#
+# Order matters: memberOf must be overlay {0}, refint must be overlay {1}
+# ----------------------------------------------------------------------------
+dn: olcOverlay={0}memberof,olcDatabase={1}mdb,cn=config
+changetype: add
+objectClass: olcConfig
+objectClass: olcMemberOf
+objectClass: olcOverlayConfig
+objectClass: top
+olcOverlay: {0}memberof
+# What to do with dangling references (member DN that doesn't exist)
+# Options: ignore, drop, error
+# 'ignore' is safest during bulk imports
+olcMemberOfDangling: ignore
+# Don't use memberOf's built-in refint - we use the dedicated refint overlay
+olcMemberOfRefInt: FALSE
+# Which objectClass defines a "group"
+olcMemberOfGroupOC: groupOfNames
+# Which attribute holds group members
+olcMemberOfMemberAD: member
+# Which attribute to populate on users
+olcMemberOfMemberOfAD: memberOf
+
+
+# ----------------------------------------------------------------------------
+# Load refint module:
+# Referential integrity - removes user from groups when deleted
+#
+# This is essential for an Active Directory-like behavior where deleting a
+# user cleans up all group memberships (refint).
+# ----------------------------------------------------------------------------
+dn: cn=module{0},cn=config
+changetype: modify
+add: olcModuleLoad
+olcModuleLoad: refint
+
+
+# ----------------------------------------------------------------------------
+# refint overlay configuration (Referential Integrity):
+#
+# - When user is deleted -> user DN removed from all group member attributes
+# - Prevents orphaned references in groups
+# - Also handles manager/owner attributes if you use them
+#
+# Order matters: memberOf must be overlay {0}, refint must be overlay {1}
+# ----------------------------------------------------------------------------
+dn: olcOverlay={1}refint,olcDatabase={1}mdb,cn=config
+changetype: add
+objectClass: olcConfig
+objectClass: olcOverlayConfig
+objectClass: olcRefintConfig
+objectClass: top
+olcOverlay: {1}refint
+# Attributes to check for referential integrity
+# When an entry is deleted, these attributes are cleaned up in all entries
+olcRefintAttribute: memberof
+olcRefintAttribute: member
+# Optional: Also handle manager and owner attributes if you use them
+# olcRefintAttribute: manager
+# olcRefintAttribute: owner

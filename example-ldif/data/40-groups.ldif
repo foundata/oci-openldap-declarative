@@ -1,0 +1,93 @@
+# ============================================================================
+#  Groups with Membership
+#
+# NOTE: @BASE_DN@, @ORGANISATION@, and @FIRST_DC@ are substituted at runtime
+#       during container startup (load-ldif.sh). This behavior id not part of
+#       built-in LDIF or OpenLDAP functionality.
+#
+# IMPORTANT: Import this AFTER 30-users.ldif! The refint overlay validates that
+#            member DNs exist.
+#
+# Object Class: groupOfNames
+# - Standard group object class
+# - Works with memberOf overlay (auto-populates memberOf on users)
+# - Works with refint overlay (auto-removes members when user deleted)
+# - Requires at least one member attribute (schema constraint)
+#
+# How memberOf works:
+# When you add: member: uid=john,ou=people,@BASE_DN@
+# The overlay automatically adds to john's entry:
+# memberOf: cn=opencloud-users,ou=groups,@BASE_DN@
+#
+# Group naming convention:
+#   cn=<application>-<role>
+#   Examples: opencloud-users, opencloud-admins, gitlab-developers
+#
+# NOTE ON NESTED GROUPS:
+# OpenLDAP's memberOf overlay does NOT recursively resolve nested groups.
+# If you add a group as a member of another group, applications must
+# do recursive searches themselves. Most apps support this via config.
+#
+# For MVP: Use flat group structure (users directly in groups).
+# For nesting: Configure your application's LDAP settings to search recursively,
+# or flatten memberships via external script.
+#
+# Manual apply: ldapadd -x -H ldap:/// -D "cn=admin,@BASE_DN@" -W -f <filename>
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# Group: opencloud-users
+# Members can access opencloud
+# ----------------------------------------------------------------------------
+dn: cn=opencloud-users,ou=groups,@BASE_DN@
+objectClass: groupOfNames
+cn: opencloud-users
+description: Users with access to opencloud
+member: uid=john,ou=people,@BASE_DN@
+member: uid=jane,ou=people,@BASE_DN@
+
+
+# ----------------------------------------------------------------------------
+# Group: opencloud-admins
+# Members have admin privileges in opencloud
+# ----------------------------------------------------------------------------
+dn: cn=opencloud-admins,ou=groups,@BASE_DN@
+objectClass: groupOfNames
+cn: opencloud-admins
+description: opencloud administrators
+member: uid=admin.user,ou=people,@BASE_DN@
+
+
+# ----------------------------------------------------------------------------
+# Group: mattermost-users
+# Members can access Mattermost
+# ----------------------------------------------------------------------------
+dn: cn=mattermost-users,ou=groups,@BASE_DN@
+objectClass: groupOfNames
+cn: mattermost-users
+description: Users with access to Mattermost
+member: uid=john,ou=people,@BASE_DN@
+member: uid=jane,ou=people,@BASE_DN@
+member: uid=admin.user,ou=people,@BASE_DN@
+
+
+# ----------------------------------------------------------------------------
+# Group: gitlab-developers (example)
+# ----------------------------------------------------------------------------
+dn: cn=gitlab-developers,ou=groups,@BASE_DN@
+objectClass: groupOfNames
+cn: gitlab-developers
+description: GitLab developer access
+member: uid=john,ou=people,@BASE_DN@
+member: uid=jane,ou=people,@BASE_DN@
+
+
+# ----------------------------------------------------------------------------
+# Group: gitlab-maintainers (example)
+# ----------------------------------------------------------------------------
+dn: cn=gitlab-maintainers,ou=groups,@BASE_DN@
+objectClass: groupOfNames
+cn: gitlab-maintainers
+description: GitLab maintainer access
+member: uid=admin.user,ou=people,@BASE_DN@

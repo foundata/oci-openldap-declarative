@@ -1,0 +1,193 @@
+# ============================================================================
+# Access Control Lists (ACLs)
+#
+# NOTE: @BASE_DN@, @ORGANISATION@, and @FIRST_DC@ are substituted at runtime
+#       during container startup (load-ldif.sh). This behavior id not part of
+#       built-in LDIF or OpenLDAP functionality.
+#
+# These ACLs protect sensitive attributes from unauthorized access. Test
+# thoroughly after applying!
+#
+# ACL processing order:
+# - ACLs are processed top-to-bottom (olcAccess: {0}, {1}, {2}...)
+# - First matching rule wins
+# - More specific rules must come BEFORE general rules
+#
+# Access Levels (from least to most permissive):
+# none < disclose < auth < compare < search < read < write < manage
+#
+# Manual apply: sudo ldapmodify -Q -Y EXTERNAL -H ldapi:/// -f <filename>
+# ============================================================================
+
+# IMPORTANT: We REPLACE the entire ACL set to ensure correct ordering.
+# Default Debian/Ubuntu slapd comes with basic ACLs that we're overriding.
+
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+replace: olcAccess
+
+
+# Key protections in the following:
+#
+# 1. userPassword: Only self can read, admin can write
+# 2. shadowLastChange: Password change timestamp - protected
+# 3. Personal attributes (mail, phone): can read by self + service accounts
+# 4. memberOf: can readable by all authenticated users (needed for app auth)
+
+# ----------------------------------------------------------------------------
+# Rule 0: Password attribute - MOST RESTRICTIVE
+#
+# - Anonymous: can use password for authentication only (auth)
+# - Self: can change own password (write)
+# - Admin: full control (manage)
+# - Service accounts (ou=services): can verify passwords (auth) for app auth
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {0}to attrs=userPassword
+  by anonymous auth
+  by self write
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by dn.subtree="ou=services,@BASE_DN@" auth
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 1: Shadow attributes
+#
+# - Self: can read
+# - Admin: full control (manage)
+# - Everyone else: no access (shadow password metadata as it may reveal
+#   password age/policy)
+# ----------------------------------------------------------------------------
+olcAccess: {1}to attrs=shadowLastChange,shadowExpire,shadowWarning,shadowInactive,shadowMin,shadowMax
+  by self read
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 2: Personal contact information
+#
+# - Self: can read
+# - Admin: full control (manage)
+# - Service accounts (ou=services): can read (e.g. some apps need email)
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {2}to attrs=mail,telephoneNumber,mobile,homePhone,homePostalAddress
+  by self read
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by dn.subtree="ou=services,@BASE_DN@" read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 3: Home directory (e.g. if using POSIX attributes)
+#
+# - Self: can read
+# - Admin: full control (manage)
+# - Service accounts (ou=services): can read
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {3}to attrs=homeDirectory,loginShell,gecos
+  by self read
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by dn.subtree="ou=services,@BASE_DN@" read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 4: Group membership (memberOf)
+#
+# - Needed for authorization
+# - Admin: full control (manage)
+# - All authenticated users can read memberOf (apps need this for authz)
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {4}to attrs=memberOf
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by users read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 5: Group member attribute - who is in a group
+#
+# - Needed for authorization (when filtering by group membership)
+# - Admin: full control (manage)
+# - Authenticated users: can read
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {5}to attrs=member
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by users read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 6: Entry-level access - the DN itself
+#
+# - Users can read their own entry
+# - Admin: full control (manage)
+# - Service accounts (ou=services): can read (needed for user lookup), explicit
+# - Authenticated users: can read
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {6}to dn.subtree="ou=people,@BASE_DN@"
+  by self read
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by dn.subtree="ou=services,@BASE_DN@" read
+  by users read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 7: Groups container
+#
+# - Admin: full control (manage)
+# - Service accounts (ou=services): can read (needed for group lookup), explicit
+# - Authenticated users: can read
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {7}to dn.subtree="ou=groups,@BASE_DN@"
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by dn.subtree="ou=services,@BASE_DN@" read
+  by users read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 8: Service accounts
+#
+# - Self: can read
+# - Admin: full control (manage)
+# - Everyone else: no access
+# ----------------------------------------------------------------------------
+olcAccess: {8}to dn.subtree="ou=services,@BASE_DN@"
+  by self read
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 9: Base DN
+#
+# - Admin: full control (manage)
+# - Authenticated users: can read
+# ----------------------------------------------------------------------------
+olcAccess: {9}to dn.base="@BASE_DN@"
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by users read
+  by * none
+-
+# ----------------------------------------------------------------------------
+# Rule 10: Fallback - everything else
+#
+# - Admin: full control (manage)
+# - Authenticated users: can read
+# ----------------------------------------------------------------------------
+# Admin manages, authenticated users read, anonymous nothing
+olcAccess: {10}to *
+  by dn.exact="cn=admin,@BASE_DN@" manage
+  by users read
+  by * none
+
+
+# ----------------------------------------------------------------------------
+# Password Policy (optional )
+# Uncomment if you have the ppolicy module loaded and want password policies
+# ----------------------------------------------------------------------------
+#dn: olcDatabase={1}mdb,cn=config
+#changetype: modify
+#add: olcPasswordHash
+#olcPasswordHash: {SSHA}

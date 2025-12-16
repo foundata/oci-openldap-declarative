@@ -1,0 +1,93 @@
+# ============================================================================
+# User Accounts
+#
+# NOTE: @BASE_DN@, @ORGANISATION@, and @FIRST_DC@ are substituted at runtime
+#       during container startup (load-ldif.sh). This behavior id not part of
+#       built-in LDIF or OpenLDAP functionality.
+#
+# IMPORTANT: Import this BEFORE 40-groups.ldif! Groups reference user DNs -
+#            users must exist first.
+#
+# Object Class: inetOrgPerson
+# - Standard object class for user accounts
+# - Supported by virtually all LDAP-consuming applications
+# - Provides: uid, cn, sn, givenName, mail, userPassword, etc.
+#
+# Required attributes for inetOrgPerson:
+# - cn (commonName): Full display name
+# - sn (surname): Last name
+#
+# Recommended attributes:
+# - uid: Login username (used as RDN)
+# - givenName: First name
+# - mail: Email address (many apps require this)
+# - userPassword: SSHA-hashed password. Generate with: slappasswd -h {SSHA}
+#   Or inline: slappasswd -h {SSHA} -s "password"
+#
+# Optional attributes (protected by ACLs):
+# - telephoneNumber, mobile
+# - employeeNumber, employeeType
+# - title, departmentNumber
+#
+# NOTE: memberOf attribute is NOT set here! It's automatically populated by
+# the memberOf overlay when the user is added to groups (in 40-groups.ldif).
+#
+# Manual apply: ldapadd -x -H ldap:/// -D "cn=admin,@BASE_DN@" -W -f <filename>
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# User: john
+# ----------------------------------------------------------------------------
+dn: uid=john,ou=people,@BASE_DN@
+objectClass: inetOrgPerson
+uid: john
+cn: John Doe
+sn: Doe
+givenName: John
+mail: john@example.com
+# Generate with: slappasswd -h {SSHA}
+userPassword: {SSHA}REPLACE_WITH_GENERATED_HASH
+
+# ----------------------------------------------------------------------------
+# User: jane
+# ----------------------------------------------------------------------------
+dn: uid=jane,ou=people,@BASE_DN@
+objectClass: inetOrgPerson
+uid: jane
+cn: Jane Smith
+sn: Smith
+givenName: Jane
+mail: jane@example.com
+userPassword: {SSHA}REPLACE_WITH_GENERATED_HASH
+
+# ----------------------------------------------------------------------------
+# User: admin.user (example privileged user - still NOT cn=admin)
+# ----------------------------------------------------------------------------
+dn: uid=admin.user,ou=people,@BASE_DN@
+objectClass: inetOrgPerson
+uid: admin.user
+cn: Admin User
+sn: User
+givenName: Admin
+mail: admin.user@example.com
+userPassword: {SSHA}REPLACE_WITH_GENERATED_HASH
+
+# ----------------------------------------------------------------------------
+# Extended Example: User with additional attributes
+# ----------------------------------------------------------------------------
+# dn: uid=complete.user,ou=people,dc=example,dc=com
+# objectClass: inetOrgPerson
+# uid: complete.user
+# cn: Complete User
+# sn: User
+# givenName: Complete
+# mail: complete.user@example.com
+# telephoneNumber: +49 123 456789
+# mobile: +49 170 1234567
+# title: Senior Engineer
+# employeeNumber: EMP001
+# employeeType: full-time
+# departmentNumber: Engineering
+# userPassword: {SSHA}REPLACE_WITH_GENERATED_HASH
+

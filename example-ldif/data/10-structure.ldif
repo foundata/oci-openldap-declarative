@@ -1,0 +1,43 @@
+# ============================================================================
+# Organizational Units (Directory Structure)
+#
+# NOTE: @BASE_DN@, @ORGANISATION@, and @FIRST_DC@ are substituted at runtime
+#       during container startup (load-ldif.sh). This behavior id not part of
+#       built-in LDIF or OpenLDAP functionality.
+#
+# Directory Tree (DIT) Layout:
+#
+#   @BASE_DN@            <- Base DN
+#   ├── ou=people        <- User accounts, usually real human user accounts
+#   ├── ou=groups        <- Authorization groups (e.g. application-specific)
+#   └── ou=services      <- Non-human accounts for application LDAP binds
+#
+# Manual apply: ldapadd -x -H ldap:/// -D "cn=admin,@BASE_DN@" -W -f <filename>
+# ============================================================================
+
+
+# ----------------------------------------------------------------------------
+# People OU - Container for user accounts
+# ----------------------------------------------------------------------------
+dn: ou=people,@BASE_DN@
+objectClass: organizationalUnit
+ou: people
+description: User accounts
+
+
+# ----------------------------------------------------------------------------
+# Groups OU - Container for authorization groups
+# ----------------------------------------------------------------------------
+dn: ou=groups,@BASE_DN@
+objectClass: organizationalUnit
+ou: groups
+description: Authorization and application groups
+
+
+# ----------------------------------------------------------------------------
+# Services OU - Container for application bind accounts
+# ----------------------------------------------------------------------------
+dn: ou=services,@BASE_DN@
+objectClass: organizationalUnit
+ou: services
+description: Service accounts for application LDAP binds
