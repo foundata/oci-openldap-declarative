@@ -1,5 +1,5 @@
 version = 1
-SPDX-PackageName = "OCI Image: OpenLDAP LDIF (Directory server which replaces LDAP data from LDIF files on every startup)"
+SPDX-PackageName = "OCI Image: OpenLDAP LDIF (directory server which replaces LDAP data from LDIF files on every startup)"
 SPDX-PackageDownloadLocation = "https://github.com/foundata/oci-openldap-ldif"
 SPDX-PackageSupplier = "foundata GmbH (https://foundata.com)"
 SPDX-PackageComment = """
