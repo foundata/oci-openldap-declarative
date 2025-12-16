@@ -14,6 +14,10 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
 : "${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD is required}"
 : "${LDAP_BASE_DN:?LDAP_BASE_DN is required}"
 
+# Get current user's UID and GID for ACL configuration
+USER_OPENLDAP_UID=$(id -u)
+GROUP_OPENLDAP_GID=$(id -g)
+
 # Directories
 SLAPD_CONF_DIR="/etc/ldap/slapd.d"
 LDAP_DATA_PATH="/var/lib/ldap"
@@ -74,7 +78,8 @@ dn: olcDatabase={0}config,cn=config
 objectClass: olcDatabaseConfig
 olcDatabase: {0}config
 olcRootDN: cn=admin,cn=config
-olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by * break
+# Allow both root and the openldap user to manage cn=config
+olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by dn.exact=gidNumber=${GROUP_OPENLDAP_GID}+uidNumber=${USER_OPENLDAP_UID},cn=peercred,cn=external,cn=auth manage by * break
 
 # MDB backend module
 dn: cn=module{0},cn=config
