@@ -63,8 +63,8 @@ To build the image locally, do the following:
     --env LDAP_DOMAIN="foobar.svc.local" \
     --env LDAP_ADMIN_PASSWORD="SecurePass_RandomEachStartIfNotDefined" \
     --publish 127.0.0.1:1389:1389 \
-    --volume ./example-ldif/config:/ldif/config:ro,Z \
-    --volume ./example-ldif/data:/ldif/data:ro,Z \
+    --volume ./examples/ldif/basic/config:/ldif/config:ro,Z \
+    --volume ./examples/ldif/basic/data:/ldif/data:ro,Z \
     openldap-declarative:latest
    ```
 4. You can now work with the container:
