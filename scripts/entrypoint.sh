@@ -7,8 +7,6 @@
 # - LDAP_DOMAIN: Domain for base DN (e.g., "nextcloud.svc.local")
 # - LDAP_ORGANISATION: Organisation name
 # - LDAP_ADMIN_PASSWORD: Admin password (cn=admin)
-# - LDAP_CONFIG_DIR: Directory containing config LDIFs (default: /ldif/config)
-# - LDAP_DATA_DIR: Directory containing data LDIFs (default: /ldif/data)
 # - LDAP_DEBUG_LEVEL: slapd debug level (default: 256 = stats)
 
 set -euo pipefail
@@ -27,14 +25,8 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 : "${LDAP_DOMAIN:=example.svc.local}"
 : "${LDAP_ORGANISATION:=Example Service}"
 : "${LDAP_ADMIN_PASSWORD:=admin}"
-: "${LDAP_CONFIG_DIR:=/ldif/config}"
-: "${LDAP_DATA_DIR:=/ldif/data}"
 : "${LDAP_DEBUG_LEVEL:=256}"
 : "${LDAP_PORT:=1389}"
-
-# Create LDIF directories based on configuration
-# This allows for custom paths via environment variables
-mkdir -p "${LDAP_CONFIG_DIR}" "${LDAP_DATA_DIR}"
 
 # Derive base DN from domain
 # e.g., "foobar.svc.local" -> "dc=foobar,dc=svc,dc=local"
@@ -55,8 +47,6 @@ log_info "Domain:    ${LDAP_DOMAIN}"
 log_info "Base DN:   ${LDAP_BASE_DN}"
 log_info "Admin DN:  ${LDAP_ADMIN_DN}"
 log_info "Port:      ${LDAP_PORT}"
-log_info "Config:    ${LDAP_CONFIG_DIR}"
-log_info "Data:      ${LDAP_DATA_DIR}"
 log_info "=========================================="
 
 # Step 1: Initialize slapd configuration
@@ -65,8 +55,10 @@ log_info "Initializing slapd configuration..."
 
 # Step 2: Start slapd in background for LDIF loading
 log_info "Starting slapd for initialization..."
-/usr/sbin/slapd -h "ldap://0.0.0.0:${LDAP_PORT}/ ldapi:///" \
-    -u openldap -g openldap \
+/usr/sbin/slapd \
+    -h "ldap://0.0.0.0:${LDAP_PORT}/ ldapi:///" \
+    -u openldap \
+    -g openldap \
     -d "${LDAP_DEBUG_LEVEL}" &
 
 SLAPD_PID=$!

@@ -1,6 +1,6 @@
 FROM debian:trixie-slim
 
-LABEL description="OCI Image: OpenLDAP Declarative (LDIF-defined directory state, reset on startup)"
+LABEL description="OCI Image: OpenLDAP Declarative (LDIF-file-defined directory state, reset on startup)"
 LABEL maintainer="foundata GmbH (https://foundata.com)"
 LABEL version="0.0.0-dev"
 
@@ -12,7 +12,6 @@ ENV container=podman
 # Set non-interactive mode for apt to prevent prompts during builds
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Build arguments with sensible defaults
 ARG USER_OPENLDAP_UID=1001
 ARG GROUP_OPENLDAP_GID=1001
 
@@ -20,8 +19,6 @@ ARG GROUP_OPENLDAP_GID=1001
 ENV LDAP_DOMAIN="example.svc.local" \
     LDAP_ORGANISATION="Example Service" \
     LDAP_ADMIN_PASSWORD="admin" \
-    LDAP_CONFIG_DIR="/ldif/config" \
-    LDAP_DATA_DIR="/ldif/data" \
     LDAP_DEBUG_LEVEL="256"
 
 # Install required packages and clean-up package manager caches afterwards.
@@ -72,16 +69,17 @@ RUN groupmod -g ${GROUP_OPENLDAP_GID} openldap && \
     usermod -u ${USER_OPENLDAP_UID} -g ${GROUP_OPENLDAP_GID} openldap
 
 # Create required directories with correct ownership
-# Note: LDIF directories are created at runtime by entrypoint.sh based on
-#       LDAP_CONFIG_DIR and LDAP_DATA_DIR environment variables
 RUN mkdir -p /var/lib/ldap \
              /var/run/slapd \
              /etc/ldap/slapd.d \
              /container-init \
+             /ldif/config \
+             /ldif/data \
     && chown -R openldap:openldap /var/lib/ldap \
                                   /var/run/slapd \
                                   /etc/ldap \
-                                  /container-init
+                                  /container-init \
+                                  /ldif
 
 # Copy initialization scripts
 COPY --chown=openldap:openldap scripts/entrypoint.sh /container-init/
