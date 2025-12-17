@@ -1,5 +1,5 @@
 version = 1
-SPDX-PackageName = "OCI Image: OpenLDAP Declarative (LDIF-defined directory state, reset on startup)"
+SPDX-PackageName = "OCI Image: OpenLDAP Declarative (LDIF-file-defined directory state, reset on startup)"
 SPDX-PackageDownloadLocation = "https://github.com/foundata/oci-openldap-declarative"
 SPDX-PackageSupplier = "foundata GmbH (https://foundata.com)"
 SPDX-PackageComment = """

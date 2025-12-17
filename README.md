@@ -11,6 +11,7 @@ Main features of the [OCI](https://opencontainers.org/) image:
 This image is intended for small, isolated LDAP directories where reproducibility, auditability, and deterministic behavior are required. Typical use cases include defense-in-depth architectures where applications operate with a minimal, self-contained user directory.
 
 
+
 ## Table of contents<a id="toc"></a>
 
 - [Tags](#tags)
