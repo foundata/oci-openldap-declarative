@@ -184,7 +184,7 @@ olcAccess: {10}to *
 
 
 # ----------------------------------------------------------------------------
-# Password Policy (optional )
+# Password Policy (optional)
 # Uncomment if you have the ppolicy module loaded and want password policies
 # ----------------------------------------------------------------------------
 #dn: olcDatabase={1}mdb,cn=config
