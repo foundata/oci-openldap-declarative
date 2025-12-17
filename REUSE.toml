@@ -1,6 +1,6 @@
 version = 1
-SPDX-PackageName = "OCI Image: OpenLDAP LDIF (directory server which replaces LDAP data from LDIF files on every startup)"
-SPDX-PackageDownloadLocation = "https://github.com/foundata/oci-openldap-ldif"
+SPDX-PackageName = "OCI Image: OpenLDAP Declarative (LDIF-defined directory state, reset on startup)"
+SPDX-PackageDownloadLocation = "https://github.com/foundata/oci-openldap-declarative"
 SPDX-PackageSupplier = "foundata GmbH (https://foundata.com)"
 SPDX-PackageComment = """
 This project may include calls to Application Programming Interfaces

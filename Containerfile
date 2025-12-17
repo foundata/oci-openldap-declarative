@@ -1,6 +1,6 @@
 FROM debian:trixie-slim
 
-LABEL description="OpenLDAP LDIF (directory server which replaces LDAP data from LDIF files on every startup)"
+LABEL description="OCI Image: OpenLDAP Declarative (LDIF-defined directory state, reset on startup)"
 LABEL maintainer="foundata GmbH (https://foundata.com)"
 LABEL version="0.0.0-dev"
 
