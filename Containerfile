@@ -72,13 +72,14 @@ RUN mkdir -p /var/lib/ldap \
              /var/run/slapd \
              /etc/ldap/slapd.d \
              /container-init \
-             /ldif/config \
-             /ldif/data \
+             /ldap/config \
+             /ldap/data \
+             /ldap/tls \
     && chown -R openldap:openldap /var/lib/ldap \
                                   /var/run/slapd \
                                   /etc/ldap \
                                   /container-init \
-                                  /ldif
+                                  /ldap
 
 # Copy initialization scripts
 COPY --chown=openldap:openldap scripts/entrypoint.sh /container-init/
@@ -90,10 +91,10 @@ RUN chmod +x /container-init/*.sh
 # Switch to non-root user
 USER openldap
 
-# Expose LDAP port (unprivileged)
-EXPOSE 1389
+# Expose LDAP and LDAPS ports (unprivileged)
+EXPOSE 1389 1636
 
-# Mount points for LDIF files
-VOLUME ["/ldif/config", "/ldif/data"]
+# Mount points for LDIF files and TLS certificates
+VOLUME ["/ldap/config", "/ldap/data", "/ldap/tls"]
 
 ENTRYPOINT ["/container-init/entrypoint.sh"]

@@ -1,28 +1,32 @@
 #!/usr/bin/env bash
 
-# Build and run the OpenLDAP container
-# Usage: ./build-and-run.sh [service-name] [port]
+# Build and run the OpenLDAP container (without TLS)
 #
-# Example: ./build-and-run.sh foobar 1389
+# Usage: ./hack/run.sh [service-name] [port]
+#
+# Example: ./hack/run.sh foobar 1389
 
 set -euo pipefail
 
 SERVICE_NAME="${1:-foobar}"
+LDAP_PORT="${2:-1389}"
+
+# Image settings
 IMAGE_NAME="openldap-declarative"
 IMAGE_TAG="latest"
+export IMAGE_NAME IMAGE_TAG
+
+# Derived settings
 CONTAINER_NAME="ldap-${SERVICE_NAME}"
 LDAP_DOMAIN="${SERVICE_NAME}.svc.local"
-LDAP_PORT="${2:-1389}"
-LDAP_BASE_DN=$(echo "${LDAP_DOMAIN}" | sed 's/\./,dc=/g' | sed 's/^/dc=/') # e.g., "foobar.svc.local" -> "dc=foobar,dc=svc,dc=local"
+LDAP_BASE_DN=$(echo "${LDAP_DOMAIN}" | sed 's/\./,dc=/g' | sed 's/^/dc=/')
 LDAP_ADMIN_DN="cn=admin,${LDAP_BASE_DN}"
 LDAP_ADMIN_PASSWORD="SecurePass123"
 
-
-
-# Paths - adjust these for your environment
+# Paths
 PROJECT_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LDIF_CONFIG_PATH="${PROJECT_ROOT_DIR}/examples/ldif/basic/config"
-LDIF_DATA_PATH="${PROJECT_ROOT_DIR}/examples/ldif/basic/data"
+LDIF_CONFIG_PATH="${PROJECT_ROOT_DIR}/examples/basic/config"
+LDIF_DATA_PATH="${PROJECT_ROOT_DIR}/examples/basic/data"
 
 # Colors
 GREEN='\033[0;32m'
@@ -31,12 +35,12 @@ NC='\033[0m'
 
 echo -e "${GREEN}=== OpenLDAP Container Build & Run ===${NC}"
 echo "Service: ${SERVICE_NAME}"
-echo "Port: ${LDAP_PORT}"
+echo "Port:    ${LDAP_PORT}"
 echo ""
 
 # Step 1: Build the image
 echo -e "${GREEN}[1/4] Building container image...${NC}"
-podman build -t "${IMAGE_NAME}:${IMAGE_TAG}" "${PROJECT_ROOT_DIR}"
+"${PROJECT_ROOT_DIR}/hack/build.sh"
 
 # Step 2: Stop/remove existing container if running
 echo -e "${GREEN}[2/4] Cleaning up existing container...${NC}"
@@ -54,8 +58,8 @@ podman run -d \
     --env LDAP_PORT="${LDAP_PORT}" \
     --env LDAP_DEBUG_LEVEL="256" \
     --publish "127.0.0.1:${LDAP_PORT}:${LDAP_PORT}" \
-    --volume "${LDIF_CONFIG_PATH}:/ldif/config:ro,Z" \
-    --volume "${LDIF_DATA_PATH}:/ldif/data:ro,Z" \
+    --volume "${LDIF_CONFIG_PATH}:/ldap/config:ro,Z" \
+    --volume "${LDIF_DATA_PATH}:/ldap/data:ro,Z" \
     --health-cmd "ldapsearch -x -H ldap://127.0.0.1:${LDAP_PORT} -b \"\" -s base \"(objectClass=*)\" namingContexts" \
     --health-interval=30s \
     --health-timeout=10s \

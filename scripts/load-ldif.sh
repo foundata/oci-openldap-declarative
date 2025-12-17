@@ -3,8 +3,8 @@
 # Load LDIF files into running slapd
 #
 # Fixed mount points:
-# - /ldif/config: Configuration LDIFs (applied to cn=config via ldapi:///)
-# - /ldif/data: Data LDIFs (applied to database via admin bind)
+# - /ldap/config: Configuration LDIFs (applied to cn=config via ldapi:///)
+# - /ldap/data: Data LDIFs (applied to database via admin bind)
 #
 # Files are processed in alphabetical order (use prefixes: 00-, 10-, ...)
 #
@@ -23,6 +23,8 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
 : "${LDAP_ADMIN_DN:?LDAP_ADMIN_DN is required}"
 : "${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD is required}"
 : "${LDAP_BASE_DN:?LDAP_BASE_DN is required}"
+: "${LDAP_CONFIG_DIR:?LDAP_CONFIG_DIR is required}"
+: "${LDAP_DATA_DIR:?LDAP_DATA_DIR is required}"
 
 # Detect if LDIF file is a modify operation
 is_modify_ldif() {
@@ -131,14 +133,14 @@ log_info "Loading LDIF files"
 log_info "=========================================="
 
 # Step 1: Process configuration LDIFs
-log_info "--- Configuration LDIFs (/ldif/config) ---"
+log_info "--- Configuration LDIFs (${LDAP_CONFIG_DIR}) ---"
 config_result=0
-process_directory "/ldif/config" "config" || config_result=$?
+process_directory "${LDAP_CONFIG_DIR}" "config" || config_result=$?
 
 # Step 2: Process data LDIFs
-log_info "--- Data LDIFs (/ldif/data) ---"
+log_info "--- Data LDIFs (${LDAP_DATA_DIR}) ---"
 data_result=0
-process_directory "/ldif/data" "data" || data_result=$?
+process_directory "${LDAP_DATA_DIR}" "data" || data_result=$?
 
 # Summary
 log_info "=========================================="

@@ -13,6 +13,8 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
 : "${LDAP_ORGANISATION:?LDAP_ORGANISATION is required}"
 : "${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD is required}"
 : "${LDAP_BASE_DN:?LDAP_BASE_DN is required}"
+: "${LDAP_TLS_ENABLED:=false}"
+: "${LDAP_TLS_DIR:=/ldap/tls}"
 
 # Get current user's UID and GID for ACL configuration
 USER_OPENLDAP_UID=$(id -u)
@@ -31,6 +33,50 @@ ADMIN_PASSWORD_HASH=$(slappasswd -s "${LDAP_ADMIN_PASSWORD}")
 
 log_info "Creating initial slapd configuration..."
 
+
+# We'll add TLS attributes conditionally to cn=config
+TLS_CONFIG=""
+if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
+    log_info "TLS enabled - adding certificate configuration..."
+
+    # TLS Protocol Settings:
+    # Enforce TLS 1.2 minimum (3.3 in OpenLDAP notation: TLS 1.x = 3.(x+1))
+    # TLS 1.0 = 3.1, TLS 1.1 = 3.2, TLS 1.2 = 3.3, TLS 1.3 = 3.4
+    TLS_PROTOCOL_MIN="3.3"
+
+    # Cipher Suite - Mozilla Intermediate Compatibility
+    # Reference:
+    # - https://wiki.mozilla.org/Security/Server_Side_TLS#Intermediate_compatibility_(recommended)
+    #
+    # All suites below are:
+    # - Forward secret (ECDHE or DHE)
+    # - Authenticated (no anonymous)
+    # - Strong encryption (AES-GCM, ChaCha20)
+    TLS_CIPHER_SUITE="TLS_AES_128_GCM_SHA256
+ :TLS_AES_256_GCM_SHA384
+ :TLS_CHACHA20_POLY1305_SHA256
+ :ECDHE-ECDSA-AES128-GCM-SHA256
+ :ECDHE-RSA-AES128-GCM-SHA256
+ :ECDHE-ECDSA-AES256-GCM-SHA384
+ :ECDHE-RSA-AES256-GCM-SHA384
+ :ECDHE-ECDSA-CHACHA20-POLY1305
+ :ECDHE-RSA-CHACHA20-POLY1305
+ :DHE-RSA-AES128-GCM-SHA256
+ :DHE-RSA-AES256-GCM-SHA384
+ :DHE-RSA-CHACHA20-POLY1305"
+
+    TLS_CONFIG="olcTLSCertificateKeyFile: ${LDAP_TLS_DIR}/cert.key
+olcTLSCertificateFile: ${LDAP_TLS_DIR}/cert.pem
+olcTLSProtocolMin: ${TLS_PROTOCOL_MIN}
+olcTLSCipherSuite: ${TLS_CIPHER_SUITE}"
+
+    # Add CA certificate if present
+    if [ -f "${LDAP_TLS_DIR}/ca.pem" ]; then
+        TLS_CONFIG="${TLS_CONFIG}
+olcTLSCACertificateFile: ${LDAP_TLS_DIR}/ca.pem"
+    fi
+fi
+
 # Create temporary LDIF for initial configuration. Modern OpenLDAP (2.3+) uses
 # a LDAP-based configuration stored in cn=config rather than the old slapd.conf
 # file. This LDIF creates that configuration tree.
@@ -45,6 +91,7 @@ log_info "Creating initial slapd configuration..."
 INIT_LDIF=$(mktemp)
 trap "rm -f ${INIT_LDIF}" EXIT
 
+# Start building the initial LDIF
 cat > "${INIT_LDIF}" << LDIF_EOF
 # Global configuration
 dn: cn=config
@@ -53,6 +100,14 @@ cn: config
 olcArgsFile: /var/run/slapd/slapd.args
 olcPidFile: /var/run/slapd/slapd.pid
 olcLogLevel: stats
+LDIF_EOF
+
+# Append TLS config if enabled (avoids empty lines in LDIF when disabled)
+if [ -n "${TLS_CONFIG}" ]; then
+    echo "${TLS_CONFIG}" >> "${INIT_LDIF}"
+fi
+
+cat >> "${INIT_LDIF}" << LDIF_EOF
 
 # Schema configuration
 dn: cn=schema,cn=config

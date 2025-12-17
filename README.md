@@ -63,10 +63,25 @@ To build the image locally, do the following:
     --env LDAP_DOMAIN="foobar.svc.local" \
     --env LDAP_ADMIN_PASSWORD="SecurePass123" \
     --publish 127.0.0.1:1389:1389 \
-    --volume ./examples/ldif/basic/config:/ldif/config:ro,Z \
-    --volume ./examples/ldif/basic/data:/ldif/data:ro,Z \
+    --volume ./examples/basic/config:/ldap/config:ro,Z \
+    --volume ./examples/basic/data:/ldap/data:ro,Z \
     openldap-declarative:latest
    ```
+   With TLS:
+   ```bash
+   podman run --detach \
+    --name ldap-foobar \
+    --env LDAP_DOMAIN="foobar.svc.local" \
+    --env LDAP_ADMIN_PASSWORD="SecurePass123" \
+    --env LDAP_TLS_ENABLED="true" \
+    --publish 127.0.0.1:1389:1389 \
+    --publish 127.0.0.1:1636:1636 \
+    --volume ./examples/basic/config:/ldap/config:ro,Z \
+    --volume ./examples/basic/data:/ldap/data:ro,Z \
+    --volume ./examples/basic/tls:/ldap/tls:ro,Z \
+    openldap-declarative:latest
+   ```
+
 4. You can now work with the container:
    ```bash
    podman ps

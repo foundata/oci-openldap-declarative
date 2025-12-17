@@ -8,7 +8,16 @@
 # - LDAP_ORGANISATION: Organisation name
 # - LDAP_ADMIN_PASSWORD: Admin password for cn=admin (required, min 8 chars)
 # - LDAP_DEBUG_LEVEL: slapd debug level (default: 256 = stats)
-#   Log levels are additive (ORed together). Common useful combinations:
+# - LDAP_TLS_ENABLED: Enable LDAPS (default: false)
+# - LDAP_TLS_PORT: LDAPS port (default: 1636)
+#
+# Fixed mount points (not configurable):
+# - /ldap/config: Configuration LDIFs (applied to cn=config)
+# - /ldap/data: Data LDIFs (applied to main database)
+# - /ldap/tls: TLS certificates (cert.pem, key.pem, optional ca.pem)
+#
+# Log levels (LDAP_DEBUG_LEVEL) are additive (ORed together). Common useful
+# combinations:
 #   - Production (recommended):
 #     stats (256) - connections, bind attempts, searches, results (good for a
 #     usual audit trail)
@@ -52,6 +61,13 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 : "${LDAP_ORGANISATION:=Example Service}"
 : "${LDAP_DEBUG_LEVEL:=256}"
 : "${LDAP_PORT:=1389}"
+: "${LDAP_TLS_ENABLED:=false}"
+: "${LDAP_TLS_PORT:=1636}"
+
+# Fixed paths (not configurable)
+LDAP_CONFIG_DIR="/ldap/config"
+LDAP_DATA_DIR="/ldap/data"
+LDAP_TLS_DIR="/ldap/tls"
 
 # Required values (no defaults)
 if [ -z "${LDAP_ADMIN_PASSWORD:-}" ]; then
@@ -61,6 +77,16 @@ fi
 if [ ${#LDAP_ADMIN_PASSWORD} -lt 8 ]; then
     log_error "LDAP_ADMIN_PASSWORD must be at least 8 characters long"
     exit 1
+fi
+
+# TLS validation
+if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
+    for file in cert.pem cert.key; do
+        if [ ! -f "${LDAP_TLS_DIR}/${file}" ]; then
+            log_error "TLS enabled but ${LDAP_TLS_DIR}/${file} not found"
+            exit 1
+        fi
+    done
 fi
 
 # Derive base DN from domain
@@ -73,7 +99,20 @@ derive_base_dn() {
 LDAP_BASE_DN=$(derive_base_dn "$LDAP_DOMAIN")
 LDAP_ADMIN_DN="cn=admin,${LDAP_BASE_DN}"
 
-export LDAP_BASE_DN LDAP_ADMIN_DN LDAP_ORGANISATION
+# Build listen URLs
+LISTEN_URLS="ldap://0.0.0.0:${LDAP_PORT}/"
+if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
+    LISTEN_URLS="${LISTEN_URLS} ldaps://0.0.0.0:${LDAP_TLS_PORT}/"
+fi
+LISTEN_URLS="${LISTEN_URLS} ldapi:///"
+
+# Export some variables needed by other scripts
+export LDAP_BASE_DN \
+       LDAP_ADMIN_DN \
+       LDAP_ORGANISATION \
+       LDAP_CONFIG_DIR \
+       LDAP_DATA_DIR \
+       LDAP_TLS_DIR
 
 log_info "=========================================="
 log_info "OpenLDAP Container Starting"
@@ -82,6 +121,11 @@ log_info "Domain:    ${LDAP_DOMAIN}"
 log_info "Base DN:   ${LDAP_BASE_DN}"
 log_info "Admin DN:  ${LDAP_ADMIN_DN}"
 log_info "Port:      ${LDAP_PORT}"
+if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
+    log_info "TLS:       enabled (port ${LDAP_TLS_PORT})"
+else
+    log_info "TLS:       disabled"
+fi
 log_info "=========================================="
 
 # Step 1: Initialize slapd configuration
@@ -91,7 +135,7 @@ log_info "Initializing slapd configuration..."
 # Step 2: Start slapd in background for LDIF loading
 log_info "Starting slapd for initialization..."
 /usr/sbin/slapd \
-    -h "ldap://0.0.0.0:${LDAP_PORT}/ ldapi:///" \
+    -h "${LISTEN_URLS}" \
     -u openldap \
     -g openldap \
     -d "${LDAP_DEBUG_LEVEL}" &
@@ -125,6 +169,9 @@ log_info "Loading LDIF files..."
 log_info "=========================================="
 log_info "Initialization complete!"
 log_info "LDAP listening on port ${LDAP_PORT}"
+if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
+    log_info "LDAPS listening on port ${LDAP_TLS_PORT}"
+fi
 log_info "=========================================="
 
 # Keep slapd running in foreground

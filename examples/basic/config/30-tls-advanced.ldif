@@ -1,0 +1,42 @@
+# ============================================================================
+# TLS/SSL Advanced Configuration (Optional)
+#
+# NOTE: Basic TLS setup is automatically configured when LDAP_TLS_ENABLED=true:
+# - Certificate paths (cert.pem, cert.key, ca.pem)
+# - TLS 1.2 minimum protocol version
+# - Mozilla Intermediate cipher suite
+#
+# This file is only needed for advanced customization like requiring TLS
+# for all connections or enabling client certificate verification (mTLS).
+#
+# Mount this file to /ldap/config/ to apply these settings.
+#
+# Test with:
+#   openssl s_client -connect localhost:1636 -showcerts
+#   ldapsearch -H ldaps://localhost:1636 -x -b "" -s base
+# ============================================================================
+
+# ============================================================================
+# Optional: Require TLS for all connections (except ldapi:///)
+# ============================================================================
+# WARNING: Only enable after confirming TLS works!
+# This forces all TCP connections to use TLS, rejecting plain LDAP.
+#
+#dn: cn=config
+#changetype: modify
+#replace: olcSecurity
+#olcSecurity: tls=1
+
+# ============================================================================
+# Optional: Verify client certificates (mutual TLS)
+# ============================================================================
+# olcTLSVerifyClient options:
+#   never  - don't request client cert (default)
+#   allow  - request but don't require
+#   try    - request, verify if provided
+#   demand - require valid client cert
+#
+#dn: cn=config
+#changetype: modify
+#replace: olcTLSVerifyClient
+#olcTLSVerifyClient: never
