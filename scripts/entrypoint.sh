@@ -6,7 +6,7 @@
 # Environment variables:
 # - LDAP_DOMAIN: Domain for base DN (e.g., "nextcloud.svc.local")
 # - LDAP_ORGANISATION: Organisation name
-# - LDAP_ADMIN_PASSWORD: Admin password (cn=admin)
+# - LDAP_ADMIN_PASSWORD: Admin password for cn=admin (required, min 8 chars)
 # - LDAP_DEBUG_LEVEL: slapd debug level (default: 256 = stats)
 #   Log levels are additive (ORed together). Common useful combinations:
 #   - Production (recommended):
@@ -50,9 +50,18 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 # Default values
 : "${LDAP_DOMAIN:=example.svc.local}"
 : "${LDAP_ORGANISATION:=Example Service}"
-: "${LDAP_ADMIN_PASSWORD:=admin}"
 : "${LDAP_DEBUG_LEVEL:=256}"
 : "${LDAP_PORT:=1389}"
+
+# Required values (no defaults)
+if [ -z "${LDAP_ADMIN_PASSWORD:-}" ]; then
+    log_error "LDAP_ADMIN_PASSWORD must be set"
+    exit 1
+fi
+if [ ${#LDAP_ADMIN_PASSWORD} -lt 8 ]; then
+    log_error "LDAP_ADMIN_PASSWORD must be at least 8 characters long"
+    exit 1
+fi
 
 # Derive base DN from domain
 # e.g., "foobar.svc.local" -> "dc=foobar,dc=svc,dc=local"

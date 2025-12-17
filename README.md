@@ -61,7 +61,7 @@ To build the image locally, do the following:
    podman run --detach \
     --name ldap-foobar \
     --env LDAP_DOMAIN="foobar.svc.local" \
-    --env LDAP_ADMIN_PASSWORD="SecurePass_RandomEachStartIfNotDefined" \
+    --env LDAP_ADMIN_PASSWORD="SecurePass123" \
     --publish 127.0.0.1:1389:1389 \
     --volume ./examples/ldif/basic/config:/ldif/config:ro,Z \
     --volume ./examples/ldif/basic/data:/ldif/data:ro,Z \
@@ -74,13 +74,13 @@ To build the image locally, do the following:
    # List all objects (org, groups, users, ...)
    ldapsearch -x -H ldap://127.0.0.1:1389 \
       -D "cn=admin,dc=foobar,dc=svc,dc=local" \
-      -w "SecurePass_RandomEachStartIfNotDefined" \
+      -w "SecurePass123" \
       -b "dc=foobar,dc=svc,dc=local" "(objectClass=*)"
 
    # List all users in "ou=people"
    ldapsearch -x -H ldap://127.0.0.1:1389 \
       -D "cn=admin,dc=foobar,dc=svc,dc=local" \
-      -w "SecurePass_RandomEachStartIfNotDefined" \
+      -w "SecurePass123" \
       -b "ou=people,dc=foobar,dc=svc,dc=local" "(objectClass=inetOrgPerson)"
    ```
 

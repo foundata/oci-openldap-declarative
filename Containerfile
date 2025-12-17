@@ -15,10 +15,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG USER_OPENLDAP_UID=1001
 ARG GROUP_OPENLDAP_GID=1001
 
-# Environment variables defaults
+# Environment variables defaults (LDAP_ADMIN_PASSWORD is required, no default)
 ENV LDAP_DOMAIN="example.svc.local" \
     LDAP_ORGANISATION="Example Service" \
-    LDAP_ADMIN_PASSWORD="admin" \
     LDAP_DEBUG_LEVEL="256"
 
 # Install required packages and clean-up package manager caches afterwards.

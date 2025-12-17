@@ -15,7 +15,7 @@ LDAP_DOMAIN="${SERVICE_NAME}.svc.local"
 LDAP_PORT="${2:-1389}"
 LDAP_BASE_DN=$(echo "${LDAP_DOMAIN}" | sed 's/\./,dc=/g' | sed 's/^/dc=/') # e.g., "foobar.svc.local" -> "dc=foobar,dc=svc,dc=local"
 LDAP_ADMIN_DN="cn=admin,${LDAP_BASE_DN}"
-LDAP_ADMIN_PASSWORD="admin"
+LDAP_ADMIN_PASSWORD="SecurePass123"
 
 
 
@@ -90,12 +90,12 @@ echo ""
 echo "# Search all entries:"
 echo "ldapsearch -x -H ldap://127.0.0.1:${LDAP_PORT} \\"
 echo "  -D \"${LDAP_ADMIN_DN}\" \\"
-echo "  -w admin -b \"${LDAP_BASE_DN}\" \"(objectClass=*)\""
+echo "  -w \"${LDAP_ADMIN_PASSWORD}\" -b \"${LDAP_BASE_DN}\" \"(objectClass=*)\""
 echo ""
 echo "# List users:"
 echo "ldapsearch -x -H ldap://127.0.0.1:${LDAP_PORT} \\"
 echo "  -D \"${LDAP_ADMIN_DN}\" \\"
-echo "  -w admin -b \"ou=people,${LDAP_BASE_DN}\" \"(objectClass=inetOrgPerson)\" uid cn"
+echo "  -w \"${LDAP_ADMIN_PASSWORD}\" -b \"ou=people,${LDAP_BASE_DN}\" \"(objectClass=inetOrgPerson)\" uid cn"
 
 echo ""
 echo -e "${YELLOW}Note: To apply LDIF changes, restart the container:${NC}"
