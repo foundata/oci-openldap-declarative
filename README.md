@@ -138,9 +138,9 @@ The [`REUSE.toml`](REUSE.toml) file provides detailed licensing and copyright in
 
 ### Container image<a id="licensing-copyright-image"></a>
 
-The pre-built image itself bundles various software components along with direct and indirect dependencies, which are subject to their respective licenses. When using the pre-built image, **you are responsible for ensuring that your usage complies with all relevant licenses** for the software contained within the image.
+An image built from this repository bundles various software components along with direct and indirect dependencies, which are subject to their respective licenses. When using it, **you are responsible for ensuring that your usage complies with all relevant licenses** for the software contained within the image.
 
-For further licensing information about the software contained in this image, please refer to the following resources:
+For further licensing information about the software contained in an image built from this repository, please refer to the following resources:
 
 * https://www.debian.org/legal/licenses/
 
