@@ -386,7 +386,7 @@ generate_image_artifacts() {
   temporary_image="localhost/openldap-release-evidence-${image_slug}-$$"
 
   log "Pulling immutable release image ${image_reference}"
-  "${skopeo_binary}" copy \
+  "${skopeo_binary}" copy --preserve-digests \
     "docker://${image_reference}" "oci:${layout_path}" || return 1
   manifest_digest=$("${skopeo_binary}" inspect --format '{{.Digest}}' \
     "oci:${layout_path}") || return 1
