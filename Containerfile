@@ -1,100 +1,59 @@
-FROM debian:trixie-slim
+FROM docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f
 
-LABEL description="OCI Image: OpenLDAP Declarative (LDIF-file-defined directory state, reset on startup)"
-LABEL maintainer="foundata GmbH (https://foundata.com)"
-LABEL version="0.0.0-dev"
+LABEL org.opencontainers.image.title="OpenLDAP Declarative"
+LABEL org.opencontainers.image.description="Read-only OpenLDAP directory built from a signed snapshot"
+LABEL org.opencontainers.image.vendor="foundata GmbH"
+LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
+LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
 
-# Inform environment it's running in a container and specify the container
-# manager type (this may affect the behavior, see src/basic/virt.c).
-# Docker users can overwrite this with "--env container=docker".
-ENV container=podman
-
-# Set non-interactive mode for apt to prevent prompts during builds
 ARG DEBIAN_FRONTEND=noninteractive
-
 ARG USER_OPENLDAP_UID=1001
 ARG GROUP_OPENLDAP_GID=1001
 
-# Environment variables defaults (LDAP_ADMIN_PASSWORD is required, no default)
-ENV LDAP_DOMAIN="example.svc.local" \
-    LDAP_ORGANISATION="Example Service" \
-    LDAP_DEBUG_LEVEL="256"
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    jq \
+    ldap-utils \
+    minisign \
+    openssl \
+    slapd \
+  && rm -rf \
+    /etc/ldap/slapd.d/* \
+    /usr/share/doc/* \
+    /usr/share/man/* \
+    /var/lib/apt/lists/* \
+    /var/lib/ldap/* \
+  && groupmod --gid "${GROUP_OPENLDAP_GID}" openldap \
+  && usermod --uid "${USER_OPENLDAP_UID}" --gid "${GROUP_OPENLDAP_GID}" openldap \
+  && install -d -o openldap -g openldap -m 0700 \
+    /run/credentials \
+    /run/openldap \
+    /snapshot \
+    /state \
+    /tls
 
-# Install required packages and clean-up package manager caches afterwards.
-# Packages are included for these purposes:
-#
-# - Overall compatibility and network functionality:
-#   build-essential gnu-which iproute2 libffi-dev libssl-dev procps
-#
-# - Easier debugging within the container (good feature-to-size ratio):
-#   iputils-ping, iputils-tracepath, less, vim-tiny
-#
-# - OpenLDAP:
-#   ca-certificates ldap-utils slapd
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        gnu-which \
-        iproute2 \
-        libffi-dev \
-        libssl-dev \
-        procps \
-        iputils-ping \
-        iputils-tracepath \
-        less \
-        vim-tiny \
-        ca-certificates \
-        ldap-utils \
-        slapd \
-        sudo \
-    && rm -rf "/var/lib/apt/lists/"* \
-    && apt-get clean \
-    # Clean up unnecessary installed files that aren't needed in this image.
-    # --no-install-recommends does not prevent installation of docs for all
-    # packages, and --path-exclude is only available for dpkg, not for apt-get.
-    && rm -rf "/usr/share/doc" \
-    && rm -rf "/usr/share/man" \
-    # Remove default slapd data (we'll initialize fresh each start)
-    && rm -rf "/var/lib/ldap/" \
-    && rm -rf "/etc/ldap/slapd.d/"
+ENV LDAP_RUNTIME_DIR="/run/openldap" \
+    LDAP_SNAPSHOT_DIR="/snapshot" \
+    LDAP_SNAPSHOT_PUBLIC_KEY_FILE="/run/credentials/snapshot-public-key" \
+    LDAP_REVISION_STATE_FILE="/state/highest-revision" \
+    LDAP_LDAPI_URI="ldapi://%2Frun%2Fopenldap%2Fldapi" \
+    LDAP_LISTEN_HOST="127.0.0.1" \
+    LDAP_PORT="1389" \
+    LDAP_LDAPS_PORT="1636" \
+    LDAP_TRANSPORT="ldap" \
+    LDAP_LOG_LEVEL="256"
 
-# Ensure non-interactive sudo commands work in containerized environments where
-# TTY allocation is often unavailable or undesired (if needed, it is usually
-# allowed on this platform).
-RUN sed -i -e 's/\(^Defaults\s*\)\(requiretty\)/\1!\2/' "/etc/sudoers"
+COPY --chown=openldap:openldap --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
+COPY --chown=openldap:openldap --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
+COPY --chown=openldap:openldap --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
+COPY --chown=openldap:openldap --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
+COPY --chown=openldap:openldap --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
 
-# The slapd package creates 'openldap' user. Adjust ownership and use a specific
-# UID/GID for rootless compatibility.
-RUN groupmod -g ${GROUP_OPENLDAP_GID} openldap && \
-    usermod -u ${USER_OPENLDAP_UID} -g ${GROUP_OPENLDAP_GID} openldap
+USER openldap:openldap
 
-# Create required directories with correct ownership
-RUN mkdir -p /var/lib/ldap \
-             /var/run/slapd \
-             /etc/ldap/slapd.d \
-             /container-init \
-             /ldap/config \
-             /ldap/data \
-             /ldap/tls \
-    && chown -R openldap:openldap /var/lib/ldap \
-                                  /var/run/slapd \
-                                  /etc/ldap \
-                                  /container-init \
-                                  /ldap
-
-# Copy initialization scripts
-COPY --chown=openldap:openldap scripts/entrypoint.sh /container-init/
-COPY --chown=openldap:openldap scripts/init-slapd.sh /container-init/
-COPY --chown=openldap:openldap scripts/load-ldif.sh /container-init/
-
-RUN chmod +x /container-init/*.sh
-
-# Switch to non-root user
-USER openldap
-
-# Expose LDAP and LDAPS ports (unprivileged)
 EXPOSE 1389 1636
 
-# Mount points for LDIF files and TLS certificates
-VOLUME ["/ldap/config", "/ldap/data", "/ldap/tls"]
+STOPSIGNAL SIGTERM
 
-ENTRYPOINT ["/container-init/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/lib/openldap-declarative/entrypoint.sh"]

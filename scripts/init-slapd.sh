@@ -1,178 +1,394 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
-# Initialize slapd configuration from scratch
-# This script runs before slapd starts and sets up the basic configuration
+# Build a fresh OpenLDAP configuration and database from a verified snapshot.
 
-set -euo pipefail
+set -u
 
-log_info()  { echo -e "\033[0;32m[INFO]\033[0m $*"; }
-log_error() { echo -e "\033[0;31m[ERROR]\033[0m $*" >&2; }
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd) || exit 70
+readonly script_dir
+# shellcheck source=scripts/common.sh
+. "${script_dir}/common.sh"
 
-# Ensure required variables are set
-: "${LDAP_DOMAIN:?LDAP_DOMAIN is required}"
-: "${LDAP_ORGANISATION:?LDAP_ORGANISATION is required}"
-: "${LDAP_ADMIN_PASSWORD:?LDAP_ADMIN_PASSWORD is required}"
-: "${LDAP_BASE_DN:?LDAP_BASE_DN is required}"
-: "${LDAP_TLS_ENABLED:=false}"
-: "${LDAP_TLS_DIR:=/ldap/tls}"
+readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
+readonly config_dir="${runtime_dir}/slapd.d"
+readonly data_dir="${runtime_dir}/data"
+readonly verified_manifest_file="${runtime_dir}/verified-manifest.json"
+readonly verified_files_file="${runtime_dir}/verified-files"
+readonly root_password_input="${runtime_dir}/root-password"
+readonly verified_snapshot_dir="${runtime_dir}/verified-snapshot"
 
-# Get current user's UID and GID for ACL configuration
-USER_OPENLDAP_UID=$(id -u)
-GROUP_OPENLDAP_GID=$(id -g)
+validate_compatibility_inputs() {
+  base_dn="${1}"
+  validation_errors=0
 
-# Directories
-SLAPD_CONF_DIR="/etc/ldap/slapd.d"
-LDAP_DATA_PATH="/var/lib/ldap"
+  if [ -n "${LDAP_BASE_DN:-}" ] && [ "${LDAP_BASE_DN}" != "${base_dn}" ]; then
+    log_error 'LDAP_BASE_DN contradicts the signed snapshot manifest'
+    validation_errors=$((validation_errors + 1))
+  fi
 
-# Clean any existing configuration (fresh start each time)
-rm -rf "${SLAPD_CONF_DIR:?}"/*
-rm -rf "${LDAP_DATA_PATH:?}"/*
-
-log_info "Generating password hash..."
-ADMIN_PASSWORD_HASH=$(slappasswd -s "${LDAP_ADMIN_PASSWORD}")
-
-log_info "Creating initial slapd configuration..."
-
-
-# We'll add TLS attributes conditionally to cn=config
-TLS_CONFIG=""
-if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
-    log_info "TLS enabled - adding certificate configuration..."
-
-    # TLS Protocol Settings:
-    # Enforce TLS 1.2 minimum (3.3 in OpenLDAP notation: TLS 1.x = 3.(x+1))
-    # TLS 1.0 = 3.1, TLS 1.1 = 3.2, TLS 1.2 = 3.3, TLS 1.3 = 3.4
-    TLS_PROTOCOL_MIN="3.3"
-
-    # Cipher Suite - Mozilla Intermediate Compatibility
-    # Reference:
-    # - https://wiki.mozilla.org/Security/Server_Side_TLS#Intermediate_compatibility_(recommended)
-    #
-    # All suites below are:
-    # - Forward secret (ECDHE or DHE)
-    # - Authenticated (no anonymous)
-    # - Strong encryption (AES-GCM, ChaCha20)
-    TLS_CIPHER_SUITE="TLS_AES_128_GCM_SHA256
- :TLS_AES_256_GCM_SHA384
- :TLS_CHACHA20_POLY1305_SHA256
- :ECDHE-ECDSA-AES128-GCM-SHA256
- :ECDHE-RSA-AES128-GCM-SHA256
- :ECDHE-ECDSA-AES256-GCM-SHA384
- :ECDHE-RSA-AES256-GCM-SHA384
- :ECDHE-ECDSA-CHACHA20-POLY1305
- :ECDHE-RSA-CHACHA20-POLY1305
- :DHE-RSA-AES128-GCM-SHA256
- :DHE-RSA-AES256-GCM-SHA384
- :DHE-RSA-CHACHA20-POLY1305"
-
-    TLS_CONFIG="olcTLSCertificateKeyFile: ${LDAP_TLS_DIR}/cert.key
-olcTLSCertificateFile: ${LDAP_TLS_DIR}/cert.pem
-olcTLSProtocolMin: ${TLS_PROTOCOL_MIN}
-olcTLSCipherSuite: ${TLS_CIPHER_SUITE}"
-
-    # Add CA certificate if present
-    if [ -f "${LDAP_TLS_DIR}/ca.pem" ]; then
-        TLS_CONFIG="${TLS_CONFIG}
-olcTLSCACertificateFile: ${LDAP_TLS_DIR}/ca.pem"
+  if [ -n "${LDAP_DOMAIN:-}" ]; then
+    if ! printf '%s\n' "${LDAP_DOMAIN}" | grep -E -q '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'; then
+      log_error 'LDAP_DOMAIN has an invalid compatibility value'
+      validation_errors=$((validation_errors + 1))
+    else
+      derived_base_dn=dc=$(printf '%s' "${LDAP_DOMAIN}" | sed 's/\./,dc=/g')
+      if [ "${derived_base_dn}" != "${base_dn}" ]; then
+        log_error 'LDAP_DOMAIN contradicts the signed snapshot manifest'
+        validation_errors=$((validation_errors + 1))
+      fi
     fi
-fi
+  fi
 
-# Create temporary LDIF for initial configuration. Modern OpenLDAP (2.3+) uses
-# a LDAP-based configuration stored in cn=config rather than the old slapd.conf
-# file. This LDIF creates that configuration tree.
-#
-# This is a minimal working configuration derived from:
-# - Debian's default slapd setup - What dpkg-reconfigure slapd creates
-#   You can see what Debian creates by default: On a fresh Debian system after
-#   installing slapd: sudo slapcat -n0  # Dumps cn=config database
-# - OpenLDAP Administrator's Guide - https://www.openldap.org/doc/admin26/
-# - man slapd-config - The definitive reference for cn=config
-# - man slapd-mdb - MDB backend specifics
-INIT_LDIF=$(mktemp)
-trap "rm -f ${INIT_LDIF}" EXIT
+  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] && [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+    log_error 'LDAP_ADMIN_PASSWORD_FILE and LDAP_ADMIN_PASSWORD are mutually exclusive'
+    validation_errors=$((validation_errors + 1))
+  fi
 
-# Start building the initial LDIF
-cat > "${INIT_LDIF}" << LDIF_EOF
-# Global configuration
-dn: cn=config
-objectClass: olcGlobal
-cn: config
-olcArgsFile: /var/run/slapd/slapd.args
-olcPidFile: /var/run/slapd/slapd.pid
-olcLogLevel: stats
-LDIF_EOF
+  if [ "${validation_errors}" -ne 0 ]; then
+    return "${EXIT_USAGE}"
+  fi
 
-# Append TLS config if enabled (avoids empty lines in LDIF when disabled)
-if [ -n "${TLS_CONFIG}" ]; then
-    echo "${TLS_CONFIG}" >> "${INIT_LDIF}"
-fi
+  return 0
+}
 
-cat >> "${INIT_LDIF}" << LDIF_EOF
+prepare_root_password() {
+  umask 077
 
-# Schema configuration
-dn: cn=schema,cn=config
-objectClass: olcSchemaConfig
-cn: schema
+  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ]; then
+    if [ ! -f "${LDAP_ADMIN_PASSWORD_FILE}" ] || [ -L "${LDAP_ADMIN_PASSWORD_FILE}" ] || [ ! -r "${LDAP_ADMIN_PASSWORD_FILE}" ]; then
+      log_error 'LDAP_ADMIN_PASSWORD_FILE must name a readable regular file, not a symbolic link'
+      return "${EXIT_INPUT}"
+    fi
+    password_line_count=$(awk 'END { print NR }' "${LDAP_ADMIN_PASSWORD_FILE}") || return "${EXIT_INTERNAL}"
+    if [ "${password_line_count}" -gt 1 ]; then
+      log_error 'LDAP_ADMIN_PASSWORD_FILE must contain exactly one line'
+      return "${EXIT_INPUT}"
+    fi
+    if ! cp "${LDAP_ADMIN_PASSWORD_FILE}" "${root_password_input}"; then
+      return "${EXIT_INTERNAL}"
+    fi
+  elif [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+    if [ -z "${LDAP_ADMIN_PASSWORD}" ]; then
+      log_error 'LDAP_ADMIN_PASSWORD must not be empty'
+      return "${EXIT_USAGE}"
+    fi
+    log_warning 'LDAP_ADMIN_PASSWORD is deprecated; use LDAP_ADMIN_PASSWORD_FILE'
+    if ! printf '%s' "${LDAP_ADMIN_PASSWORD}" >"${root_password_input}"; then
+      return "${EXIT_INTERNAL}"
+    fi
+    unset LDAP_ADMIN_PASSWORD
+  else
+    if ! openssl rand -hex 32 >"${root_password_input}"; then
+      return "${EXIT_INTERNAL}"
+    fi
+  fi
 
-# Include core schemas
-include: file:///etc/ldap/schema/core.ldif
-include: file:///etc/ldap/schema/cosine.ldif
-include: file:///etc/ldap/schema/inetorgperson.ldif
-include: file:///etc/ldap/schema/nis.ldif
+  if [ ! -s "${root_password_input}" ]; then
+    log_error 'The recovery root password must not be empty'
+    return "${EXIT_INPUT}"
+  fi
 
-# Frontend database (special)
-dn: olcDatabase={-1}frontend,cn=config
-objectClass: olcDatabaseConfig
-objectClass: olcFrontendConfig
-olcDatabase: {-1}frontend
-olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by * break
-olcSizeLimit: 500
+  chmod 0600 "${root_password_input}" || return "${EXIT_INTERNAL}"
+  return 0
+}
 
-# Config database
-dn: olcDatabase={0}config,cn=config
-objectClass: olcDatabaseConfig
-olcDatabase: {0}config
-olcRootDN: cn=admin,cn=config
-# Allow both root and the openldap user to manage cn=config
-olcAccess: {0}to * by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage by dn.exact=gidNumber=${GROUP_OPENLDAP_GID}+uidNumber=${USER_OPENLDAP_UID},cn=peercred,cn=external,cn=auth manage by * break
+hash_root_password() {
+  if ! root_password_hash=$(slappasswd \
+    -o module-path=/usr/lib/ldap \
+    -o 'module-load=argon2 m=19456 t=2 p=1' \
+    -h '{ARGON2}' \
+    -T "${root_password_input}"); then
+    return "${EXIT_INTERNAL}"
+  fi
 
-# MDB backend module
-dn: cn=module{0},cn=config
-objectClass: olcModuleList
-cn: module{0}
-olcModulePath: /usr/lib/ldap
-olcModuleLoad: back_mdb
+  unlink "${root_password_input}"
+  printf '%s\n' "${root_password_hash}"
+}
 
-# MDB database
-dn: olcDatabase={1}mdb,cn=config
-objectClass: olcDatabaseConfig
-objectClass: olcMdbConfig
-olcDatabase: {1}mdb
-olcDbDirectory: ${LDAP_DATA_PATH}
-olcSuffix: ${LDAP_BASE_DN}
-olcRootDN: ${LDAP_ADMIN_DN}
-olcRootPW: ${ADMIN_PASSWORD_HASH}
-olcDbIndex: objectClass eq
-olcDbIndex: cn,uid eq
-olcDbIndex: uidNumber,gidNumber eq
-olcDbIndex: member,memberUid eq
-olcDbIndex: entryCSN eq
-olcDbIndex: entryUUID eq
-olcDbMaxSize: 1073741824
-olcAccess: {0}to attrs=userPassword by self write by anonymous auth by * none
-olcAccess: {1}to attrs=shadowLastChange by self write by * read
-olcAccess: {2}to * by * read
-LDIF_EOF
+append_tls_configuration() {
+  config_file="${1}"
 
-log_info "Loading initial configuration with slapadd..."
-slapadd -F "${SLAPD_CONF_DIR}" -n 0 -l "${INIT_LDIF}"
+  if [ "${LDAP_TRANSPORT:-ldap}" = ldap ]; then
+    return 0
+  fi
 
-# Verify configuration
-if ! [ -d "${SLAPD_CONF_DIR}/cn=config" ]; then
-    log_error "slapd configuration directory not created"
-    exit 1
-fi
+  for certificate_file in "${LDAP_TLS_CERT_FILE:-/tls/cert.pem}" "${LDAP_TLS_KEY_FILE:-/tls/cert.key}"; do
+    if [ ! -f "${certificate_file}" ] || [ -L "${certificate_file}" ] || [ ! -r "${certificate_file}" ]; then
+      log_error "TLS input must be a readable regular file, not a symbolic link: ${certificate_file}"
+      return "${EXIT_INPUT}"
+    fi
+  done
 
-log_info "slapd configuration initialized successfully"
-log_info "Base DN: ${LDAP_BASE_DN}"
-log_info "Admin DN: ${LDAP_ADMIN_DN}"
+  {
+    printf 'olcTLSCertificateFile: %s\n' "${LDAP_TLS_CERT_FILE:-/tls/cert.pem}"
+    printf 'olcTLSCertificateKeyFile: %s\n' "${LDAP_TLS_KEY_FILE:-/tls/cert.key}"
+    printf '%s\n' 'olcTLSProtocolMin: 3.3'
+    printf '%s\n' 'olcTLSCipherSuite: TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
+    if [ -f "${LDAP_TLS_CA_FILE:-/tls/ca.pem}" ]; then
+      printf 'olcTLSCACertificateFile: %s\n' "${LDAP_TLS_CA_FILE:-/tls/ca.pem}"
+    fi
+  } >>"${config_file}" || return "${EXIT_INTERNAL}"
+
+  return 0
+}
+
+write_base_configuration() {
+  base_dn="${1}"
+  root_password_hash="${2}"
+  config_file="${3}"
+  current_uid=$(id -u) || return "${EXIT_INTERNAL}"
+  current_gid=$(id -g) || return "${EXIT_INTERNAL}"
+  external_identity="gidNumber=${current_gid}+uidNumber=${current_uid},cn=peercred,cn=external,cn=auth"
+
+  {
+    printf '%s\n' \
+      'dn: cn=config' \
+      'objectClass: olcGlobal' \
+      'cn: config' \
+      "olcArgsFile: ${runtime_dir}/slapd.args" \
+      "olcPidFile: ${runtime_dir}/slapd.pid" \
+      "olcLogLevel: ${LDAP_LOG_LEVEL:-256}" \
+      'olcThreads: 4' \
+      'olcToolThreads: 2' \
+      'olcConnMaxPending: 50' \
+      'olcConnMaxPendingAuth: 10' \
+      'olcIdleTimeout: 60' \
+      'olcWriteTimeout: 10'
+  } >"${config_file}" || return "${EXIT_INTERNAL}"
+
+  append_tls_configuration "${config_file}" || return $?
+
+  {
+    printf '%s\n' \
+      '' \
+      'dn: cn=schema,cn=config' \
+      'objectClass: olcSchemaConfig' \
+      'cn: schema' \
+      '' \
+      'include: file:///etc/ldap/schema/core.ldif' \
+      'include: file:///etc/ldap/schema/cosine.ldif' \
+      'include: file:///etc/ldap/schema/inetorgperson.ldif' \
+      'include: file:///etc/ldap/schema/nis.ldif' \
+      '' \
+      'dn: olcDatabase={-1}frontend,cn=config' \
+      'objectClass: olcDatabaseConfig' \
+      'objectClass: olcFrontendConfig' \
+      'olcDatabase: {-1}frontend' \
+      'olcSizeLimit: 500' \
+      'olcTimeLimit: 10' \
+      "olcAccess: {0}to * by dn.exact=${external_identity} manage by * break" \
+      '' \
+      'dn: olcDatabase={0}config,cn=config' \
+      'objectClass: olcDatabaseConfig' \
+      'olcDatabase: {0}config' \
+      "olcAccess: {0}to * by dn.exact=${external_identity} manage by * none" \
+      '' \
+      'dn: cn=module{0},cn=config' \
+      'objectClass: olcModuleList' \
+      'cn: module{0}' \
+      'olcModulePath: /usr/lib/ldap' \
+      'olcModuleLoad: back_mdb' \
+      'olcModuleLoad: argon2' \
+      'olcModuleLoad: memberof' \
+      '' \
+      'dn: olcDatabase={1}mdb,cn=config' \
+      'objectClass: olcDatabaseConfig' \
+      'objectClass: olcMdbConfig' \
+      'olcDatabase: {1}mdb' \
+      "olcDbDirectory: ${data_dir}" \
+      "olcSuffix: ${base_dn}" \
+      "olcRootDN: cn=admin,${base_dn}" \
+      "olcRootPW: ${root_password_hash}" \
+      'olcDbIndex: objectClass eq' \
+      'olcDbIndex: cn,uid eq' \
+      'olcDbIndex: mail eq,sub' \
+      'olcDbIndex: member,memberOf eq' \
+      'olcDbIndex: entryUUID eq' \
+      'olcDbMaxSize: 67108864' \
+      "olcAccess: {0}to attrs=userPassword by dn.exact=cn=admin,${base_dn} manage by self auth by anonymous auth by * none" \
+      "olcAccess: {1}to * by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by users read by * none"
+  } >>"${config_file}" || return "${EXIT_INTERNAL}"
+
+  return 0
+}
+
+reset_runtime_database() {
+  for directory in "${config_dir}" "${data_dir}"; do
+    if [ -L "${directory}" ]; then
+      log_error "Runtime database path must not be a symbolic link: ${directory}"
+      return "${EXIT_INTERNAL}"
+    fi
+    mkdir -p "${directory}" || return "${EXIT_INTERNAL}"
+    find "${directory}" -mindepth 1 -delete || return "${EXIT_INTERNAL}"
+  done
+
+  return 0
+}
+
+import_directory_data() {
+  while IFS= read -r relative_path; do
+    log_info "Importing signed LDIF file ${relative_path}"
+    if ! slapadd -F "${config_dir}" -n 1 -l "${verified_snapshot_dir}/${relative_path}"; then
+      log_error "Offline import failed for ${relative_path}"
+      return "${EXIT_SNAPSHOT}"
+    fi
+  done <"${verified_files_file}"
+
+  return 0
+}
+
+verify_built_database() {
+  base_dn="${1}"
+  directory_dump=$(mktemp "${runtime_dir}/directory.XXXXXX") || return "${EXIT_INTERNAL}"
+  group_memberships=$(mktemp "${runtime_dir}/group-memberships.XXXXXX") || {
+    unlink "${directory_dump}"
+    return "${EXIT_INTERNAL}"
+  }
+  user_memberships=$(mktemp "${runtime_dir}/user-memberships.XXXXXX") || {
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    return "${EXIT_INTERNAL}"
+  }
+
+  if ! slaptest -F "${config_dir}" -u; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'Generated slapd configuration failed validation'
+    return "${EXIT_INTERNAL}"
+  fi
+
+  if ! slapcat -F "${config_dir}" -b "${base_dn}" -o ldif-wrap=no >"${directory_dump}"; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'Generated directory could not be read back'
+    return "${EXIT_INTERNAL}"
+  fi
+
+  if ! grep -F -q "dn: ${base_dn}" "${directory_dump}"; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'Generated directory does not contain the manifest base DN'
+    return "${EXIT_SNAPSHOT}"
+  fi
+
+  entry_count=$(grep -c '^dn: ' "${directory_dump}") || entry_count=0
+  uuid_count=$(grep -c '^entryUUID: ' "${directory_dump}") || uuid_count=0
+  if [ "${entry_count}" -ne "${uuid_count}" ]; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'Every directory entry must have an explicit deterministic entryUUID'
+    return "${EXIT_SNAPSHOT}"
+  fi
+
+  if grep '^entryUUID: ' "${directory_dump}" \
+    | cut -d ' ' -f 2- \
+    | grep -E -v -q '^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'Every directory entryUUID must be a lowercase UUIDv5 value'
+    return "${EXIT_SNAPSHOT}"
+  fi
+
+  password_values=$(mktemp "${runtime_dir}/password-values.XXXXXX") || return "${EXIT_INTERNAL}"
+  while IFS= read -r password_line; do
+    case "${password_line}" in
+      'userPassword: '*)
+        printf '%s\n' "${password_line#userPassword: }" >>"${password_values}" || return "${EXIT_INTERNAL}"
+        ;;
+      'userPassword:: '*)
+        encoded_password=${password_line#userPassword:: }
+        decoded_password=$(printf '%s' "${encoded_password}" | base64 --decode) || return "${EXIT_SNAPSHOT}"
+        printf '%s\n' "${decoded_password}" >>"${password_values}" || return "${EXIT_INTERNAL}"
+        ;;
+      *) ;;
+    esac
+  done <"${directory_dump}"
+
+  # Dollar signs in the next expression are literal Argon2 separators.
+  # shellcheck disable=SC2016
+  if grep -E -v -q '^\{ARGON2\}\$argon2id\$v=19\$m=[0-9]+,t=[0-9]+,p=[0-9]+\$[^$]+\$[^$]+$' \
+    "${password_values}"; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    unlink "${password_values}"
+    log_error 'Every userPassword must use a valid Argon2id verifier'
+    return "${EXIT_SNAPSHOT}"
+  fi
+
+  # Dollar signs in the next expression are literal Argon2 separators.
+  # shellcheck disable=SC2016
+  if sed -n 's/^{ARGON2}\$argon2id\$v=19\$m=\([0-9][0-9]*\),t=\([0-9][0-9]*\),p=\([0-9][0-9]*\)\$.*/\1 \2 \3/p' \
+    "${password_values}" | awk '$1 < 19456 || $2 < 2 || $3 < 1 { invalid = 1 } END { exit invalid }'; then
+    :
+  else
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    unlink "${password_values}"
+    log_error 'Every Argon2id verifier must use at least m=19456,t=2,p=1'
+    return "${EXIT_SNAPSHOT}"
+  fi
+  unlink "${password_values}"
+
+  awk '
+    /^dn: / { dn = substr($0, 5) }
+    /^member: / { print substr($0, 9) "\t" dn }
+  ' "${directory_dump}" | sort >"${group_memberships}" || return "${EXIT_INTERNAL}"
+  awk '
+    /^dn: / { dn = substr($0, 5) }
+    /^memberOf: / { print dn "\t" substr($0, 11) }
+  ' "${directory_dump}" | sort >"${user_memberships}" || return "${EXIT_INTERNAL}"
+
+  if ! cmp -s "${group_memberships}" "${user_memberships}"; then
+    unlink "${directory_dump}"
+    unlink "${group_memberships}"
+    unlink "${user_memberships}"
+    log_error 'member and memberOf attributes must describe the same relationships'
+    return "${EXIT_SNAPSHOT}"
+  fi
+
+  unlink "${directory_dump}"
+  unlink "${group_memberships}"
+  unlink "${user_memberships}"
+  return 0
+}
+
+main() {
+  if [ ! -f "${verified_manifest_file}" ] || [ ! -f "${verified_files_file}" ]; then
+    die "${EXIT_INTERNAL}" 'Snapshot verification output is missing'
+  fi
+
+  base_dn=$(jq -r '.base_dn' "${verified_manifest_file}") || die "${EXIT_INTERNAL}" 'Cannot read the verified base DN'
+  validate_compatibility_inputs "${base_dn}" || exit $?
+  reset_runtime_database || exit $?
+  prepare_root_password || exit $?
+  root_password_hash=$(hash_root_password) || exit $?
+  config_file=$(mktemp "${runtime_dir}/config.XXXXXX") || die "${EXIT_INTERNAL}" 'Cannot create the configuration input'
+
+  write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}"
+  initialization_status=$?
+  if [ "${initialization_status}" -ne 0 ]; then
+    unlink "${config_file}"
+    exit "${initialization_status}"
+  fi
+
+  if ! slapadd -F "${config_dir}" -n 0 -l "${config_file}"; then
+    unlink "${config_file}"
+    die "${EXIT_INTERNAL}" 'Cannot create the slapd configuration database'
+  fi
+  unlink "${config_file}"
+
+  import_directory_data || exit $?
+  slapindex -F "${config_dir}" -n 1 || die "${EXIT_INTERNAL}" 'Cannot build directory indexes'
+  verify_built_database "${base_dn}" || exit $?
+
+  log_info 'Built and validated the directory without opening a listener'
+}
+
+main "$@"

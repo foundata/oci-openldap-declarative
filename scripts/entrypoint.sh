@@ -1,179 +1,222 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
-# OpenLDAP Container Entrypoint
-# Initializes slapd and loads LDIF files on every container start
-#
-# Environment variables:
-# - LDAP_DOMAIN: Domain for base DN (e.g., "nextcloud.svc.local")
-# - LDAP_ORGANISATION: Organisation name
-# - LDAP_ADMIN_PASSWORD: Admin password for cn=admin (required, min 8 chars)
-# - LDAP_DEBUG_LEVEL: slapd debug level (default: 256 = stats)
-# - LDAP_TLS_ENABLED: Enable LDAPS (default: false)
-# - LDAP_TLS_PORT: LDAPS port (default: 1636)
-#
-# Fixed mount points (not configurable):
-# - /ldap/config: Configuration LDIFs (applied to cn=config)
-# - /ldap/data: Data LDIFs (applied to main database)
-# - /ldap/tls: TLS certificates (cert.pem, key.pem, optional ca.pem)
-#
-# Log levels (LDAP_DEBUG_LEVEL) are additive (ORed together). Common useful
-# combinations:
-#   - Production (recommended):
-#     stats (256) - connections, bind attempts, searches, results (good for a
-#     usual audit trail)
-#   - Debugging:
-#     stats + ACL (256 + 128 = 384) - add ACL processing for troubleshooting
-#     stats + conns (256 + 8 = 264) - add connection details
-#   - Full debug (VERY verbose - temporary use only):
-#     any (-1) - everything
-#   Log Level Reference:
-#     1      (0x1)    trace     - function calls
-#     2      (0x2)    packets   - packet handling
-#     4      (0x4)    args      - heavy trace (function args)
-#     8      (0x8)    conns     - connection management
-#     16     (0x10)   BER       - packets sent/received
-#     32     (0x20)   filter    - search filter processing
-#     64     (0x40)   config    - configuration processing
-#     128    (0x80)   ACL       - access control processing
-#     256    (0x100)  stats     - connections, operations, results (recommended)
-#     512    (0x200)  stats2    - stats log entries sent
-#     1024   (0x400)  shell     - shell backend communication
-#     2048   (0x800)  parse     - entry parsing
-#     16384  (0x4000) sync      - LDAPSync replication
-#     32768  (0x8000) none      - only high-priority messages
-#   Logs go to syslog facility LOG_LOCAL4 by default.
-#   Configure rsyslog to route: local4.* /var/log/slapd.log
+# Verify the snapshot, build the directory offline, and supervise slapd.
 
-set -euo pipefail
+set -u
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd) || exit 70
+readonly script_dir
+# shellcheck source=scripts/common.sh
+. "${script_dir}/common.sh"
 
-log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
+readonly config_dir="${runtime_dir}/slapd.d"
+readonly verified_manifest_file="${runtime_dir}/verified-manifest.json"
+readonly revision_state_file="${LDAP_REVISION_STATE_FILE:-/state/highest-revision}"
+readonly expected_service_id="${LDAP_EXPECTED_SERVICE_ID:-}"
 
-# Default values
-: "${LDAP_DOMAIN:=example.svc.local}"
-: "${LDAP_ORGANISATION:=Example Service}"
-: "${LDAP_DEBUG_LEVEL:=256}"
-: "${LDAP_PORT:=1389}"
-: "${LDAP_TLS_ENABLED:=false}"
-: "${LDAP_TLS_PORT:=1636}"
+slapd_pid=''
+watchdog_pid=''
+snapshot_expired=0
+shutdown_requested=0
 
-# Fixed paths (not configurable)
-LDAP_CONFIG_DIR="/ldap/config"
-LDAP_DATA_DIR="/ldap/data"
-LDAP_TLS_DIR="/ldap/tls"
+validate_runtime_configuration() {
+  validation_errors=0
 
-# Required values (no defaults)
-if [ -z "${LDAP_ADMIN_PASSWORD:-}" ]; then
-    log_error "LDAP_ADMIN_PASSWORD must be set"
-    exit 1
-fi
-if [ ${#LDAP_ADMIN_PASSWORD} -lt 8 ]; then
-    log_error "LDAP_ADMIN_PASSWORD must be at least 8 characters long"
-    exit 1
-fi
+  case "${LDAP_TRANSPORT:-ldap}" in
+    ldap | ldaps | both) ;;
+    *)
+      log_error 'LDAP_TRANSPORT must be ldap, ldaps, or both'
+      validation_errors=$((validation_errors + 1))
+      ;;
+  esac
 
-# TLS validation
-if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
-    for file in cert.pem cert.key; do
-        if [ ! -f "${LDAP_TLS_DIR}/${file}" ]; then
-            log_error "TLS enabled but ${LDAP_TLS_DIR}/${file} not found"
-            exit 1
-        fi
-    done
-fi
+  case "${LDAP_LISTEN_HOST:-127.0.0.1}" in
+    127.0.0.1 | 0.0.0.0) ;;
+    *)
+      log_error 'LDAP_LISTEN_HOST must be 127.0.0.1 or 0.0.0.0'
+      validation_errors=$((validation_errors + 1))
+      ;;
+  esac
 
-# Derive base DN from domain
-# e.g., "foobar.svc.local" -> "dc=foobar,dc=svc,dc=local"
-derive_base_dn() {
-    local domain="${1}"
-    echo "$domain" | sed 's/\./,dc=/g' | sed 's/^/dc=/'
+  for port_value in "${LDAP_PORT:-1389}" "${LDAP_LDAPS_PORT:-1636}"; do
+    if ! printf '%s\n' "${port_value}" | grep -E -q '^[0-9]+$' \
+      || [ "${port_value}" -lt 1024 ] || [ "${port_value}" -gt 65535 ]; then
+      log_error "LDAP listener port is not an unprivileged TCP port: ${port_value}"
+      validation_errors=$((validation_errors + 1))
+    fi
+  done
+
+  if ! printf '%s\n' "${LDAP_LOG_LEVEL:-256}" | grep -E -q '^-?[0-9]+$'; then
+    log_error 'LDAP_LOG_LEVEL must be an integer'
+    validation_errors=$((validation_errors + 1))
+  fi
+
+  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] && [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+    log_error 'LDAP_ADMIN_PASSWORD_FILE and LDAP_ADMIN_PASSWORD are mutually exclusive'
+    validation_errors=$((validation_errors + 1))
+  fi
+
+  if [ "${validation_errors}" -ne 0 ]; then
+    return "${EXIT_USAGE}"
+  fi
+
+  return 0
 }
 
-LDAP_BASE_DN=$(derive_base_dn "$LDAP_DOMAIN")
-LDAP_ADMIN_DN="cn=admin,${LDAP_BASE_DN}"
+validate_revision() {
+  snapshot_revision=$(jq -r '.revision' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
 
-# Build listen URLs
-LISTEN_URLS="ldap://0.0.0.0:${LDAP_PORT}/"
-if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
-    LISTEN_URLS="${LISTEN_URLS} ldaps://0.0.0.0:${LDAP_TLS_PORT}/"
-fi
-LISTEN_URLS="${LISTEN_URLS} ldapi:///"
-
-# Export some variables needed by other scripts
-export LDAP_BASE_DN \
-       LDAP_ADMIN_DN \
-       LDAP_ORGANISATION \
-       LDAP_CONFIG_DIR \
-       LDAP_DATA_DIR \
-       LDAP_TLS_DIR
-
-log_info "=========================================="
-log_info "OpenLDAP Container Starting"
-log_info "=========================================="
-log_info "Domain:    ${LDAP_DOMAIN}"
-log_info "Base DN:   ${LDAP_BASE_DN}"
-log_info "Admin DN:  ${LDAP_ADMIN_DN}"
-log_info "Port:      ${LDAP_PORT}"
-if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
-    log_info "TLS:       enabled (port ${LDAP_TLS_PORT})"
-else
-    log_info "TLS:       disabled"
-fi
-log_info "=========================================="
-
-# Step 1: Initialize slapd configuration
-log_info "Initializing slapd configuration..."
-/container-init/init-slapd.sh
-
-# Step 2: Start slapd in background for LDIF loading
-log_info "Starting slapd for initialization..."
-/usr/sbin/slapd \
-    -h "${LISTEN_URLS}" \
-    -u openldap \
-    -g openldap \
-    -d "${LDAP_DEBUG_LEVEL}" &
-
-SLAPD_PID=$!
-
-# Wait for slapd to be ready
-log_info "Waiting for slapd to be ready..."
-for i in {1..30}; do
-    if ldapsearch -x -H "ldap://127.0.0.1:${LDAP_PORT}" -b "" -s base "(objectClass=*)" namingContexts >/dev/null 2>&1; then
-        log_info "slapd is ready"
-        break
+  if [ -e "${revision_state_file}" ]; then
+    if [ ! -f "${revision_state_file}" ] || [ -L "${revision_state_file}" ] || [ ! -r "${revision_state_file}" ]; then
+      log_error "Revision state is not a readable regular file: ${revision_state_file}"
+      return "${EXIT_INPUT}"
     fi
-    if ! kill -0 "${SLAPD_PID}" 2>/dev/null; then
-        log_error "slapd process died during startup"
-        exit 1
+    highest_revision=$(cat "${revision_state_file}") || return "${EXIT_INTERNAL}"
+    if ! printf '%s\n' "${highest_revision}" | grep -E -q '^[0-9]+$'; then
+      log_error 'Revision state does not contain a non-negative integer'
+      return "${EXIT_INPUT}"
     fi
-    sleep 1
-done
+    if [ "${snapshot_revision}" -lt "${highest_revision}" ]; then
+      log_error "Snapshot revision ${snapshot_revision} is older than accepted revision ${highest_revision}"
+      return "${EXIT_SNAPSHOT}"
+    fi
+  fi
 
-# Verify slapd is running
-if ! kill -0 "${SLAPD_PID}" 2>/dev/null; then
-    log_error "slapd failed to start"
-    exit 1
-fi
+  return 0
+}
 
-# Step 3: Load LDIF files
-log_info "Loading LDIF files..."
-/container-init/load-ldif.sh
+record_revision() {
+  snapshot_revision=$(jq -r '.revision' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+  revision_directory=$(dirname "${revision_state_file}") || return "${EXIT_INTERNAL}"
+  mkdir -p "${revision_directory}" || return "${EXIT_INTERNAL}"
+  temporary_revision=$(mktemp "${revision_directory}/highest-revision.XXXXXX") || return "${EXIT_INTERNAL}"
 
-log_info "=========================================="
-log_info "Initialization complete!"
-log_info "LDAP listening on port ${LDAP_PORT}"
-if [ "${LDAP_TLS_ENABLED}" = "true" ]; then
-    log_info "LDAPS listening on port ${LDAP_TLS_PORT}"
-fi
-log_info "=========================================="
+  if ! printf '%s\n' "${snapshot_revision}" >"${temporary_revision}"; then
+    unlink "${temporary_revision}"
+    return "${EXIT_INTERNAL}"
+  fi
+  chmod 0600 "${temporary_revision}" || {
+    unlink "${temporary_revision}"
+    return "${EXIT_INTERNAL}"
+  }
+  mv "${temporary_revision}" "${revision_state_file}" || return "${EXIT_INTERNAL}"
 
-# Keep slapd running in foreground
-# Bring slapd to foreground by waiting for it
-wait "${SLAPD_PID}"
+  return 0
+}
+
+build_listener_urls() {
+  listen_host=${LDAP_LISTEN_HOST:-127.0.0.1}
+  listener_urls=${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}
+
+  case "${LDAP_TRANSPORT:-ldap}" in
+    ldap)
+      listener_urls="ldap://${listen_host}:${LDAP_PORT:-1389}/ ${listener_urls}"
+      ;;
+    ldaps)
+      listener_urls="ldaps://${listen_host}:${LDAP_LDAPS_PORT:-1636}/ ${listener_urls}"
+      ;;
+    both)
+      listener_urls="ldap://${listen_host}:${LDAP_PORT:-1389}/ ldaps://${listen_host}:${LDAP_LDAPS_PORT:-1636}/ ${listener_urls}"
+      ;;
+    *)
+      return "${EXIT_USAGE}"
+      ;;
+  esac
+
+  printf '%s\n' "${listener_urls}"
+}
+
+watch_snapshot_expiry() {
+  parent_pid="${1}"
+  expires_epoch=$(jq -r '.expires_at | fromdateiso8601' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+
+  while :; do
+    current_epoch=$(date -u +%s) || return "${EXIT_INTERNAL}"
+    remaining_seconds=$((expires_epoch - current_epoch))
+
+    if [ "${remaining_seconds}" -le 0 ]; then
+      kill -USR1 "${parent_pid}" 2>/dev/null || true
+      return 0
+    fi
+
+    sleep_seconds=${remaining_seconds}
+    if [ "${sleep_seconds}" -gt 60 ]; then
+      sleep_seconds=60
+    fi
+    sleep "${sleep_seconds}" || return 0
+  done
+}
+
+forward_shutdown() {
+  shutdown_requested=1
+  if [ -n "${slapd_pid}" ]; then
+    kill -TERM "${slapd_pid}" 2>/dev/null || true
+  fi
+}
+
+expire_snapshot() {
+  snapshot_expired=1
+  log_error 'The active directory snapshot has expired; stopping slapd'
+  if [ -n "${slapd_pid}" ]; then
+    kill -TERM "${slapd_pid}" 2>/dev/null || true
+  fi
+}
+
+stop_watchdog() {
+  if [ -n "${watchdog_pid}" ]; then
+    kill "${watchdog_pid}" 2>/dev/null || true
+    wait "${watchdog_pid}" 2>/dev/null || true
+  fi
+}
+
+supervise_slapd() {
+  listener_urls=$(build_listener_urls) || return "${EXIT_INTERNAL}"
+  trap forward_shutdown TERM INT HUP
+  trap expire_snapshot USR1
+
+  log_info "Starting slapd for service ${expected_service_id}"
+  /usr/sbin/slapd \
+    -F "${config_dir}" \
+    -h "${listener_urls}" \
+    -d "${LDAP_LOG_LEVEL:-256}" &
+  slapd_pid=$!
+
+  watch_snapshot_expiry "$$" &
+  watchdog_pid=$!
+
+  wait "${slapd_pid}"
+  slapd_status=$?
+  if kill -0 "${slapd_pid}" 2>/dev/null; then
+    wait "${slapd_pid}"
+    slapd_status=$?
+  fi
+  stop_watchdog
+
+  if [ "${snapshot_expired}" -eq 1 ]; then
+    return "${EXIT_EXPIRED}"
+  fi
+  if [ "${shutdown_requested}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${slapd_status}" -ne 0 ]; then
+    log_error "slapd exited unexpectedly with status ${slapd_status}"
+    return "${EXIT_RUNTIME}"
+  fi
+
+  return 0
+}
+
+main() {
+  umask 077
+  mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
+  validate_runtime_configuration || exit $?
+  "${script_dir}/verify-snapshot.sh" || exit $?
+  validate_revision || exit $?
+  "${script_dir}/init-slapd.sh" || exit $?
+  record_revision || die "${EXIT_INTERNAL}" 'Cannot record the accepted snapshot revision'
+  cp "${verified_manifest_file}" "${runtime_dir}/active-manifest.json" || die "${EXIT_INTERNAL}" 'Cannot record active snapshot metadata'
+  supervise_slapd || exit $?
+}
+
+main "$@"
