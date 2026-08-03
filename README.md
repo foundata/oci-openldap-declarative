@@ -53,6 +53,9 @@ Build both images with:
 sh hack/build.sh
 ```
 
+The build-context allowlist excludes local snapshots, credentials, release
+evidence, Git metadata, and untracked working files from both image builds.
+
 Override `RUNTIME_IMAGE` or `GENERATOR_IMAGE` to select different local tags.
 Set `IMAGE_VERSION` to the reviewed release version for a production build;
 `hack/build.sh` labels both images with that version, the current Git revision,

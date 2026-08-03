@@ -1,0 +1,9 @@
+*
+!Containerfile
+!Containerfile.generator
+!LICENSES
+!LICENSES/**
+!generator
+!generator/**
+!scripts
+!scripts/**
