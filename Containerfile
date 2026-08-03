@@ -53,6 +53,7 @@ COPY --chown=openldap:openldap --chmod=0555 scripts/common.sh /usr/local/lib/ope
 COPY --chown=openldap:openldap --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=openldap:openldap --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
 COPY --chown=openldap:openldap --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
+COPY --chown=openldap:openldap --chmod=0555 scripts/status.sh /usr/local/lib/openldap-declarative/status.sh
 COPY --chown=openldap:openldap --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
 COPY --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 

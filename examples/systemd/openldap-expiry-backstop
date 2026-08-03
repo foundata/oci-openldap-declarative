@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+
+# Stop a rootless Podman container when its configured health check fails.
+
+set -u
+
+readonly podman_binary="${PODMAN:-podman}"
+
+main() {
+  if [ "$#" -ne 1 ] || [ -z "${1}" ]; then
+    printf 'Usage: %s CONTAINER\n' "${0##*/}" >&2
+    return 64
+  fi
+  container_name=${1}
+
+  if ! "${podman_binary}" container exists "${container_name}"; then
+    printf 'Container does not exist: %s\n' "${container_name}" >&2
+    return 1
+  fi
+
+  container_running=$("${podman_binary}" container inspect \
+    --format '{{.State.Running}}' "${container_name}") || return 1
+  if [ "${container_running}" != true ]; then
+    printf 'Container is not running: %s\n' "${container_name}" >&2
+    return 1
+  fi
+
+  if "${podman_binary}" healthcheck run "${container_name}"; then
+    return 0
+  fi
+
+  printf 'Container health check failed; stopping %s\n' "${container_name}" >&2
+  "${podman_binary}" stop --time 10 "${container_name}" >/dev/null || return 1
+  return 1
+}
+
+main "$@"

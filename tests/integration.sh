@@ -291,6 +291,15 @@ expect_container_exit() {
 assert_valid_runtime() {
   container_name=${1}
 
+  status_output=$(podman exec "${container_name}" \
+    /usr/local/lib/openldap-declarative/status.sh) || return 1
+  printf '%s\n' "${status_output}" | jq -e \
+    '.state == "healthy"
+      and .ldap == "available"
+      and .service_id == "test-service"
+      and .revision == 1
+      and .seconds_until_hard_expiry > 0' >/dev/null || return 1
+
   podman exec "${container_name}" ldapwhoami \
     -x -H ldap://127.0.0.1:1389 \
     -D uid=test,ou=people,dc=example,dc=org \
@@ -463,6 +472,41 @@ test_runtime_expiry() {
   podman logs "${container_name}" 2>&1 | grep -F -q 'active directory snapshot has expired' || return 1
 }
 
+test_soft_deadline_status() {
+  create_snapshot soft-deadline 8 '+3 seconds' '+20 seconds' || return 1
+  create_container soft-deadline soft-deadline test-service \
+    "${resource_prefix}-soft-deadline-state" ldap || return 1
+  container_name=${created_container_name}
+  podman start "${container_name}" >/dev/null || return 1
+  wait_until_healthy "${container_name}" || return 1
+
+  wait_iteration=0
+  while [ "${wait_iteration}" -lt 40 ]; do
+    status_output=$(podman exec "${container_name}" \
+      /usr/local/lib/openldap-declarative/status.sh 2>/dev/null)
+    status_exit=$?
+    if [ "${status_exit}" -eq 1 ]; then
+      printf '%s\n' "${status_output}" | jq -e \
+        '.state == "soft-expired"
+          and .ldap == "available"
+          and .revision == 8
+          and .seconds_until_soft_expiry <= 0
+          and .seconds_until_hard_expiry > 0' >/dev/null || return 1
+      podman exec "${container_name}" \
+        /usr/local/lib/openldap-declarative/healthcheck.sh >/dev/null 2>&1 || return 1
+      podman stop --time 3 "${container_name}" >/dev/null || return 1
+      return 0
+    fi
+    if [ "${status_exit}" -eq 2 ]; then
+      return 1
+    fi
+    wait_iteration=$((wait_iteration + 1))
+    sleep 0.25
+  done
+
+  return 1
+}
+
 test_watchdog_failure() {
   create_container watchdog-failure valid test-service "${resource_prefix}-watchdog-state" ldap || return 1
   container_name=${created_container_name}
@@ -546,6 +590,8 @@ main() {
   test_rejected_snapshots || fail 'Rejected snapshot test failed'
   log 'Testing enforced runtime expiry'
   test_runtime_expiry || fail 'Runtime expiry test failed'
+  log 'Testing soft-deadline monitoring status'
+  test_soft_deadline_status || fail 'Soft-deadline status test failed'
   log 'Testing fail-closed watchdog supervision'
   test_watchdog_failure || fail 'Watchdog supervision test failed'
   log 'Testing certificate-validated LDAPS'

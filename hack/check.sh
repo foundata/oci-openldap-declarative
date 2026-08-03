@@ -24,11 +24,14 @@ main() {
 
   printf '%s\n' 'Checking POSIX shell sources'
   shfmt --language-dialect posix --indent 2 --case-indent \
-    --binary-next-line --simplify --diff scripts/*.sh tests/*.sh hack/*.sh || return 1
+    --binary-next-line --simplify --diff \
+    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
   shellcheck --shell=sh --severity=style \
     --exclude=SC2292 --exclude=SC3040 --exclude=SC3043 \
-    --enable=all scripts/*.sh tests/*.sh hack/*.sh || return 1
-  checkbashisms scripts/*.sh tests/*.sh hack/*.sh || return 1
+    --enable=all \
+    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+  checkbashisms \
+    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
 
   printf '%s\n' 'Checking Python and JSON syntax'
   python3 - <<'PY' || return 1
@@ -45,6 +48,7 @@ PY
   QUADLET_UNIT_DIRS="${project_dir}/examples/quadlet" \
     /usr/lib/systemd/user-generators/podman-user-generator -user -dryrun >/dev/null || return 1
 
+  sh tests/host-backstop.sh || return 1
   sh tests/integration.sh || return 1
   sh tests/generator-integration.sh || return 1
 }

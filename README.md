@@ -233,6 +233,30 @@ The health command reports the active revision. It warns after
 The Quadlet example prevents systemd restart loops for permanent configuration,
 snapshot, input, and expiry exit codes.
 
+The status command emits one JSON object for monitoring:
+
+```sh
+podman exec openldap-example \
+  /usr/local/lib/openldap-declarative/status.sh
+```
+
+It reports the service ID, revision, generation time, both deadlines, remaining
+seconds, and LDAP availability. Exit status `0` means healthy, `1` means the
+soft deadline has passed, and `2` means expired or unavailable. Do not treat
+status `1` as a reason to stop the service; it is the reaction window before the
+hard deadline.
+
+The Quadlet `HealthOnFailure=kill` action is the first host-managed backstop.
+For an independent systemd timer, install
+[`openldap-expiry-backstop`](examples/systemd/openldap-expiry-backstop) as
+`~/.local/libexec/openldap-expiry-backstop` and install the example
+[`service`](examples/systemd/openldap-example-backstop.service) and
+[`timer`](examples/systemd/openldap-example-backstop.timer) in
+`~/.config/systemd/user`. Adjust the container name, reload the user manager,
+and enable the timer through the deployment automation. The helper runs only as
+the rootless service account. It stops a running container after any health-check
+failure and returns non-zero so the event remains visible in the journal.
+
 Revision state must survive container replacement. Losing it weakens replay
 protection until a newer snapshot is accepted. Expiry remains the final bound.
 Never roll back the state volume merely to make an older authorization snapshot

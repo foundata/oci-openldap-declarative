@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the application-local OpenLDAP directory independently
+Documentation=https://github.com/foundata/oci-openldap-declarative
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+RandomizedDelaySec=15s
+AccuracySec=5s
+Unit=openldap-example-backstop.service
+
+[Install]
+WantedBy=timers.target
