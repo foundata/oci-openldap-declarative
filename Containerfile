@@ -35,7 +35,6 @@ RUN apt-get update \
 
 ENV LDAP_RUNTIME_DIR="/run/openldap" \
     LDAP_SNAPSHOT_DIR="/snapshot" \
-    LDAP_SNAPSHOT_PUBLIC_KEY_FILE="/run/credentials/snapshot-public-key" \
     LDAP_REVISION_STATE_FILE="/state/highest-revision" \
     LDAP_LDAPI_URI="ldapi://%2Frun%2Fopenldap%2Fldapi" \
     LDAP_LISTEN_HOST="127.0.0.1" \

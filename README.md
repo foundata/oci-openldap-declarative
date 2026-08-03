@@ -183,6 +183,8 @@ not silently redefine signed values.
 | `LDAP_TLS_CERT_FILE` | `/tls/cert.pem` | Required for `ldaps` or `both`. |
 | `LDAP_TLS_KEY_FILE` | `/tls/cert.key` | Required for `ldaps` or `both`. |
 | `LDAP_TLS_CA_FILE` | `/tls/ca.pem` | Optional server trust bundle. |
+| `LDAP_SNAPSHOT_PUBLIC_KEY_FILE` | `/run/credentials/snapshot-public-key` | One minisign verification key. |
+| `LDAP_SNAPSHOT_PUBLIC_KEY_DIR` | none | Directory of `*.pub` verification keys for rotation; mutually exclusive with the file input. |
 | `LDAP_ADMIN_PASSWORD_FILE` | none | Optional recovery root password file. Avoid in normal operation. |
 | `LDAP_ADMIN_PASSWORD` | none | Deprecated direct secret; rejected when the file form is also set. |
 | `LDAP_BASE_DN` | none | Compatibility input; if set, must equal the manifest. |
@@ -191,6 +193,11 @@ not silently redefine signed values.
 The public verification key defaults to
 `/run/credentials/snapshot-public-key`, the snapshot to `/snapshot`, runtime data
 to `/run/openldap`, and revision state to `/state/highest-revision`.
+
+For signing-key rotation, deploy a directory containing both old and new public
+keys, restart while the old snapshot is still valid, switch generation to the
+new signing key, and confirm the new revision everywhere before removing the old
+public key. Public-key symlinks and empty key directories are rejected.
 
 There is no unsigned mode, empty-password mode, ignored-expiry switch, or
 fail-open import path in the release image.

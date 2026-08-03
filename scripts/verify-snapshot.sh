@@ -12,10 +12,13 @@ readonly script_dir
 readonly SNAPSHOT_DIR="${LDAP_SNAPSHOT_DIR:-/snapshot}"
 readonly MANIFEST_FILE="${SNAPSHOT_DIR}/manifest.json"
 readonly SIGNATURE_FILE="${SNAPSHOT_DIR}/manifest.json.minisig"
-readonly PUBLIC_KEY_FILE="${LDAP_SNAPSHOT_PUBLIC_KEY_FILE:-/run/credentials/snapshot-public-key}"
+readonly PUBLIC_KEY_FILE="${LDAP_SNAPSHOT_PUBLIC_KEY_FILE:-}"
+readonly PUBLIC_KEY_DIR="${LDAP_SNAPSHOT_PUBLIC_KEY_DIR:-}"
+readonly DEFAULT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
 readonly VERIFIED_MANIFEST_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-manifest.json"
 readonly VERIFIED_FILES_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-files"
 readonly VERIFIED_SNAPSHOT_DIR="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-snapshot"
+readonly VERIFICATION_KEYS_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verification-keys"
 
 validate_input_files() {
   validation_errors=0
@@ -25,7 +28,7 @@ validate_input_files() {
     validation_errors=$((validation_errors + 1))
   fi
 
-  for required_file in "${MANIFEST_FILE}" "${SIGNATURE_FILE}" "${PUBLIC_KEY_FILE}"; do
+  for required_file in "${MANIFEST_FILE}" "${SIGNATURE_FILE}"; do
     if [ ! -f "${required_file}" ]; then
       log_error "Required input is not a regular file: ${required_file}"
       validation_errors=$((validation_errors + 1))
@@ -45,6 +48,48 @@ validate_input_files() {
   return 0
 }
 
+prepare_verification_keys() {
+  if [ -n "${PUBLIC_KEY_FILE}" ] && [ -n "${PUBLIC_KEY_DIR}" ]; then
+    log_error 'LDAP_SNAPSHOT_PUBLIC_KEY_FILE and LDAP_SNAPSHOT_PUBLIC_KEY_DIR are mutually exclusive'
+    return "${EXIT_USAGE}"
+  fi
+
+  : >"${VERIFICATION_KEYS_FILE}" || return "${EXIT_INTERNAL}"
+  if [ -n "${PUBLIC_KEY_DIR}" ]; then
+    if [ ! -d "${PUBLIC_KEY_DIR}" ] || [ -L "${PUBLIC_KEY_DIR}" ] \
+      || [ ! -r "${PUBLIC_KEY_DIR}" ] || [ ! -x "${PUBLIC_KEY_DIR}" ]; then
+      log_error 'LDAP_SNAPSHOT_PUBLIC_KEY_DIR must name a readable directory, not a symbolic link'
+      return "${EXIT_INPUT}"
+    fi
+    if find "${PUBLIC_KEY_DIR}" -maxdepth 1 -type l -name '*.pub' -print -quit | grep -q .; then
+      log_error 'Symbolic links are not accepted as snapshot public keys'
+      return "${EXIT_INPUT}"
+    fi
+    find "${PUBLIC_KEY_DIR}" -maxdepth 1 -type f -name '*.pub' -print \
+      | sort >"${VERIFICATION_KEYS_FILE}" || return "${EXIT_INTERNAL}"
+    while IFS= read -r verification_key; do
+      if [ ! -r "${verification_key}" ]; then
+        log_error "Snapshot public key is not readable: ${verification_key}"
+        return "${EXIT_INPUT}"
+      fi
+    done <"${VERIFICATION_KEYS_FILE}"
+  else
+    selected_public_key=${PUBLIC_KEY_FILE:-${DEFAULT_PUBLIC_KEY_FILE}}
+    if [ ! -f "${selected_public_key}" ] || [ -L "${selected_public_key}" ] || [ ! -r "${selected_public_key}" ]; then
+      log_error "Snapshot public key is not a readable regular file: ${selected_public_key}"
+      return "${EXIT_INPUT}"
+    fi
+    printf '%s\n' "${selected_public_key}" >"${VERIFICATION_KEYS_FILE}" || return "${EXIT_INTERNAL}"
+  fi
+
+  if [ ! -s "${VERIFICATION_KEYS_FILE}" ]; then
+    log_error 'No snapshot public keys were found'
+    return "${EXIT_INPUT}"
+  fi
+
+  return 0
+}
+
 verify_signature() {
   temporary_manifest=$(mktemp "${LDAP_RUNTIME_DIR:-/run/openldap}/verified-manifest.XXXXXX") || return "${EXIT_INTERNAL}"
   if ! cp "${MANIFEST_FILE}" "${temporary_manifest}"; then
@@ -52,10 +97,18 @@ verify_signature() {
     return "${EXIT_INTERNAL}"
   fi
 
-  if ! minisign -V -q \
-    -p "${PUBLIC_KEY_FILE}" \
-    -m "${temporary_manifest}" \
-    -x "${SIGNATURE_FILE}"; then
+  signature_verified=0
+  while IFS= read -r verification_key; do
+    if minisign -V -q \
+      -p "${verification_key}" \
+      -m "${temporary_manifest}" \
+      -x "${SIGNATURE_FILE}" >/dev/null 2>&1; then
+      signature_verified=1
+      break
+    fi
+  done <"${VERIFICATION_KEYS_FILE}"
+
+  if [ "${signature_verified}" -ne 1 ]; then
     unlink "${temporary_manifest}"
     log_error 'Snapshot manifest signature verification failed'
     return "${EXIT_SNAPSHOT}"
@@ -200,6 +253,7 @@ main() {
   umask 077
 
   validate_input_files || exit $?
+  prepare_verification_keys || exit $?
   verify_signature || exit $?
   validate_manifest_schema || exit $?
   validate_manifest_identity || exit $?

@@ -206,8 +206,21 @@ create_container() {
   expected_service_id=${3}
   state_volume=${4}
   transport=${5:-ldap}
+  key_mode=${6:-file}
   container_name=${resource_prefix}-${test_name}
   runtime_volume=${container_name}-runtime
+
+  case "${key_mode}" in
+    directory)
+      public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_DIR=/run/credentials/snapshot-public-keys
+      public_key_mount=${workspace}/public:/run/credentials/snapshot-public-keys:ro,Z
+      ;;
+    file)
+      public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
+      public_key_mount=${workspace}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z
+      ;;
+    *) return 1 ;;
+  esac
 
   create_volume "${runtime_volume}" || return 1
   if ! podman volume exists "${state_volume}"; then
@@ -226,10 +239,11 @@ create_container() {
     --security-opt=no-new-privileges \
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env "LDAP_TRANSPORT=${transport}" \
+    --env "${public_key_environment}" \
     --mount "type=volume,source=${runtime_volume},destination=/run/openldap" \
     --mount "type=volume,source=${state_volume},destination=/state" \
     --volume "${workspace}/${snapshot_name}:/snapshot:ro,Z" \
-    --volume "${workspace}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z" \
+    --volume "${public_key_mount}" \
     --volume "${workspace}/tls:/tls:ro,Z" \
     "${image_ref}" >/dev/null || return 1
   remember_container "${container_name}"
@@ -317,6 +331,10 @@ prepare_workspace() {
     -G -W \
     -p /work/public/snapshot.pub \
     -s /work/private/snapshot.key >/dev/null || return 1
+  run_image_tool minisign \
+    -G -W \
+    -p /work/public/rotated.pub \
+    -s /work/private/rotated.key >/dev/null || return 1
   write_directory_ldif "${workspace}/directory.ldif" || return 1
 
   openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 1 \
@@ -327,7 +345,7 @@ prepare_workspace() {
   cp "${workspace}/tls/cert.pem" "${workspace}/tls/ca.pem" || return 1
   chmod 0755 "${workspace}" "${workspace}/public" "${workspace}/tls"
   chmod 0644 "${workspace}/public/snapshot.pub" "${workspace}/tls/cert.pem" "${workspace}/tls/ca.pem"
-  chmod 0600 "${workspace}/private/snapshot.key"
+  chmod 0600 "${workspace}/private/snapshot.key" "${workspace}/private/rotated.key"
   # This test-only key is mounted read-only into a user-namespaced container.
   chmod 0644 "${workspace}/tls/cert.key"
 }
@@ -343,6 +361,12 @@ test_valid_snapshot() {
   podman stop --time 3 "${container_name}" >/dev/null || return 1
   exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
   [ "${exit_status}" -eq 0 ] || return 1
+
+  create_container key-directory valid test-service "${resource_prefix}-key-directory-state" ldap directory || return 1
+  key_directory_container=${created_container_name}
+  podman start "${key_directory_container}" >/dev/null || return 1
+  wait_until_healthy "${key_directory_container}" || return 1
+  podman stop --time 3 "${key_directory_container}" >/dev/null || return 1
 
   valid_state_volume=${state_volume}
 }
