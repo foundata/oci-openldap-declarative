@@ -1,11 +1,12 @@
 #!/usr/bin/env sh
 
-# Sign pushed image digests and attach their locally generated SPDX SBOMs.
+# Sign release digests and attach their SBOM and SLSA provenance attestations.
 
 set -u
 
 readonly cosign_binary="${COSIGN:-cosign}"
 readonly cosign_key="${COSIGN_KEY:-}"
+readonly cosign_verify_key="${COSIGN_VERIFY_KEY:-}"
 
 fail() {
   printf 'ERROR: %s\n' "$*" >&2
@@ -15,6 +16,7 @@ fail() {
 validate_input_pair() {
   image_reference=${1}
   metadata_file=${2}
+  provenance_file=${3}
 
   if ! printf '%s\n' "${image_reference}" \
     | grep -E -q '^[^[:space:]@]+/[^[:space:]@]+@sha256:[0-9a-f]{64}$'; then
@@ -23,6 +25,11 @@ validate_input_pair() {
   fi
   if [ ! -f "${metadata_file}" ] || [ -L "${metadata_file}" ] || [ ! -r "${metadata_file}" ]; then
     fail "Metadata is not a readable regular file: ${metadata_file}"
+    return 66
+  fi
+  if [ ! -f "${provenance_file}" ] || [ -L "${provenance_file}" ] \
+    || [ ! -r "${provenance_file}" ]; then
+    fail "SLSA provenance predicate is not a readable regular file: ${provenance_file}"
     return 66
   fi
 
@@ -63,16 +70,39 @@ validate_input_pair() {
     fail "SPDX SBOM digest does not match release metadata: ${sbom_file}"
     return 65
   fi
+
+  if ! jq -e '
+    type == "object" and
+    (.buildDefinition | type == "object") and
+    (.buildDefinition.buildType | type == "string" and length > 0) and
+    (.buildDefinition.externalParameters | type == "object") and
+    (.buildDefinition.internalParameters | type == "object") and
+    (.buildDefinition.resolvedDependencies | type == "array" and length > 0) and
+    (all(.buildDefinition.resolvedDependencies[];
+      (.uri | type == "string" and length > 0) and
+      (.digest | type == "object" and length > 0))) and
+    (.runDetails.builder.id | type == "string" and length > 0) and
+    (.runDetails.metadata.invocationId | type == "string" and length > 0) and
+    (.runDetails.metadata.startedOn | type == "string" and fromdateiso8601 >= 0) and
+    (.runDetails.metadata.finishedOn | type == "string" and fromdateiso8601 >= 0)
+  ' "${provenance_file}" >/dev/null; then
+    fail "Provenance is not a complete SLSA Provenance v1 predicate: ${provenance_file}"
+    return 66
+  fi
 }
 
 main() {
-  if [ "$#" -eq 0 ] || [ $(($# % 2)) -ne 0 ]; then
-    printf 'Usage: %s IMAGE_DIGEST METADATA_FILE [IMAGE_DIGEST METADATA_FILE ...]\n' \
+  if [ "$#" -eq 0 ] || [ $(($# % 3)) -ne 0 ]; then
+    printf 'Usage: %s IMAGE_DIGEST METADATA_FILE SLSA_PROVENANCE [triples ...]\n' \
       "${0##*/}" >&2
     return 64
   fi
   if [ -z "${cosign_key}" ]; then
     fail 'COSIGN_KEY must name a private key file or KMS URI'
+    return 64
+  fi
+  if [ -z "${cosign_verify_key}" ]; then
+    fail 'COSIGN_VERIFY_KEY must name the trusted public key or KMS URI'
     return 64
   fi
   for required_command in "${cosign_binary}" jq sha256sum; do
@@ -85,7 +115,9 @@ main() {
   while [ "$#" -gt 0 ]; do
     image_reference=${1}
     metadata_file=${2}
-    validate_input_pair "${image_reference}" "${metadata_file}" || return $?
+    provenance_file=${3}
+    validate_input_pair \
+      "${image_reference}" "${metadata_file}" "${provenance_file}" || return $?
     metadata_directory=$(CDPATH='' cd "$(dirname "${metadata_file}")" && pwd -P) || return 66
     sbom_name=$(jq -er '.spdx_sbom.path | strings' "${metadata_file}") || return 66
     sbom_file="${metadata_directory}/${sbom_name}"
@@ -98,8 +130,22 @@ main() {
       --type spdxjson \
       --predicate "${sbom_file}" \
       "${image_reference}" || return 1
+    printf 'Attesting SLSA provenance for %s\n' "${image_reference}"
+    "${cosign_binary}" attest --yes \
+      --key "${cosign_key}" \
+      --type slsaprovenance \
+      --predicate "${provenance_file}" \
+      "${image_reference}" || return 1
 
-    shift 2
+    printf 'Verifying signatures and attestations for %s\n' "${image_reference}"
+    "${cosign_binary}" verify --key "${cosign_verify_key}" \
+      "${image_reference}" >/dev/null || return 1
+    "${cosign_binary}" verify-attestation --key "${cosign_verify_key}" \
+      --type spdxjson "${image_reference}" >/dev/null || return 1
+    "${cosign_binary}" verify-attestation --key "${cosign_verify_key}" \
+      --type slsaprovenance "${image_reference}" >/dev/null || return 1
+
+    shift 3
   done
 }
 

@@ -7,7 +7,7 @@ set -u
 readonly expected_digest="sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
 readonly trivy_upstream_image="${TRIVY_UPSTREAM_IMAGE:-ghcr.io/aquasecurity/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f}"
 readonly cosign_binary="${COSIGN:-cosign}"
-readonly certificate_identity='https://github\.com/aquasecurity/trivy/\.github/workflows/.+'
+readonly certificate_identity='^https://github\.com/aquasecurity/trivy/\.github/workflows/reusable-release\.yaml@refs/tags/v0\.72\.0$'
 readonly certificate_issuer='https://token.actions.githubusercontent.com'
 
 fail() {

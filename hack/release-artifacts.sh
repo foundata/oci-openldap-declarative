@@ -1,13 +1,11 @@
 #!/usr/bin/env sh
 
-# Produce SBOM, security, package, and digest evidence for both local images.
+# Produce security evidence for two published registry digests.
 
 set -u
 
 project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
-readonly runtime_image="${RUNTIME_IMAGE:-localhost/openldap-declarative:latest}"
-readonly generator_image="${GENERATOR_IMAGE:-localhost/openldap-declarative-generator:latest}"
 readonly trivy_severities="${TRIVY_SEVERITIES:-HIGH,CRITICAL}"
 readonly trivy_vex_file="${TRIVY_VEX_FILE:-}"
 readonly trivy_expected_digest="sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
@@ -22,6 +20,9 @@ current_gid=''
 security_policy_failed=0
 source_revision=''
 source_policy_result='passed'
+runtime_image=''
+generator_image=''
+temporary_images=''
 
 log() {
   printf '==> %s\n' "$*"
@@ -40,9 +41,21 @@ require_command() {
 }
 
 cleanup() {
+  for temporary_image in ${temporary_images}; do
+    if "${podman_binary}" image exists "${temporary_image}"; then
+      "${podman_binary}" image rm "${temporary_image}" >/dev/null 2>&1 || true
+    fi
+  done
   if [ -n "${staging_directory}" ] && [ -d "${staging_directory}" ]; then
     rm -rf "${staging_directory}"
   fi
+}
+
+validate_registry_digest() {
+  image_reference=${1}
+
+  printf '%s\n' "${image_reference}" \
+    | grep -E -q '^[^[:space:]@]+/[^[:space:]@]+@sha256:[0-9a-f]{64}$'
 }
 
 validate_severities() {
@@ -93,11 +106,21 @@ copy_vex_input() {
 }
 
 validate_configuration() {
-  if [ "$#" -ne 1 ] || [ -z "${1}" ]; then
-    printf 'Usage: %s OUTPUT_DIRECTORY\n' "${0##*/}" >&2
+  if [ "$#" -ne 3 ] || [ -z "${1}" ] || [ -z "${2}" ] || [ -z "${3}" ]; then
+    printf 'Usage: %s OUTPUT_DIRECTORY RUNTIME_DIGEST GENERATOR_DIGEST\n' \
+      "${0##*/}" >&2
     return 64
   fi
   requested_output=${1}
+  runtime_image=${2}
+  generator_image=${3}
+
+  for registry_image in "${runtime_image}" "${generator_image}"; do
+    if ! validate_registry_digest "${registry_image}"; then
+      fail "Release evidence requires a registry digest, not a tag: ${registry_image}"
+      return 64
+    fi
+  done
 
   case "${trivy_image}" in
     *@"${trivy_expected_digest}") ;;
@@ -136,21 +159,29 @@ validate_configuration() {
   done
   copy_vex_input || return $?
 
-  for local_image in "${runtime_image}" "${generator_image}"; do
-    if ! "${podman_binary}" image exists "${local_image}"; then
-      fail "Local image does not exist: ${local_image}"
-      return 66
-    fi
-  done
+  inspect_registry_image runtime "${runtime_image}" || return $?
+  inspect_registry_image generator "${generator_image}" || return $?
+}
+
+inspect_registry_image() {
+  image_slug=${1}
+  image_reference=${2}
+  expected_digest=${image_reference##*@}
+  inspect_file="${staging_directory}/${image_slug}.registry.json"
+
+  "${skopeo_binary}" inspect "docker://${image_reference}" >"${inspect_file}" || return 1
+  actual_digest=$(jq -er '.Digest | strings' "${inspect_file}") || return 1
+  if [ "${actual_digest}" != "${expected_digest}" ]; then
+    fail "Registry returned an unexpected digest for ${image_reference}"
+    return 65
+  fi
 }
 
 prepare_source_tree() {
-  runtime_revision=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.revision"}}' \
-    "${runtime_image}") || return 1
-  generator_revision=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.revision"}}' \
-    "${generator_image}") || return 1
+  runtime_revision=$(jq -er '.Labels["org.opencontainers.image.revision"] | strings' \
+    "${staging_directory}/runtime.registry.json") || return 1
+  generator_revision=$(jq -er '.Labels["org.opencontainers.image.revision"] | strings' \
+    "${staging_directory}/generator.registry.json") || return 1
   if [ "${runtime_revision}" != "${generator_revision}" ]; then
     fail 'Runtime and generator images were built from different source revisions'
     return 65
@@ -253,29 +284,28 @@ generate_source_artifacts() {
 
 write_image_metadata() {
   image_slug=${1}
-  local_image=${2}
+  image_reference=${2}
   manifest_digest=${3}
   policy_result=${4}
+  inspect_file="${staging_directory}/${image_slug}.registry.json"
 
-  image_id=$("${podman_binary}" image inspect --format '{{.Id}}' "${local_image}") || return 1
-  image_created=$("${podman_binary}" image inspect --format '{{.Created}}' "${local_image}") || return 1
-  image_architecture=$("${podman_binary}" image inspect --format '{{.Architecture}}' "${local_image}") || return 1
-  image_os=$("${podman_binary}" image inspect --format '{{.Os}}' "${local_image}") || return 1
-  image_revision=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.revision"}}' "${local_image}") || return 1
-  image_version=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.version"}}' "${local_image}") || return 1
-  source_tree_state=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "com.foundata.openldap-declarative.source-tree-state"}}' \
-    "${local_image}") || return 1
+  image_created=$(jq -er '.Created | strings' "${inspect_file}") || return 1
+  image_architecture=$(jq -er '.Architecture | strings' "${inspect_file}") || return 1
+  image_os=$(jq -er '.Os | strings' "${inspect_file}") || return 1
+  image_revision=$(jq -er '.Labels["org.opencontainers.image.revision"] | strings' \
+    "${inspect_file}") || return 1
+  image_version=$(jq -er '.Labels["org.opencontainers.image.version"] | strings' \
+    "${inspect_file}") || return 1
+  source_tree_state=$(jq -er \
+    '.Labels["com.foundata.openldap-declarative.source-tree-state"] | strings' \
+    "${inspect_file}") || return 1
   package_sha256=$(sha256sum "${staging_directory}/${image_slug}.packages.txt" | cut -d ' ' -f 1) || return 1
   spdx_sha256=$(sha256sum "${staging_directory}/${image_slug}.spdx.json" | cut -d ' ' -f 1) || return 1
   trivy_sha256=$(sha256sum "${staging_directory}/${image_slug}.trivy.json" | cut -d ' ' -f 1) || return 1
   policy_sha256=$(sha256sum "${staging_directory}/${image_slug}.trivy-policy.json" | cut -d ' ' -f 1) || return 1
 
   jq -n \
-    --arg image "${local_image}" \
-    --arg image_id "${image_id}" \
+    --arg image "${image_reference}" \
     --arg created "${image_created}" \
     --arg revision "${image_revision}" \
     --arg version "${image_version}" \
@@ -293,8 +323,7 @@ write_image_metadata() {
     --arg policy_sha256 "${policy_sha256}" \
     --arg policy_result "${policy_result}" \
     '{
-      local_image: $image,
-      local_image_id: $image_id,
+      image: $image,
       created: $created,
       source: {revision: $revision, version: $version, tree_state: $source_tree_state},
       platform: {os: $os, architecture: $architecture},
@@ -312,25 +341,27 @@ write_image_metadata() {
 }
 
 validate_image_provenance() {
-  local_image=${1}
+  image_slug=${1}
+  image_reference=${2}
+  inspect_file="${staging_directory}/${image_slug}.registry.json"
 
-  image_revision=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.revision"}}' "${local_image}") || return 1
-  image_version=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "org.opencontainers.image.version"}}' "${local_image}") || return 1
-  source_tree_state=$("${podman_binary}" image inspect \
-    --format '{{index .Labels "com.foundata.openldap-declarative.source-tree-state"}}' \
-    "${local_image}") || return 1
+  image_revision=$(jq -er '.Labels["org.opencontainers.image.revision"] | strings' \
+    "${inspect_file}") || return 1
+  image_version=$(jq -er '.Labels["org.opencontainers.image.version"] | strings' \
+    "${inspect_file}") || return 1
+  source_tree_state=$(jq -er \
+    '.Labels["com.foundata.openldap-declarative.source-tree-state"] | strings' \
+    "${inspect_file}") || return 1
   if ! printf '%s\n' "${image_revision}" | grep -E -q '^[0-9a-f]{40}([0-9a-f]{24})?$'; then
-    fail "${local_image} has no valid source revision label"
+    fail "${image_reference} has no valid source revision label"
     return 65
   fi
   if [ -z "${image_version}" ] || [ "${image_version}" = development ]; then
-    fail "${local_image} has no production version label"
+    fail "${image_reference} has no production version label"
     return 65
   fi
   if [ "${source_tree_state}" != clean ]; then
-    fail "${local_image} was not built from a clean tracked source tree"
+    fail "${image_reference} was not built from a clean source tree"
     return 65
   fi
 }
@@ -350,21 +381,30 @@ report_policy_findings() {
 
 generate_image_artifacts() {
   image_slug=${1}
-  local_image=${2}
+  image_reference=${2}
   layout_path="${staging_directory}/${image_slug}.oci"
+  temporary_image="localhost/openldap-release-evidence-${image_slug}-$$"
 
-  log "Saving ${local_image} as an OCI image layout"
-  "${podman_binary}" save --format oci-dir \
-    --output "${layout_path}" "${local_image}" || return 1
+  log "Pulling immutable release image ${image_reference}"
+  "${skopeo_binary}" copy \
+    "docker://${image_reference}" "oci:${layout_path}" || return 1
   manifest_digest=$("${skopeo_binary}" inspect --format '{{.Digest}}' \
     "oci:${layout_path}") || return 1
+  if [ "${manifest_digest}" != "${image_reference##*@}" ]; then
+    fail "Pulled OCI manifest does not match registry digest: ${image_reference}"
+    return 65
+  fi
+
+  "${skopeo_binary}" copy \
+    "oci:${layout_path}" "containers-storage:${temporary_image}" || return 1
+  temporary_images="${temporary_images} ${temporary_image}"
 
   "${podman_binary}" run --rm \
     --network none \
     --cap-drop all \
     --security-opt no-new-privileges \
     --entrypoint cat \
-    "${local_image}" \
+    "${temporary_image}" \
     /usr/local/share/openldap-declarative/package-versions.txt \
     >"${staging_directory}/${image_slug}.packages.txt" || return 1
 
@@ -394,8 +434,11 @@ generate_image_artifacts() {
   esac
 
   write_image_metadata \
-    "${image_slug}" "${local_image}" "${manifest_digest}" \
+    "${image_slug}" "${image_reference}" "${manifest_digest}" \
     "${policy_result}" || return 1
+  "${podman_binary}" image rm "${temporary_image}" >/dev/null || return 1
+  temporary_images=$(printf '%s\n' "${temporary_images}" \
+    | sed "s# ${temporary_image}##") || return 1
   rm -rf "${layout_path}" || return 1
 }
 
@@ -531,8 +574,8 @@ main() {
   trap 'exit 130' HUP INT TERM
 
   validate_configuration "$@" || return $?
-  validate_image_provenance "${runtime_image}" || return $?
-  validate_image_provenance "${generator_image}" || return $?
+  validate_image_provenance runtime "${runtime_image}" || return $?
+  validate_image_provenance generator "${generator_image}" || return $?
   prepare_source_tree || return $?
   generate_source_artifacts || return 1
   generate_image_artifacts runtime "${runtime_image}" || return $?

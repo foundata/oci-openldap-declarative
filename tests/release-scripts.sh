@@ -7,6 +7,8 @@ set -u
 project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
 readonly release_script="${project_dir}/hack/release-artifacts.sh"
+readonly publish_script="${project_dir}/hack/publish-release.sh"
+readonly promote_script="${project_dir}/hack/promote-release.sh"
 readonly sign_script="${project_dir}/hack/sign-release.sh"
 readonly verify_trivy_script="${project_dir}/hack/verify-trivy.sh"
 
@@ -45,6 +47,25 @@ write_release_fixture() {
       security_report: {policy: "passed"},
       release_policy: "passed"
     }' >"${workspace}/runtime.metadata.json"
+  jq -n '{
+    buildDefinition: {
+      buildType: "https://example.org/buildtypes/oci/v1",
+      externalParameters: {},
+      internalParameters: {},
+      resolvedDependencies: [{
+        uri: "git+https://github.com/foundata/oci-openldap-declarative@0123456789abcdef",
+        digest: {sha1: "0123456789abcdef"}
+      }]
+    },
+    runDetails: {
+      builder: {id: "https://ci.example.org/builders/oci-release"},
+      metadata: {
+        invocationId: "test-invocation",
+        startedOn: "2026-08-04T00:00:00Z",
+        finishedOn: "2026-08-04T00:01:00Z"
+      }
+    }
+  }' >"${workspace}/runtime.slsa.json"
 }
 
 main() {
@@ -55,14 +76,18 @@ main() {
     || fail 'Cannot create test directory'
   write_cosign_stub || fail 'Cannot create Cosign test double'
   write_release_fixture || fail 'Cannot create release fixture'
+  runtime_reference='registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  generator_reference='registry.example.org/generator@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789'
 
   mkdir "${workspace}/existing-output" || fail 'Cannot create existing output fixture'
-  if "${release_script}" "${workspace}/existing-output" >/dev/null 2>&1; then
+  if "${release_script}" "${workspace}/existing-output" \
+    "${runtime_reference}" "${generator_reference}" >/dev/null 2>&1; then
     fail 'Release command accepted an existing output path'
   fi
 
   if TRIVY_SEVERITIES='high,critical' \
-    "${release_script}" "${workspace}/severity-output" >/dev/null 2>&1; then
+    "${release_script}" "${workspace}/severity-output" \
+    "${runtime_reference}" "${generator_reference}" >/dev/null 2>&1; then
     fail 'Release command accepted invalid Trivy severity names'
   fi
   if [ -e "${workspace}/severity-output" ]; then
@@ -70,7 +95,8 @@ main() {
   fi
 
   if TRIVY_IMAGE='registry.example.org/trivy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
-    "${release_script}" "${workspace}/scanner-output" >/dev/null 2>&1; then
+    "${release_script}" "${workspace}/scanner-output" \
+    "${runtime_reference}" "${generator_reference}" >/dev/null 2>&1; then
     fail 'Release command accepted an unreviewed Trivy digest'
   fi
   if [ -e "${workspace}/scanner-output" ]; then
@@ -80,7 +106,8 @@ main() {
   ln -s "${workspace}/missing-vex.json" "${workspace}/vex-link.json" \
     || fail 'Cannot create VEX symlink fixture'
   if TRIVY_VEX_FILE="${workspace}/vex-link.json" \
-    "${release_script}" "${workspace}/vex-output" >/dev/null 2>&1; then
+    "${release_script}" "${workspace}/vex-output" \
+    "${runtime_reference}" "${generator_reference}" >/dev/null 2>&1; then
     fail 'Release command accepted a symbolic-link VEX input'
   fi
   if [ -e "${workspace}/vex-output" ]; then
@@ -89,7 +116,8 @@ main() {
 
   printf '%s\n' 'not-json' >"${workspace}/invalid-vex.json"
   if TRIVY_VEX_FILE="${workspace}/invalid-vex.json" \
-    "${release_script}" "${workspace}/invalid-vex-output" >/dev/null 2>&1; then
+    "${release_script}" "${workspace}/invalid-vex-output" \
+    "${runtime_reference}" "${generator_reference}" >/dev/null 2>&1; then
     fail 'Release command accepted invalid VEX JSON'
   fi
   if [ -e "${workspace}/invalid-vex-output" ]; then
@@ -105,6 +133,9 @@ main() {
     "${workspace}/cosign-calls" || fail 'Trivy signature verification was not issued'
   grep -F -q -- '--certificate-oidc-issuer https://token.actions.githubusercontent.com' \
     "${workspace}/cosign-calls" || fail 'Trivy certificate issuer was not constrained'
+  grep -F -q -- \
+    '--certificate-identity-regexp ^https://github\.com/aquasecurity/trivy/\.github/workflows/reusable-release\.yaml@refs/tags/v0\.72\.0$' \
+    "${workspace}/cosign-calls" || fail 'Trivy workflow identity was not pinned'
   if TRIVY_UPSTREAM_IMAGE='ghcr.io/aquasecurity/trivy:0.72.0' \
     COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
@@ -116,21 +147,33 @@ main() {
   COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
     "${sign_script}" \
     'registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
-    "${workspace}/runtime.metadata.json" >/dev/null \
+    "${workspace}/runtime.metadata.json" \
+    "${workspace}/runtime.slsa.json" >/dev/null \
     || fail 'Valid release evidence was rejected'
   grep -F -q 'sign --yes --key test-kms://release-key registry.example.org/openldap@sha256:' \
     "${workspace}/cosign-calls" || fail 'Image signature command was not issued'
   grep -F -q 'attest --yes --key test-kms://release-key --type spdxjson' \
     "${workspace}/cosign-calls" || fail 'SBOM attestation command was not issued'
+  grep -F -q 'attest --yes --key test-kms://release-key --type slsaprovenance' \
+    "${workspace}/cosign-calls" || fail 'SLSA provenance attestation was not issued'
+  grep -F -q 'verify --key test-kms://verification-key registry.example.org/openldap@sha256:' \
+    "${workspace}/cosign-calls" || fail 'Post-signature verification was not issued'
+  grep -F -q 'verify-attestation --key test-kms://verification-key --type spdxjson' \
+    "${workspace}/cosign-calls" || fail 'SBOM attestation verification was not issued'
+  grep -F -q 'verify-attestation --key test-kms://verification-key --type slsaprovenance' \
+    "${workspace}/cosign-calls" || fail 'SLSA attestation verification was not issued'
 
   : >"${workspace}/cosign-calls"
   if COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
     "${sign_script}" registry.example.org/openldap:latest \
-    "${workspace}/runtime.metadata.json" >/dev/null 2>&1; then
+    "${workspace}/runtime.metadata.json" \
+    "${workspace}/runtime.slsa.json" >/dev/null 2>&1; then
     fail 'Mutable image tag was accepted for signing'
   fi
   if [ -s "${workspace}/cosign-calls" ]; then
@@ -141,9 +184,11 @@ main() {
   if COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
     "${sign_script}" \
     'registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
-    "${workspace}/runtime.metadata.json" >/dev/null 2>&1; then
+    "${workspace}/runtime.metadata.json" \
+    "${workspace}/runtime.slsa.json" >/dev/null 2>&1; then
     fail 'Changed SPDX SBOM was accepted for signing'
   fi
 
@@ -155,9 +200,11 @@ main() {
   if COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
     "${sign_script}" \
     'registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
-    "${workspace}/rejected.metadata.json" >/dev/null 2>&1; then
+    "${workspace}/rejected.metadata.json" \
+    "${workspace}/runtime.slsa.json" >/dev/null 2>&1; then
     fail 'Security-rejected metadata was accepted for signing'
   fi
 
@@ -167,10 +214,39 @@ main() {
   if COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
     "${sign_script}" \
     'registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
-    "${workspace}/release-rejected.metadata.json" >/dev/null 2>&1; then
+    "${workspace}/release-rejected.metadata.json" \
+    "${workspace}/runtime.slsa.json" >/dev/null 2>&1; then
     fail 'Release-rejected metadata was accepted for signing'
+  fi
+
+  printf '%s\n' '{}' >"${workspace}/invalid.slsa.json"
+  if COSIGN="${workspace}/cosign" \
+    COSIGN_CALLS="${workspace}/cosign-calls" \
+    COSIGN_KEY='test-kms://release-key' \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
+    "${sign_script}" \
+    'registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    "${workspace}/runtime.metadata.json" \
+    "${workspace}/invalid.slsa.json" >/dev/null 2>&1; then
+    fail 'Incomplete SLSA provenance was accepted'
+  fi
+
+  if "${publish_script}" \
+    quay.io/foundata/openldap-declarative:latest \
+    quay.io/foundata/openldap-declarative-generator:1.0.0 >/dev/null 2>&1; then
+    fail 'Moving release tag was accepted for initial publication'
+  fi
+  if COSIGN="${workspace}/cosign" \
+    COSIGN_CALLS="${workspace}/cosign-calls" \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
+    SKOPEO=false \
+    "${promote_script}" \
+    'quay.io/foundata/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    quay.io/another/openldap:latest >/dev/null 2>&1; then
+    fail 'Cross-repository convenience-tag promotion was accepted'
   fi
 
   printf '%s\n' 'Release script tests passed'
