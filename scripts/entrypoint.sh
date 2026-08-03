@@ -19,6 +19,7 @@ slapd_pid=''
 watchdog_pid=''
 snapshot_expired=0
 shutdown_requested=0
+watchdog_failed=0
 
 validate_runtime_configuration() {
   validation_errors=0
@@ -181,6 +182,14 @@ expire_snapshot() {
   fi
 }
 
+fail_watchdog() {
+  watchdog_failed=1
+  log_error 'The snapshot expiry watchdog failed; stopping slapd'
+  if [ -n "${slapd_pid}" ]; then
+    kill -TERM "${slapd_pid}" 2>/dev/null || true
+  fi
+}
+
 stop_watchdog() {
   if [ -n "${watchdog_pid}" ]; then
     kill "${watchdog_pid}" 2>/dev/null || true
@@ -188,10 +197,21 @@ stop_watchdog() {
   fi
 }
 
+process_is_running() {
+  process_pid=${1}
+
+  if ! kill -0 "${process_pid}" 2>/dev/null; then
+    return 1
+  fi
+  process_state=$(awk '/^State:/ { print $2 }' "/proc/${process_pid}/status" 2>/dev/null) || return 1
+  [ "${process_state}" != Z ] && [ "${process_state}" != X ]
+}
+
 supervise_slapd() {
   listener_urls=$(build_listener_urls) || return "${EXIT_INTERNAL}"
   trap forward_shutdown TERM INT HUP
   trap expire_snapshot USR1
+  trap fail_watchdog USR2
 
   log_info "Starting slapd for service ${expected_service_id}"
   /usr/sbin/slapd \
@@ -200,19 +220,38 @@ supervise_slapd() {
     -d "${LDAP_LOG_LEVEL:-256}" &
   slapd_pid=$!
 
-  watch_snapshot_expiry "$$" &
+  (
+    watch_snapshot_expiry "$$"
+    watchdog_status=$?
+    if [ "${watchdog_status}" -ne 0 ]; then
+      kill -USR2 "$$" 2>/dev/null || true
+    fi
+  ) &
   watchdog_pid=$!
+  if ! printf '%s\n' "${watchdog_pid}" >"${runtime_dir}/watchdog.pid"; then
+    kill "${watchdog_pid}" "${slapd_pid}" 2>/dev/null || true
+    wait "${slapd_pid}" 2>/dev/null || true
+    return "${EXIT_INTERNAL}"
+  fi
+
+  while process_is_running "${slapd_pid}"; do
+    if ! process_is_running "${watchdog_pid}" \
+      && [ "${snapshot_expired}" -eq 0 ] \
+      && [ "${shutdown_requested}" -eq 0 ]; then
+      fail_watchdog
+    fi
+    sleep 1 || true
+  done
 
   wait "${slapd_pid}"
   slapd_status=$?
-  if kill -0 "${slapd_pid}" 2>/dev/null; then
-    wait "${slapd_pid}"
-    slapd_status=$?
-  fi
   stop_watchdog
 
   if [ "${snapshot_expired}" -eq 1 ]; then
     return "${EXIT_EXPIRED}"
+  fi
+  if [ "${watchdog_failed}" -eq 1 ]; then
+    return "${EXIT_RUNTIME}"
   fi
   if [ "${shutdown_requested}" -eq 1 ]; then
     return 0

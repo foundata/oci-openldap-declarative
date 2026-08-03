@@ -449,6 +449,18 @@ test_runtime_expiry() {
   podman logs "${container_name}" 2>&1 | grep -F -q 'active directory snapshot has expired' || return 1
 }
 
+test_watchdog_failure() {
+  create_container watchdog-failure valid test-service "${resource_prefix}-watchdog-state" ldap || return 1
+  container_name=${created_container_name}
+  podman start "${container_name}" >/dev/null || return 1
+  wait_until_healthy "${container_name}" || return 1
+  podman exec "${container_name}" sh -c 'kill "$(cat /run/openldap/watchdog.pid)"' || return 1
+  actual_status=$(podman wait "${container_name}") || return 1
+  [ "${actual_status}" -eq 75 ] || return 1
+  podman logs "${container_name}" 2>&1 \
+    | grep -F -q 'snapshot expiry watchdog failed' || return 1
+}
+
 test_tls() {
   create_container tls valid test-service "${resource_prefix}-tls-state" ldaps || return 1
   container_name=${created_container_name}
@@ -501,6 +513,8 @@ main() {
   test_rejected_snapshots || fail 'Rejected snapshot test failed'
   log 'Testing enforced runtime expiry'
   test_runtime_expiry || fail 'Runtime expiry test failed'
+  log 'Testing fail-closed watchdog supervision'
+  test_watchdog_failure || fail 'Watchdog supervision test failed'
   log 'Testing certificate-validated LDAPS'
   test_tls || fail 'TLS test failed'
 
