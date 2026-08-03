@@ -1,0 +1,27 @@
+FROM docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f
+
+LABEL org.opencontainers.image.title="OpenLDAP Declarative Snapshot Generator"
+LABEL org.opencontainers.image.description="Build tool for signed, service-specific OpenLDAP snapshots"
+LABEL org.opencontainers.image.vendor="foundata GmbH"
+LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
+LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    minisign \
+    python3 \
+    python3-argon2 \
+    python3-ldap \
+    python3-yaml \
+  && rm -rf \
+    /usr/share/doc/* \
+    /usr/share/man/* \
+    /var/lib/apt/lists/*
+
+COPY --chmod=0555 generator/generate.py /usr/local/bin/openldap-snapshot-generator
+
+USER 1001:1001
+
+ENTRYPOINT ["/usr/local/bin/openldap-snapshot-generator"]

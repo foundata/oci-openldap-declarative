@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foundata.com/schemas/openldap-directory-v1.schema.json",
+  "title": "OpenLDAP declarative source directory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format_version",
+    "uuid_namespace",
+    "organization",
+    "users",
+    "groups",
+    "services"
+  ],
+  "properties": {
+    "format_version": {
+      "const": 1
+    },
+    "uuid_namespace": {
+      "$ref": "#/$defs/uuid"
+    },
+    "organization": {
+      "$ref": "#/$defs/nonemptyText"
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/user"
+      }
+    },
+    "groups": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/group"
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/service"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+    },
+    "serviceId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "uid": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    },
+    "nonemptyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "referenceList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/sourceId"
+      }
+    },
+    "user": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uid",
+        "common_name",
+        "surname",
+        "active"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sourceId"
+        },
+        "uid": {
+          "$ref": "#/$defs/uid"
+        },
+        "common_name": {
+          "$ref": "#/$defs/nonemptyText"
+        },
+        "surname": {
+          "$ref": "#/$defs/nonemptyText"
+        },
+        "mail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 320,
+          "pattern": "^[^\\u0000\\r\\n]+$"
+        },
+        "active": {
+          "type": "boolean"
+        }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "common_name",
+        "members"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sourceId"
+        },
+        "common_name": {
+          "$ref": "#/$defs/uid"
+        },
+        "members": {
+          "$ref": "#/$defs/referenceList"
+        }
+      }
+    },
+    "bindAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "common_name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sourceId"
+        },
+        "common_name": {
+          "$ref": "#/$defs/uid"
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "base_dn",
+        "revision",
+        "soft_ttl_seconds",
+        "hard_ttl_seconds",
+        "groups",
+        "users",
+        "bind_account"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/serviceId"
+        },
+        "base_dn": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "soft_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "hard_ttl_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "groups": {
+          "$ref": "#/$defs/referenceList"
+        },
+        "users": {
+          "$ref": "#/$defs/referenceList"
+        },
+        "bind_account": {
+          "$ref": "#/$defs/bindAccount"
+        }
+      }
+    }
+  }
+}
