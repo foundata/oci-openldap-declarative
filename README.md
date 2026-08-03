@@ -52,6 +52,11 @@ sh hack/build.sh
 ```
 
 Override `RUNTIME_IMAGE` or `GENERATOR_IMAGE` to select different local tags.
+Set `IMAGE_VERSION` to the reviewed release version for a production build;
+`hack/build.sh` labels both images with that version, the current Git revision,
+the build time, and whether tracked source files were clean. Direct Containerfile
+builds retain explicit development provenance. The release-evidence command
+rejects development versions, invalid revisions, and dirty tracked source trees.
 Production builds should record package inventories and SBOMs, scan and sign the
 result, mirror it to the company registry, and deploy only an immutable image
 digest. A pinned base digest does not freeze packages downloaded by `apt` during
@@ -61,6 +66,75 @@ Each image records its exact Debian package set at
 `/usr/local/share/openldap-declarative/package-versions.txt` and preserves package
 copyright notices plus the repository license. The package inventory supports an
 SBOM; it is not a substitute for one.
+
+### Release evidence
+
+After `hack/check.sh` passes, commit the reviewed source, and build both final
+image tags with a release version, create a private release-evidence directory:
+
+```sh
+IMAGE_VERSION=1.0.0 sh hack/build.sh
+sh hack/release-artifacts.sh ./release-evidence
+```
+
+The command saves each image temporarily as an OCI image layout, records its OCI
+manifest digest and external package inventory, and uses Trivy to generate an
+SPDX JSON SBOM. It scans that same layout for vulnerabilities, secrets, and
+misconfigurations. The command also exports the Git revision recorded in both
+images and scans that source tree for secrets and configuration mistakes. It
+rejects image pairs built from different revisions or a revision unavailable in
+the checkout. Each target gets a complete JSON report and a policy-filtered JSON
+report. Configuration, scanner, and filesystem errors fail atomically without
+publishing partial evidence. A finding at the default `HIGH,CRITICAL` threshold
+still scans both images, publishes complete evidence with
+`result: rejected`, and returns status `2`. The signing command rejects image
+metadata unless the source and both image scans passed. Set `TRIVY_SEVERITIES`
+differently only through an approved release policy.
+
+Trivy 0.72.0 runs as the current rootless UID in a capability-free container.
+Its upstream image is pinned by digest and may be replaced with a verified
+company mirror through `TRIVY_IMAGE`. Each invocation needs registry access to
+refresh the vulnerability database and misconfiguration checks; the first also
+needs access to the scanner image. The workflow does not require a Trivy server.
+Mirror those inputs for release automation that must not depend on public
+registries. `release.json` records the tool digest, vulnerability database hash
+and checks-bundle digest used for the verdict; scanner results can change when
+any of those inputs changes.
+
+Trivy severity and Debian's support decision are separate inputs. Do not hide
+unfixed or Debian no-DSA findings with a blanket ignore rule. When a review
+concludes that a reported vulnerability does not affect these images, record the
+product, vulnerability, status, justification, author, and timestamp in an
+OpenVEX document and pass it as `TRIVY_VEX_FILE`. The command copies that
+document into the evidence directory, applies it to both scans, and records its
+SHA-256 digest in `release.json`. Trivy marks VEX support experimental, so test
+VEX documents again whenever its pinned version changes. VEX is applicability
+evidence, not risk acceptance: an applicable vulnerability remains a finding
+even when Debian does not plan a security update. Track accepted risks, owners,
+and review expiries separately rather than marking them `not_affected`.
+
+Review the reports, push both application images to the controlled registry, and
+confirm that each pushed digest equals the corresponding
+`oci_manifest_digest` in `runtime.metadata.json` or `generator.metadata.json`.
+Then sign only those immutable digest references and attach the matching SPDX
+attestations:
+
+```sh
+COSIGN_KEY='kms-provider://production-image-signing-key' \
+  sh hack/sign-release.sh \
+  registry.example.org/openldap-declarative@sha256:... \
+  ./release-evidence/runtime.metadata.json \
+  registry.example.org/openldap-declarative-generator@sha256:... \
+  ./release-evidence/generator.metadata.json
+```
+
+`hack/sign-release.sh` requires Cosign in `PATH`, verifies the registry digest
+and SBOM hash against the release metadata, and rejects tags. CI must pin and
+verify the Cosign installation, authenticate to the registry, and provide a KMS
+or hardware-backed `COSIGN_KEY`; do not keep the image-signing key in the source
+checkout. Deployment policy must verify the image signature before mirroring or
+running the digest. Snapshot minisign keys and OCI release-signing keys are
+different trust domains and must not be reused.
 
 ## Generate snapshots
 

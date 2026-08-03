@@ -49,6 +49,7 @@ PY
     /usr/lib/systemd/user-generators/podman-user-generator -user -dryrun >/dev/null || return 1
 
   sh tests/host-backstop.sh || return 1
+  sh tests/release-scripts.sh || return 1
   sh tests/integration.sh || return 1
   sh tests/generator-integration.sh || return 1
 }
