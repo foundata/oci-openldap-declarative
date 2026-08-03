@@ -356,6 +356,20 @@ test_revision_replay() {
   wait_until_healthy "${revision_two_container}" || return 1
   podman stop --time 3 "${revision_two_container}" >/dev/null || return 1
 
+  create_container revision-2-repeat revision-2 test-service "${state_volume}" ldap || return 1
+  revision_two_repeat_container=${created_container_name}
+  podman start "${revision_two_repeat_container}" >/dev/null || return 1
+  wait_until_healthy "${revision_two_repeat_container}" || return 1
+  podman stop --time 3 "${revision_two_repeat_container}" >/dev/null || return 1
+
+  cp -R "${workspace}/revision-2" "${workspace}/revision-2-conflict" || return 1
+  sed -i '/^o: Example$/a description: conflicting content' \
+    "${workspace}/revision-2-conflict/directory.ldif" || return 1
+  refresh_snapshot_signature "${workspace}/revision-2-conflict" || return 1
+  create_container revision-2-conflict revision-2-conflict test-service "${state_volume}" ldap || return 1
+  revision_two_conflict_container=${created_container_name}
+  expect_container_exit "${revision_two_conflict_container}" 65 || return 1
+
   create_container replay valid test-service "${state_volume}" ldap || return 1
   replay_container=${created_container_name}
   expect_container_exit "${replay_container}" 65 || return 1
