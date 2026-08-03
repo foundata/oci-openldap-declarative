@@ -1,11 +1,20 @@
 FROM docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f
 
+ARG OCI_IMAGE_CREATED="1970-01-01T00:00:00Z"
+ARG OCI_IMAGE_REVISION="unknown"
+ARG OCI_IMAGE_VERSION="development"
+ARG SOURCE_TREE_STATE="unknown"
+
 LABEL org.opencontainers.image.title="OpenLDAP Declarative Snapshot Generator"
 LABEL org.opencontainers.image.description="Build tool for signed, service-specific OpenLDAP snapshots"
 LABEL org.opencontainers.image.vendor="foundata GmbH"
 LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
 LABEL org.opencontainers.image.base.name="docker.io/library/debian:13-slim"
+LABEL org.opencontainers.image.created="${OCI_IMAGE_CREATED}"
+LABEL org.opencontainers.image.revision="${OCI_IMAGE_REVISION}"
+LABEL org.opencontainers.image.version="${OCI_IMAGE_VERSION}"
+LABEL com.foundata.openldap-declarative.source-tree-state="${SOURCE_TREE_STATE}"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
