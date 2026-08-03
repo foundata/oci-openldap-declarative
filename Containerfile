@@ -38,7 +38,10 @@ RUN apt-get update \
     -delete \
   && install -d -m 0755 /usr/local/share/openldap-declarative \
   && dpkg-query -W -f='${Package}\t${Version}\n' \
-    | sort > /usr/local/share/openldap-declarative/package-versions.txt \
+    > /usr/local/share/openldap-declarative/package-versions.unsorted \
+  && sort /usr/local/share/openldap-declarative/package-versions.unsorted \
+    > /usr/local/share/openldap-declarative/package-versions.txt \
+  && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
     /etc/ldap/slapd.d/* \
     /usr/share/man/* \
@@ -63,18 +66,16 @@ ENV LDAP_RUNTIME_DIR="/run/openldap" \
     LDAP_TRANSPORT="ldap" \
     LDAP_LOG_LEVEL="256"
 
-COPY --chown=openldap:openldap --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
-COPY --chown=openldap:openldap --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
-COPY --chown=openldap:openldap --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
-COPY --chown=openldap:openldap --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
-COPY --chown=openldap:openldap --chmod=0555 scripts/status.sh /usr/local/lib/openldap-declarative/status.sh
-COPY --chown=openldap:openldap --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
+COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
+COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
+COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
+COPY --chown=0:0 --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
+COPY --chown=0:0 --chmod=0555 scripts/status.sh /usr/local/lib/openldap-declarative/status.sh
+COPY --chown=0:0 --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
 COPY --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 
-USER openldap:openldap
+USER 1001:1001
 
-EXPOSE 1389 1636
-
-STOPSIGNAL SIGTERM
+EXPOSE 1389/tcp 1636/tcp
 
 ENTRYPOINT ["/usr/local/lib/openldap-declarative/entrypoint.sh"]

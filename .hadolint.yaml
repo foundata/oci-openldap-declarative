@@ -1,0 +1,5 @@
+ignored:
+  # Debian package versions are selected by the pinned base image's configured
+  # repositories so rebuilds receive security updates. Release evidence records
+  # the exact installed versions.
+  - DL3008

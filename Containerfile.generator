@@ -30,7 +30,10 @@ RUN apt-get update \
   && find /usr/share/doc -depth -type d -empty -delete \
   && install -d -m 0755 /usr/local/share/openldap-declarative \
   && dpkg-query -W -f='${Package}\t${Version}\n' \
-    | sort > /usr/local/share/openldap-declarative/package-versions.txt \
+    > /usr/local/share/openldap-declarative/package-versions.unsorted \
+  && sort /usr/local/share/openldap-declarative/package-versions.unsorted \
+    > /usr/local/share/openldap-declarative/package-versions.txt \
+  && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
     /usr/share/man/* \
     /var/lib/apt/lists/*

@@ -16,7 +16,7 @@ require_command() {
 }
 
 main() {
-  for command_name in checkbashisms jq podman python3 shellcheck shfmt; do
+  for command_name in checkbashisms hadolint jq podman python3 shellcheck shfmt timeout; do
     require_command "${command_name}" || return 1
   done
 
@@ -32,6 +32,9 @@ main() {
     scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
   checkbashisms \
     scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+
+  printf '%s\n' 'Checking Containerfiles'
+  hadolint Containerfile Containerfile.generator || return 1
 
   printf '%s\n' 'Checking Python and JSON syntax'
   python3 - <<'PY' || return 1
