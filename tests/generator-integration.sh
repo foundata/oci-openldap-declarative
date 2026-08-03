@@ -152,6 +152,25 @@ generate_snapshots() {
   fi
 }
 
+generate_update_snapshot() {
+  directory_file=${1}
+  output_name=${2}
+
+  podman run --rm \
+    --userns=keep-id \
+    --user "${host_uid}:${host_gid}" \
+    --network none \
+    --volume "${project_dir}/tests/fixtures:/input:ro,Z" \
+    --volume "${workspace}/credentials:/run/credentials:ro,Z" \
+    --volume "${workspace}/output:/output:Z" \
+    "${generator_image}" \
+    --directory "/input/${directory_file}" \
+    --credentials /run/credentials/credentials.yaml \
+    --signing-key /run/credentials/snapshot.key \
+    --service example-app \
+    --output "/output/${output_name}" >/dev/null
+}
+
 test_generator_rejections() {
   if podman run --rm \
     --userns=keep-id \
@@ -205,13 +224,13 @@ wait_until_healthy() {
   return 1
 }
 
-consume_generated_snapshot() {
-  container_name=${resource_prefix}-runtime
-  runtime_volume=${container_name}-runtime
-  state_volume=${container_name}-state
-  podman volume create "${runtime_volume}" >/dev/null || return 1
-  podman volume create "${state_volume}" >/dev/null || return 1
+start_runtime_snapshot() {
+  snapshot_directory=${1}
 
+  if podman container exists "${container_name}"; then
+    podman stop --time 3 "${container_name}" >/dev/null || return 1
+    podman container rm "${container_name}" >/dev/null || return 1
+  fi
   podman create \
     --name "${container_name}" \
     --userns=keep-id:uid=1001,gid=1001 \
@@ -226,11 +245,31 @@ consume_generated_snapshot() {
     --env LDAP_EXPECTED_SERVICE_ID=example-app \
     --mount "type=volume,source=${runtime_volume},destination=/run/openldap" \
     --mount "type=volume,source=${state_volume},destination=/state" \
-    --volume "${workspace}/output/generated/example-app:/snapshot:ro,Z" \
+    --volume "${snapshot_directory}:/snapshot:ro,Z" \
     --volume "${workspace}/credentials/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z" \
     "${runtime_image}" >/dev/null || return 1
   podman start "${container_name}" >/dev/null || return 1
-  wait_until_healthy || return 1
+  wait_until_healthy
+}
+
+alice_bind_succeeds() {
+  password=${1}
+
+  podman exec "${container_name}" ldapwhoami \
+    -x -H ldap://127.0.0.1:1389 \
+    -D uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org \
+    -w "${password}" >/dev/null 2>&1
+}
+
+consume_generated_snapshot() {
+  container_name=${resource_prefix}-runtime
+  runtime_volume=${container_name}-runtime
+  state_volume=${container_name}-state
+  podman volume create "${runtime_volume}" >/dev/null || return 1
+  podman volume create "${state_volume}" >/dev/null || return 1
+
+  start_runtime_snapshot \
+    "${workspace}/output/generated/example-app" || return 1
 
   podman exec "${container_name}" ldapwhoami \
     -x -H ldap://127.0.0.1:1389 \
@@ -252,6 +291,53 @@ consume_generated_snapshot() {
     | grep -F -q 'memberOf: cn=staff,ou=groups,dc=example-app,dc=services,dc=example,dc=org' || return 1
 }
 
+test_password_rotation_and_offboarding() {
+  initial_uuid=$(podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
+    -w app-bind-password \
+    -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
+    entryUUID | awk '/^entryUUID: / { print $2 }') || return 1
+  [ -n "${initial_uuid}" ] || return 1
+
+  printf '%s\n' 'rotated-app-user-password' \
+    >"${workspace}/credentials/person-0001-example-app" || return 1
+  chmod 0600 "${workspace}/credentials/person-0001-example-app" || return 1
+  generate_update_snapshot directory-revision-2.yaml generated-2 || return 1
+  start_runtime_snapshot \
+    "${workspace}/output/generated-2/example-app" || return 1
+  if alice_bind_succeeds app-user-password; then
+    return 1
+  fi
+  alice_bind_succeeds rotated-app-user-password || return 1
+  rotated_uuid=$(podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
+    -w app-bind-password \
+    -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
+    entryUUID | awk '/^entryUUID: / { print $2 }') || return 1
+  [ "${rotated_uuid}" = "${initial_uuid}" ] || return 1
+
+  generate_update_snapshot directory-revision-3.yaml generated-3 || return 1
+  start_runtime_snapshot \
+    "${workspace}/output/generated-3/example-app" || return 1
+  if alice_bind_succeeds app-user-password \
+    || alice_bind_succeeds rotated-app-user-password; then
+    return 1
+  fi
+  if podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
+    -w app-bind-password \
+    -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
+    uid 2>/dev/null | grep -F -q 'uid: alice'; then
+    return 1
+  fi
+  accepted_revision=$(podman exec "${container_name}" \
+    awk '{ print $1 }' /state/highest-revision) || return 1
+  [ "${accepted_revision}" = 3 ]
+}
+
 main() {
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
@@ -264,6 +350,8 @@ main() {
   test_generator_rejections || fail 'Generator rejection test failed'
   log 'Importing and authenticating against generated output'
   consume_generated_snapshot || fail 'Generated snapshot runtime test failed'
+  log 'Testing password rotation and offboarding revisions'
+  test_password_rotation_and_offboarding || fail 'Lifecycle update test failed'
   log 'Generator integration tests passed'
 }
 
