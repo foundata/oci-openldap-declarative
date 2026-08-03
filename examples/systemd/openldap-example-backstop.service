@@ -1,7 +1,7 @@
 [Unit]
-Description=Stop an unhealthy application-local OpenLDAP directory
+Description=Verify and stop an unsafe application-local OpenLDAP directory
 Documentation=https://github.com/foundata/oci-openldap-declarative
 
 [Service]
 Type=oneshot
-ExecStart=%h/.local/libexec/openldap-expiry-backstop openldap-example
+ExecStart=%h/.local/libexec/openldap-expiry-backstop openldap-example %h/.local/share/openldap-declarative/example-app/snapshot %h/.local/share/openldap-declarative/snapshot.pub example-app

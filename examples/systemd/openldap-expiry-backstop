@@ -1,17 +1,33 @@
 #!/usr/bin/env sh
 
-# Stop a rootless Podman container when its configured health check fails.
+# Independently verify the host snapshot and stop an unsafe LDAP container.
 
 set -u
 
 readonly podman_binary="${PODMAN:-podman}"
 
 main() {
-  if [ "$#" -ne 1 ] || [ -z "${1}" ]; then
-    printf 'Usage: %s CONTAINER\n' "${0##*/}" >&2
+  if [ "$#" -ne 4 ] || [ -z "${1}" ] || [ -z "${2}" ] \
+    || [ -z "${3}" ] || [ -z "${4}" ]; then
+    printf 'Usage: %s CONTAINER SNAPSHOT_DIR PUBLIC_KEY_FILE SERVICE_ID\n' \
+      "${0##*/}" >&2
     return 64
   fi
   container_name=${1}
+  snapshot_directory=${2}
+  public_key_file=${3}
+  expected_service_id=${4}
+
+  if [ ! -d "${snapshot_directory}" ] || [ -L "${snapshot_directory}" ] \
+    || [ ! -r "${snapshot_directory}" ] || [ ! -x "${snapshot_directory}" ]; then
+    printf 'Snapshot path is not a readable directory: %s\n' "${snapshot_directory}" >&2
+    return 66
+  fi
+  if [ ! -f "${public_key_file}" ] || [ -L "${public_key_file}" ] \
+    || [ ! -r "${public_key_file}" ]; then
+    printf 'Public key is not a readable regular file: %s\n' "${public_key_file}" >&2
+    return 66
+  fi
 
   if ! "${podman_binary}" container exists "${container_name}"; then
     printf 'Container does not exist: %s\n' "${container_name}" >&2
@@ -22,6 +38,36 @@ main() {
     --format '{{.State.Running}}' "${container_name}") || return 1
   if [ "${container_running}" != true ]; then
     printf 'Container is not running: %s\n' "${container_name}" >&2
+    return 1
+  fi
+
+  image_id=$("${podman_binary}" container inspect \
+    --format '{{.Image}}' "${container_name}") || return 1
+  if ! printf '%s\n' "${image_id}" \
+    | grep -E -q '^(sha256:)?[0-9a-f]{64}$'; then
+    printf 'Container image ID is invalid: %s\n' "${image_id}" >&2
+    return 1
+  fi
+
+  if ! "${podman_binary}" run --rm \
+    --network none \
+    --read-only \
+    --read-only-tmpfs=false \
+    --userns keep-id:uid=1001,gid=1001 \
+    --user 1001:1001 \
+    --cap-drop all \
+    --security-opt no-new-privileges \
+    --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=2m,mode=1777 \
+    --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
+    --env LDAP_SNAPSHOT_DIR=/snapshot \
+    --env LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key \
+    --volume "${snapshot_directory}:/snapshot:ro" \
+    --volume "${public_key_file}:/run/credentials/snapshot-public-key:ro" \
+    --entrypoint /usr/local/lib/openldap-declarative/verify-snapshot.sh \
+    "${image_id}" >/dev/null; then
+    printf 'Host-side snapshot verification failed; stopping %s\n' \
+      "${container_name}" >&2
+    "${podman_binary}" stop --time 10 "${container_name}" >/dev/null || return 1
     return 1
   fi
 

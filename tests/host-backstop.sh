@@ -28,14 +28,20 @@ set -u
 
 printf '%s\n' "$*" >>"${PODMAN_CALLS}"
 
-case "$*" in
-  'container exists test-directory')
+case "${1:-} ${2:-} ${3:-} ${4:-}" in
+  'container exists test-directory ')
     [ "${CONTAINER_EXISTS}" = true ]
     ;;
-  'container inspect --format {{.State.Running}} test-directory')
+  'container inspect --format {{.State.Running}}')
     printf '%s\n' "${CONTAINER_RUNNING}"
     ;;
-  'healthcheck run test-directory')
+  'container inspect --format {{.Image}}')
+    printf '%s\n' 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    ;;
+  'run --rm --network none')
+    [ "${SNAPSHOT_VALID}" = true ]
+    ;;
+  'healthcheck run test-directory ')
     [ "${CONTAINER_HEALTHY}" = true ]
     ;;
   'stop --time 10 test-directory')
@@ -52,10 +58,17 @@ EOF
 run_backstop() {
   CONTAINER_EXISTS=${1} \
     CONTAINER_RUNNING=${2} \
-    CONTAINER_HEALTHY=${3} \
+    SNAPSHOT_VALID=${3} \
+    CONTAINER_HEALTHY=${4} \
     PODMAN_CALLS="${workspace}/calls" \
     PODMAN="${workspace}/podman" \
-    "${backstop_script}" test-directory
+    "${backstop_script}" test-directory \
+    "${workspace}/snapshot" "${workspace}/snapshot.pub" test-service
+}
+
+assert_stopped() {
+  grep -F -q 'stop --time 10 test-directory' "${workspace}/calls" \
+    || fail "${1} container was not stopped"
 }
 
 main() {
@@ -63,23 +76,36 @@ main() {
   trap 'exit 130' HUP INT TERM
 
   workspace=$(mktemp -d /tmp/openldap-backstop-test.XXXXXX) || fail 'Cannot create test directory'
+  mkdir "${workspace}/snapshot" || fail 'Cannot create snapshot fixture'
+  printf '%s\n' 'test public key' >"${workspace}/snapshot.pub" \
+    || fail 'Cannot create public-key fixture'
   write_podman_stub || fail 'Cannot create Podman test double'
 
   : >"${workspace}/calls"
-  run_backstop true true true || fail 'Healthy container was rejected'
+  run_backstop true true true true || fail 'Healthy signed snapshot was rejected'
+  grep -F -q 'run --rm --network none --read-only' "${workspace}/calls" \
+    || fail 'Host snapshot verifier was not isolated from the network'
   if grep -F -q 'stop --time' "${workspace}/calls"; then
     fail 'Healthy container was stopped'
   fi
 
   : >"${workspace}/calls"
-  if run_backstop true true false >/dev/null 2>&1; then
-    fail 'Unhealthy container was accepted'
+  if run_backstop true true false true >/dev/null 2>&1; then
+    fail 'Invalid host snapshot was accepted'
   fi
-  grep -F -q 'stop --time 10 test-directory' "${workspace}/calls" \
-    || fail 'Unhealthy container was not stopped'
+  assert_stopped 'Invalid-snapshot'
+  if grep -F -q 'healthcheck run' "${workspace}/calls"; then
+    fail 'Container health was trusted after host snapshot verification failed'
+  fi
 
   : >"${workspace}/calls"
-  if run_backstop true false false >/dev/null 2>&1; then
+  if run_backstop true true true false >/dev/null 2>&1; then
+    fail 'Unhealthy container was accepted'
+  fi
+  assert_stopped 'Unhealthy'
+
+  : >"${workspace}/calls"
+  if run_backstop true false false false >/dev/null 2>&1; then
     fail 'Stopped container was accepted'
   fi
   if grep -F -q 'stop --time' "${workspace}/calls"; then
@@ -87,7 +113,7 @@ main() {
   fi
 
   : >"${workspace}/calls"
-  if run_backstop false false false >/dev/null 2>&1; then
+  if run_backstop false false false false >/dev/null 2>&1; then
     fail 'Missing container was accepted'
   fi
 
