@@ -207,6 +207,7 @@ create_container() {
   state_volume=${4}
   transport=${5:-ldap}
   key_mode=${6:-file}
+  extra_environment=${7:-LDAP_TLS_CA_FILE=/tls/ca.pem}
   container_name=${resource_prefix}-${test_name}
   runtime_volume=${container_name}-runtime
 
@@ -240,6 +241,7 @@ create_container() {
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env "LDAP_TRANSPORT=${transport}" \
     --env "${public_key_environment}" \
+    --env "${extra_environment}" \
     --mount "type=volume,source=${runtime_volume},destination=/run/openldap" \
     --mount "type=volume,source=${state_volume},destination=/state" \
     --volume "${workspace}/${snapshot_name}:/snapshot:ro,Z" \
@@ -484,10 +486,26 @@ test_tls() {
       -servername localhost \
       -CAfile /tls/ca.pem \
       -verify_return_error \
+      -verify_hostname localhost \
       -tls1_2 </dev/null 2>&1 |
       grep -F -q "Verify return code: 0 (ok)"
   ' || return 1
+  if podman exec "${container_name}" sh -c '
+    openssl s_client \
+      -connect 127.0.0.1:1636 \
+      -servername localhost \
+      -CAfile /tls/ca.pem \
+      -verify_return_error \
+      -tls1_1 </dev/null >/dev/null 2>&1
+  '; then
+    return 1
+  fi
   podman stop --time 3 "${container_name}" >/dev/null || return 1
+
+  create_container tls-missing-ca valid test-service "${resource_prefix}-tls-missing-ca-state" \
+    ldaps file LDAP_TLS_CA_FILE=/tls/missing.pem || return 1
+  tls_missing_ca_container=${created_container_name}
+  expect_container_exit "${tls_missing_ca_container}" 66 || return 1
 }
 
 test_image_contents() {

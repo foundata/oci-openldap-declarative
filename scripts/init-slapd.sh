@@ -112,20 +112,39 @@ append_tls_configuration() {
     return 0
   fi
 
-  for certificate_file in "${LDAP_TLS_CERT_FILE:-/tls/cert.pem}" "${LDAP_TLS_KEY_FILE:-/tls/cert.key}"; do
+  if { [ "${LDAP_TLS_CERT_FILE+x}" = x ] && [ -z "${LDAP_TLS_CERT_FILE}" ]; } \
+    || { [ "${LDAP_TLS_KEY_FILE+x}" = x ] && [ -z "${LDAP_TLS_KEY_FILE}" ]; } \
+    || { [ "${LDAP_TLS_CA_FILE+x}" = x ] && [ -z "${LDAP_TLS_CA_FILE}" ]; }; then
+    log_error 'Explicit TLS file paths must not be empty'
+    return "${EXIT_USAGE}"
+  fi
+
+  tls_certificate_file=${LDAP_TLS_CERT_FILE:-/tls/cert.pem}
+  tls_key_file=${LDAP_TLS_KEY_FILE:-/tls/cert.key}
+  tls_ca_file=${LDAP_TLS_CA_FILE:-/tls/ca.pem}
+  include_tls_ca=0
+
+  for certificate_file in "${tls_certificate_file}" "${tls_key_file}"; do
     if [ ! -f "${certificate_file}" ] || [ -L "${certificate_file}" ] || [ ! -r "${certificate_file}" ]; then
       log_error "TLS input must be a readable regular file, not a symbolic link: ${certificate_file}"
       return "${EXIT_INPUT}"
     fi
   done
+  if [ "${LDAP_TLS_CA_FILE+x}" = x ] || [ -e "${tls_ca_file}" ] || [ -L "${tls_ca_file}" ]; then
+    if [ ! -f "${tls_ca_file}" ] || [ -L "${tls_ca_file}" ] || [ ! -r "${tls_ca_file}" ]; then
+      log_error "TLS CA input must be a readable regular file, not a symbolic link: ${tls_ca_file}"
+      return "${EXIT_INPUT}"
+    fi
+    include_tls_ca=1
+  fi
 
   {
-    printf 'olcTLSCertificateFile: %s\n' "${LDAP_TLS_CERT_FILE:-/tls/cert.pem}"
-    printf 'olcTLSCertificateKeyFile: %s\n' "${LDAP_TLS_KEY_FILE:-/tls/cert.key}"
+    printf 'olcTLSCertificateFile: %s\n' "${tls_certificate_file}"
+    printf 'olcTLSCertificateKeyFile: %s\n' "${tls_key_file}"
     printf '%s\n' 'olcTLSProtocolMin: 3.3'
     printf '%s\n' 'olcTLSCipherSuite: TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305'
-    if [ -f "${LDAP_TLS_CA_FILE:-/tls/ca.pem}" ]; then
-      printf 'olcTLSCACertificateFile: %s\n' "${LDAP_TLS_CA_FILE:-/tls/ca.pem}"
+    if [ "${include_tls_ca}" -eq 1 ]; then
+      printf 'olcTLSCACertificateFile: %s\n' "${tls_ca_file}"
     fi
   } >>"${config_file}" || return "${EXIT_INTERNAL}"
 
