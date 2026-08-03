@@ -34,6 +34,40 @@ EOF
   chmod 0755 "${workspace}/cosign"
 }
 
+write_publish_stubs() {
+  cat >"${workspace}/podman" <<'EOF'
+#!/usr/bin/env sh
+set -u
+printf '%s\n' "$*" >>"${PUBLISH_CALLS}"
+case "${1:-} ${2:-}" in
+  'image exists' | 'save --format') exit 0 ;;
+  *) exit 2 ;;
+esac
+EOF
+  cat >"${workspace}/skopeo" <<'EOF'
+#!/usr/bin/env sh
+set -u
+printf '%s\n' "$*" >>"${PUBLISH_CALLS}"
+case "${1:-}" in
+  copy) exit 0 ;;
+  inspect)
+    case "$*" in
+      *docker://*)
+        if [ "${PUBLISH_MISMATCH:-false}" = true ]; then
+          printf '%s\n' 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+        else
+          printf '%s\n' "${PUBLISH_DIGEST}"
+        fi
+        ;;
+      *) printf '%s\n' "${PUBLISH_DIGEST}" ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 0755 "${workspace}/podman" "${workspace}/skopeo"
+}
+
 write_release_fixture() {
   fixture_digest='sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
   printf '%s\n' '{"spdxVersion":"SPDX-2.3"}' >"${workspace}/runtime.spdx.json" || return 1
@@ -75,6 +109,7 @@ main() {
   workspace=$(mktemp -d /tmp/openldap-release-test.XXXXXX) \
     || fail 'Cannot create test directory'
   write_cosign_stub || fail 'Cannot create Cosign test double'
+  write_publish_stubs || fail 'Cannot create publication test doubles'
   write_release_fixture || fail 'Cannot create release fixture'
   runtime_reference='registry.example.org/openldap@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
   generator_reference='registry.example.org/generator@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789'
@@ -239,6 +274,49 @@ main() {
     quay.io/foundata/openldap-declarative-generator:1.0.0 >/dev/null 2>&1; then
     fail 'Moving release tag was accepted for initial publication'
   fi
+
+  : >"${workspace}/publish-calls"
+  publish_digest='sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  publication_output=$(PODMAN="${workspace}/podman" \
+    SKOPEO="${workspace}/skopeo" \
+    PUBLISH_CALLS="${workspace}/publish-calls" \
+    PUBLISH_DIGEST="${publish_digest}" \
+    "${publish_script}" \
+    quay.io/foundata/openldap-declarative:1.0.0 \
+    quay.io/foundata/openldap-declarative-generator:1.0.0) \
+    || fail 'Immutable version publication was rejected'
+  printf '%s\n' "${publication_output}" \
+    | grep -F -q "quay.io/foundata/openldap-declarative@${publish_digest}" \
+    || fail 'Publisher did not return the runtime registry digest'
+  grep -F -q 'copy --preserve-digests oci:' "${workspace}/publish-calls" \
+    || fail 'Publisher did not preserve the reviewed manifest digest'
+
+  if PODMAN="${workspace}/podman" \
+    SKOPEO="${workspace}/skopeo" \
+    PUBLISH_CALLS="${workspace}/publish-calls" \
+    PUBLISH_DIGEST="${publish_digest}" \
+    PUBLISH_MISMATCH=true \
+    "${publish_script}" \
+    quay.io/foundata/openldap-declarative:1.0.1 \
+    quay.io/foundata/openldap-declarative-generator:1.0.1 >/dev/null 2>&1; then
+    fail 'Publisher accepted a changed registry digest'
+  fi
+
+  : >"${workspace}/cosign-calls"
+  : >"${workspace}/publish-calls"
+  COSIGN="${workspace}/cosign" \
+    COSIGN_CALLS="${workspace}/cosign-calls" \
+    COSIGN_VERIFY_KEY='test-kms://verification-key' \
+    SKOPEO="${workspace}/skopeo" \
+    PUBLISH_CALLS="${workspace}/publish-calls" \
+    PUBLISH_DIGEST="${publish_digest}" \
+    "${promote_script}" \
+    "quay.io/foundata/openldap@${publish_digest}" \
+    quay.io/foundata/openldap:stable \
+    || fail 'Verified convenience-tag promotion was rejected'
+  grep -F -q "copy --preserve-digests docker://quay.io/foundata/openldap@${publish_digest}" \
+    "${workspace}/publish-calls" || fail 'Convenience tag was not copied from the digest'
+
   if COSIGN="${workspace}/cosign" \
     COSIGN_CALLS="${workspace}/cosign-calls" \
     COSIGN_VERIFY_KEY='test-kms://verification-key' \
