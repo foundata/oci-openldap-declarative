@@ -8,6 +8,7 @@ project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
 readonly image_ref="${IMAGE_REF:-localhost/oci-openldap-declarative:integration-test}"
 readonly resource_prefix=ldap-declarative-test-$$
+readonly backstop_script="${project_dir}/examples/systemd/openldap-expiry-backstop"
 
 workspace=''
 container_names=''
@@ -111,6 +112,7 @@ write_directory_ldif() {
       'uid: test' \
       'cn: Test User' \
       'sn: User' \
+      'description: internal snapshot metadata' \
       'entryUUID: a4bcb5de-4982-51e9-b7e8-7e8d6b6f4c22' \
       'memberOf: cn=users,ou=groups,dc=example,dc=org' \
       "userPassword: ${user_hash}" \
@@ -220,6 +222,10 @@ create_container() {
       public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
       public_key_mount=${workspace}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z
       ;;
+    rotated)
+      public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
+      public_key_mount=${workspace}/public/rotated.pub:/run/credentials/snapshot-public-key:ro,Z
+      ;;
     *) return 1 ;;
   esac
 
@@ -238,6 +244,8 @@ create_container() {
     --pids-limit=128 \
     --cap-drop=all \
     --security-opt=no-new-privileges \
+    --health-cmd /usr/local/lib/openldap-declarative/healthcheck.sh \
+    --health-timeout 3s \
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env "LDAP_TRANSPORT=${transport}" \
     --env "${public_key_environment}" \
@@ -246,6 +254,7 @@ create_container() {
     --mount "type=volume,source=${state_volume},destination=/state" \
     --volume "${workspace}/${snapshot_name}:/snapshot:ro,Z" \
     --volume "${public_key_mount}" \
+    --volume "${workspace}/admin:/run/credentials/admin:ro,Z" \
     --volume "${workspace}/tls:/tls:ro,Z" \
     "${image_ref}" >/dev/null || return 1
   remember_container "${container_name}"
@@ -276,12 +285,22 @@ wait_until_healthy() {
 expect_container_exit() {
   container_name=${1}
   expected_status=${2}
+  expected_message=${3:-}
 
   podman start "${container_name}" >/dev/null || return 1
-  actual_status=$(podman wait "${container_name}") || return 1
+  actual_status=$(timeout 180 podman wait "${container_name}") || {
+    podman logs "${container_name}" >&2 || true
+    return 1
+  }
   if [ "${actual_status}" -ne "${expected_status}" ]; then
     podman logs "${container_name}" >&2 || true
     printf 'Expected %s to exit %s, got %s\n' "${container_name}" "${expected_status}" "${actual_status}" >&2
+    return 1
+  fi
+  if [ -n "${expected_message}" ] \
+    && ! podman logs "${container_name}" 2>&1 | grep -F -q "${expected_message}"; then
+    podman logs "${container_name}" >&2 || true
+    printf 'Expected %s to log: %s\n' "${container_name}" "${expected_message}" >&2
     return 1
   fi
 
@@ -311,10 +330,23 @@ assert_valid_runtime() {
     -D cn=app,ou=services,dc=example,dc=org \
     -w test-bind-password \
     -b uid=test,ou=people,dc=example,dc=org -s base \
-    uid entryUUID memberOf userPassword) || return 1
+    uid entryUUID memberOf description userPassword) || return 1
   printf '%s\n' "${search_output}" | grep -F -q 'entryUUID: a4bcb5de-4982-51e9-b7e8-7e8d6b6f4c22' || return 1
   printf '%s\n' "${search_output}" | grep -F -q 'memberOf: cn=users,ou=groups,dc=example,dc=org' || return 1
   if printf '%s\n' "${search_output}" | grep -F -q 'userPassword'; then
+    return 1
+  fi
+  if printf '%s\n' "${search_output}" | grep -F -q 'description:'; then
+    return 1
+  fi
+
+  if printf '%s\n' \
+    'dn: dc=example,dc=org' \
+    'changetype: modify' \
+    'replace: description' \
+    'description: changed at runtime' \
+    | podman exec -i "${container_name}" ldapmodify \
+      -Q -Y EXTERNAL -H ldapi://%2Frun%2Fopenldap%2Fldapi >/dev/null 2>&1; then
     return 1
   fi
 
@@ -336,7 +368,7 @@ assert_valid_runtime() {
 
 prepare_workspace() {
   workspace=$(mktemp -d /tmp/openldap-declarative-integration.XXXXXX) || return 1
-  mkdir -p "${workspace}/private" "${workspace}/public" "${workspace}/tls" || return 1
+  mkdir -p "${workspace}/admin" "${workspace}/private" "${workspace}/public" "${workspace}/tls" || return 1
 
   run_image_tool minisign \
     -G -W \
@@ -354,7 +386,10 @@ prepare_workspace() {
     -keyout "${workspace}/tls/cert.key" \
     -out "${workspace}/tls/cert.pem" >/dev/null 2>&1 || return 1
   cp "${workspace}/tls/cert.pem" "${workspace}/tls/ca.pem" || return 1
-  chmod 0755 "${workspace}" "${workspace}/public" "${workspace}/tls"
+  printf '%s\n' 'recovery-root-password' >"${workspace}/admin/lf-password"
+  printf '%s\r\n' 'recovery-root-password' >"${workspace}/admin/crlf-password"
+  chmod 0755 "${workspace}" "${workspace}/admin" "${workspace}/public" "${workspace}/tls"
+  chmod 0644 "${workspace}/admin/lf-password" "${workspace}/admin/crlf-password"
   chmod 0644 "${workspace}/public/snapshot.pub" "${workspace}/tls/cert.pem" "${workspace}/tls/ca.pem"
   chmod 0600 "${workspace}/private/snapshot.key" "${workspace}/private/rotated.key"
   # This test-only key is mounted read-only into a user-namespaced container.
@@ -369,6 +404,8 @@ test_valid_snapshot() {
   podman start "${container_name}" >/dev/null || return 1
   wait_until_healthy "${container_name}" || return 1
   assert_valid_runtime "${container_name}" || return 1
+  "${backstop_script}" "${container_name}" \
+    "${workspace}/valid" "${workspace}/public/snapshot.pub" test-service || return 1
   podman stop --time 3 "${container_name}" >/dev/null || return 1
   exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
   [ "${exit_status}" -eq 0 ] || return 1
@@ -380,6 +417,33 @@ test_valid_snapshot() {
   podman stop --time 3 "${key_directory_container}" >/dev/null || return 1
 
   valid_state_volume=${state_volume}
+}
+
+test_admin_password_files() {
+  for password_file in lf-password crlf-password; do
+    create_container "admin-${password_file}" valid test-service \
+      "${resource_prefix}-admin-${password_file}-state" ldap file \
+      "LDAP_ADMIN_PASSWORD_FILE=/run/credentials/admin/${password_file}" || return 1
+    container_name=${created_container_name}
+    podman start "${container_name}" >/dev/null || return 1
+    wait_until_healthy "${container_name}" || return 1
+    podman exec "${container_name}" ldapwhoami \
+      -x -H ldap://127.0.0.1:1389 \
+      -D cn=admin,dc=example,dc=org \
+      -w recovery-root-password \
+      | grep -F -q 'dn:cn=admin,dc=example,dc=org' || return 1
+    podman stop --time 3 "${container_name}" >/dev/null || return 1
+  done
+}
+
+test_immediate_shutdown() {
+  create_container immediate-stop valid test-service \
+    "${resource_prefix}-immediate-stop-state" ldap || return 1
+  container_name=${created_container_name}
+  podman start "${container_name}" >/dev/null || return 1
+  podman stop --time 3 "${container_name}" >/dev/null || return 1
+  exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
+  [ "${exit_status}" -eq 0 ] || return 1
 }
 
 test_revision_replay() {
@@ -403,11 +467,12 @@ test_revision_replay() {
   refresh_snapshot_signature "${workspace}/revision-2-conflict" || return 1
   create_container revision-2-conflict revision-2-conflict test-service "${state_volume}" ldap || return 1
   revision_two_conflict_container=${created_container_name}
-  expect_container_exit "${revision_two_conflict_container}" 65 || return 1
+  expect_container_exit "${revision_two_conflict_container}" 65 \
+    'was already accepted with different content' || return 1
 
   create_container replay valid test-service "${state_volume}" ldap || return 1
   replay_container=${created_container_name}
-  expect_container_exit "${replay_container}" 65 || return 1
+  expect_container_exit "${replay_container}" 65 'is older than accepted revision' || return 1
 }
 
 test_rejected_snapshots() {
@@ -415,16 +480,43 @@ test_rejected_snapshots() {
   printf '%s\n' '# tampered' >>"${workspace}/tampered/directory.ldif"
   create_container tampered tampered test-service "${resource_prefix}-tampered-state" ldap || return 1
   tampered_container=${created_container_name}
-  expect_container_exit "${tampered_container}" 65 || return 1
+  expect_container_exit "${tampered_container}" 65 \
+    'Snapshot data digest does not match the manifest' || return 1
+
+  cp -R "${workspace}/valid" "${workspace}/tampered-manifest" || return 1
+  jq '.revision = 99' "${workspace}/tampered-manifest/manifest.json" \
+    >"${workspace}/tampered-manifest/manifest.json.new" || return 1
+  mv "${workspace}/tampered-manifest/manifest.json.new" \
+    "${workspace}/tampered-manifest/manifest.json" || return 1
+  create_container tampered-manifest tampered-manifest test-service \
+    "${resource_prefix}-tampered-manifest-state" ldap || return 1
+  tampered_manifest_container=${created_container_name}
+  expect_container_exit "${tampered_manifest_container}" 65 \
+    'Snapshot manifest signature verification failed' || return 1
+
+  cp -R "${workspace}/valid" "${workspace}/unsigned" || return 1
+  unlink "${workspace}/unsigned/manifest.json.minisig" || return 1
+  create_container unsigned unsigned test-service \
+    "${resource_prefix}-unsigned-state" ldap || return 1
+  unsigned_container=${created_container_name}
+  expect_container_exit "${unsigned_container}" 66 \
+    'Required input is not a regular file: /snapshot/manifest.json.minisig' || return 1
+
+  create_container wrong-key valid test-service \
+    "${resource_prefix}-wrong-key-state" ldap rotated || return 1
+  wrong_key_container=${created_container_name}
+  expect_container_exit "${wrong_key_container}" 65 \
+    'Snapshot manifest signature verification failed' || return 1
 
   create_container wrong-service valid another-service "${resource_prefix}-wrong-state" ldap || return 1
   wrong_service_container=${created_container_name}
-  expect_container_exit "${wrong_service_container}" 65 || return 1
+  expect_container_exit "${wrong_service_container}" 65 \
+    'Snapshot service ID does not match LDAP_EXPECTED_SERVICE_ID' || return 1
 
   create_snapshot expired 3 '-2 minutes' '-1 minute' '-3 minutes' || return 1
   create_container expired expired test-service "${resource_prefix}-expired-state" ldap || return 1
   expired_container=${created_container_name}
-  expect_container_exit "${expired_container}" 78 || return 1
+  expect_container_exit "${expired_container}" 78 'Snapshot has expired' || return 1
 
   create_snapshot missing-uuid 4 '+10 minutes' '+20 minutes' || return 1
   sed -i '/entryUUID: a4bcb5de-4982-51e9-b7e8-7e8d6b6f4c22/d' \
@@ -432,7 +524,8 @@ test_rejected_snapshots() {
   refresh_snapshot_signature "${workspace}/missing-uuid" || return 1
   create_container missing-uuid missing-uuid test-service "${resource_prefix}-uuid-state" ldap || return 1
   missing_uuid_container=${created_container_name}
-  expect_container_exit "${missing_uuid_container}" 65 || return 1
+  expect_container_exit "${missing_uuid_container}" 65 \
+    'Every directory entryUUID must be a lowercase UUIDv5 value' || return 1
 
   create_snapshot weak-password 5 '+10 minutes' '+20 minutes' || return 1
   sed -i '0,/^userPassword: /s|^userPassword: .*|userPassword: {CLEARTEXT}weak|' \
@@ -440,7 +533,8 @@ test_rejected_snapshots() {
   refresh_snapshot_signature "${workspace}/weak-password" || return 1
   create_container weak-password weak-password test-service "${resource_prefix}-password-state" ldap || return 1
   weak_password_container=${created_container_name}
-  expect_container_exit "${weak_password_container}" 65 || return 1
+  expect_container_exit "${weak_password_container}" 65 \
+    'Every userPassword must use a valid Argon2id verifier' || return 1
 
   create_snapshot inconsistent-membership 6 '+10 minutes' '+20 minutes' || return 1
   sed -i '/^memberOf: cn=users,ou=groups,dc=example,dc=org$/d' \
@@ -449,7 +543,8 @@ test_rejected_snapshots() {
   create_container inconsistent-membership inconsistent-membership test-service \
     "${resource_prefix}-membership-state" ldap || return 1
   inconsistent_membership_container=${created_container_name}
-  expect_container_exit "${inconsistent_membership_container}" 65 || return 1
+  expect_container_exit "${inconsistent_membership_container}" 65 \
+    'member and memberOf attributes must describe the same relationships' || return 1
 
   cp -R "${workspace}/valid" "${workspace}/too-many-files" || return 1
   digest=$(sha256sum "${workspace}/too-many-files/directory.ldif" | cut -d ' ' -f 1) || return 1
@@ -461,11 +556,12 @@ test_rejected_snapshots() {
   sign_manifest "${workspace}/too-many-files" || return 1
   create_container too-many-files too-many-files test-service "${resource_prefix}-file-count-state" ldap || return 1
   too_many_files_container=${created_container_name}
-  expect_container_exit "${too_many_files_container}" 65 || return 1
+  expect_container_exit "${too_many_files_container}" 65 \
+    'Snapshot manifest does not match format version 1' || return 1
 }
 
 test_runtime_expiry() {
-  create_snapshot short-lived 7 '+3 seconds' '+8 seconds' || return 1
+  create_snapshot short-lived 7 '+10 seconds' '+30 seconds' || return 1
   create_container expiry short-lived test-service "${resource_prefix}-expiry-state" ldap || return 1
   container_name=${created_container_name}
   expect_container_exit "${container_name}" 78 || return 1
@@ -473,7 +569,7 @@ test_runtime_expiry() {
 }
 
 test_soft_deadline_status() {
-  create_snapshot soft-deadline 8 '+3 seconds' '+20 seconds' || return 1
+  create_snapshot soft-deadline 8 '+10 seconds' '+2 minutes' || return 1
   create_container soft-deadline soft-deadline test-service \
     "${resource_prefix}-soft-deadline-state" ldap || return 1
   container_name=${created_container_name}
@@ -513,7 +609,7 @@ test_watchdog_failure() {
   podman start "${container_name}" >/dev/null || return 1
   wait_until_healthy "${container_name}" || return 1
   podman exec "${container_name}" sh -c 'kill "$(cat /run/openldap/watchdog.pid)"' || return 1
-  actual_status=$(podman wait "${container_name}") || return 1
+  actual_status=$(timeout 180 podman wait "${container_name}") || return 1
   [ "${actual_status}" -eq 75 ] || return 1
   podman logs "${container_name}" 2>&1 \
     | grep -F -q 'snapshot expiry watchdog failed' || return 1
@@ -565,6 +661,19 @@ test_image_contents() {
     test -s /usr/lib/ldap/back_mdb.so || exit 1
     test -s /usr/lib/ldap/argon2.so || exit 1
     test -s /usr/lib/ldap/memberof.so || exit 1
+    for immutable_file in /usr/local/lib/openldap-declarative/*.sh; do
+      ownership_and_mode=$(stat -c "%u:%g:%a" "${immutable_file}") || exit 1
+      if [ "${ownership_and_mode}" != 0:0:555 ]; then
+        printf "Unexpected ownership or mode for %s: %s\n" \
+          "${immutable_file}" "${ownership_and_mode}" >&2
+        exit 1
+      fi
+      if chmod u+w "${immutable_file}" 2>/dev/null; then
+        printf "Runtime user can make immutable file writable: %s\n" \
+          "${immutable_file}" >&2
+        exit 1
+      fi
+    done
     if find /usr/lib/ldap -mindepth 1 \
       ! -name "back_mdb.*" \
       ! -name "argon2.*" \
@@ -596,6 +705,10 @@ main() {
 
   log 'Testing a valid signed snapshot and graceful shutdown'
   test_valid_snapshot || fail 'Valid snapshot test failed'
+  log 'Testing newline-terminated recovery password files'
+  test_admin_password_files || fail 'Recovery password file test failed'
+  log 'Testing shutdown during early initialization'
+  test_immediate_shutdown || fail 'Immediate shutdown test failed'
   log 'Testing monotonic revision enforcement'
   test_revision_replay "${valid_state_volume}" || fail 'Revision replay test failed'
   log 'Testing tampering, service identity, and startup expiry'
