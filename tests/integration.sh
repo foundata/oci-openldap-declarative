@@ -513,6 +513,9 @@ test_image_contents() {
   [ "${image_size}" -lt 170000000 ] || return 1
 
   podman run --rm --entrypoint sh "${image_ref}" -c '
+    test -s /usr/local/share/openldap-declarative/package-versions.txt || exit 1
+    test -s /usr/local/share/openldap-declarative/LICENSE.txt || exit 1
+    test -s /usr/share/doc/slapd/copyright || exit 1
     for unwanted_tool in cc gcc make sudo vim ip ping ps; do
       if command -v "${unwanted_tool}" >/dev/null 2>&1; then
         printf "Unexpected runtime tool: %s\n" "${unwanted_tool}" >&2

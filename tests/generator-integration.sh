@@ -68,6 +68,12 @@ build_images() {
       --file "${project_dir}/Containerfile.generator" "${project_dir}" >/dev/null || return 1
     built_generator_image=1
   fi
+
+  podman run --rm --entrypoint sh "${generator_image}" -c '
+    test -s /usr/local/share/openldap-declarative/package-versions.txt || exit 1
+    test -s /usr/local/share/openldap-declarative/LICENSE.txt || exit 1
+    test -s /usr/share/doc/python3-ldap/copyright || exit 1
+  ' || return 1
 }
 
 prepare_inputs() {

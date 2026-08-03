@@ -5,6 +5,7 @@ LABEL org.opencontainers.image.description="Read-only OpenLDAP directory built f
 LABEL org.opencontainers.image.vendor="foundata GmbH"
 LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
+LABEL org.opencontainers.image.base.name="docker.io/library/debian:13-slim"
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG USER_OPENLDAP_UID=1001
@@ -18,9 +19,14 @@ RUN apt-get update \
     minisign \
     openssl \
     slapd \
+  && find /usr/share/doc -type f ! -name copyright -delete \
+  && find /usr/share/doc -type l -delete \
+  && find /usr/share/doc -depth -type d -empty -delete \
+  && install -d -m 0755 /usr/local/share/openldap-declarative \
+  && dpkg-query -W -f='${Package}\t${Version}\n' \
+    | sort > /usr/local/share/openldap-declarative/package-versions.txt \
   && rm -rf \
     /etc/ldap/slapd.d/* \
-    /usr/share/doc/* \
     /usr/share/man/* \
     /var/lib/apt/lists/* \
     /var/lib/ldap/* \
@@ -48,6 +54,7 @@ COPY --chown=openldap:openldap --chmod=0555 scripts/entrypoint.sh /usr/local/lib
 COPY --chown=openldap:openldap --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
 COPY --chown=openldap:openldap --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
 COPY --chown=openldap:openldap --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
+COPY --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 
 USER openldap:openldap
 

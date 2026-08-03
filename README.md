@@ -57,6 +57,11 @@ result, mirror it to the company registry, and deploy only an immutable image
 digest. A pinned base digest does not freeze packages downloaded by `apt` during
 the build; rebuilds must remain controlled release artifacts.
 
+Each image records its exact Debian package set at
+`/usr/local/share/openldap-declarative/package-versions.txt` and preserves package
+copyright notices plus the repository license. The package inventory supports an
+SBOM; it is not a substitute for one.
+
 ## Generate snapshots
 
 The generator accepts two strict YAML documents:
