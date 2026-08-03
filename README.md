@@ -276,6 +276,12 @@ sh tests/integration.sh
 sh tests/generator-integration.sh
 ```
 
+Run the complete local verification sequence with:
+
+```sh
+sh hack/check.sh
+```
+
 Static shell checks use `shfmt`, ShellCheck, and `checkbashisms`:
 
 ```sh
