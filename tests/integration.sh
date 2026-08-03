@@ -218,6 +218,7 @@ create_container() {
     --name "${container_name}" \
     --network none \
     --read-only \
+    --read-only-tmpfs=false \
     --ulimit nofile=1024:1024 \
     --memory=256m \
     --pids-limit=128 \

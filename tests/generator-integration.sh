@@ -211,6 +211,7 @@ consume_generated_snapshot() {
     --userns=keep-id:uid=1001,gid=1001 \
     --network none \
     --read-only \
+    --read-only-tmpfs=false \
     --ulimit nofile=1024:1024 \
     --memory=256m \
     --pids-limit=128 \

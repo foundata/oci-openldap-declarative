@@ -1,24 +1,21 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
-# Build the OpenLDAP container image
-#
-# Usage: ./hack/build.sh
-#
-# Environment variables (optional):
-#   IMAGE_NAME  - Image name (default: openldap-declarative)
-#   IMAGE_TAG   - Image tag (default: latest)
+# Build the runtime and snapshot-generator images with Podman.
 
-set -euo pipefail
+set -u
 
-PROJECT_ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
+readonly project_dir
+readonly runtime_image="${RUNTIME_IMAGE:-localhost/openldap-declarative:latest}"
+readonly generator_image="${GENERATOR_IMAGE:-localhost/openldap-declarative-generator:latest}"
 
-: "${IMAGE_NAME:=openldap-declarative}"
-: "${IMAGE_TAG:=latest}"
+main() {
+  printf 'Building %s\n' "${runtime_image}"
+  podman build --tag "${runtime_image}" "${project_dir}" || return 1
 
-# Colors
-GREEN='\033[0;32m'
-NC='\033[0m'
+  printf 'Building %s\n' "${generator_image}"
+  podman build --tag "${generator_image}" \
+    --file "${project_dir}/Containerfile.generator" "${project_dir}" || return 1
+}
 
-echo -e "${GREEN}[BUILD]${NC} Building ${IMAGE_NAME}:${IMAGE_TAG}..."
-podman build -t "${IMAGE_NAME}:${IMAGE_TAG}" "${PROJECT_ROOT_DIR}"
-echo -e "${GREEN}[BUILD]${NC} Done."
+main "$@"

@@ -1,0 +1,4 @@
+[Network]
+NetworkName=openldap-example
+Internal=true
+IPv6=false
