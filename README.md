@@ -59,9 +59,11 @@ evidence, Git metadata, and untracked working files from both image builds.
 Override `RUNTIME_IMAGE` or `GENERATOR_IMAGE` to select different local tags.
 Set `IMAGE_VERSION` to the reviewed release version for a production build;
 `hack/build.sh` labels both images with that version, the current Git revision,
-the build time, and whether tracked source files were clean. Direct Containerfile
-builds retain explicit development provenance. The release-evidence command
-rejects development versions, invalid revisions, and dirty tracked source trees.
+the source commit time, and whether all tracked files plus untracked build inputs
+were clean. `IMAGE_CREATED` can override the timestamp; `SOURCE_DATE_EPOCH`
+provides the standard reproducible-build input. Direct Containerfile builds retain
+explicit development provenance. The release-evidence command rejects development
+versions, invalid revisions, and dirty source trees.
 Production builds should record package inventories and SBOMs, scan and sign the
 result, mirror it to the company registry, and deploy only an immutable image
 digest. A pinned base digest does not freeze packages downloaded by `apt` during
@@ -74,27 +76,36 @@ SBOM; it is not a substitute for one.
 
 ### Release evidence
 
-After `hack/check.sh` passes, commit the reviewed source, and build both final
-image tags with a release version, create a private release-evidence directory:
+After `hack/check.sh` passes, commit the reviewed source and build both final
+images with a release version. Publish immutable version tags first:
 
 ```sh
 IMAGE_VERSION=1.0.0 sh hack/build.sh
-sh hack/release-artifacts.sh ./release-evidence
+sh hack/publish-release.sh \
+  quay.io/foundata/openldap-declarative:1.0.0 \
+  quay.io/foundata/openldap-declarative-generator:1.0.0
 ```
 
-The command saves each image temporarily as an OCI image layout, records its OCI
-manifest digest and external package inventory, and uses Trivy to generate an
-SPDX JSON SBOM. It scans that same layout for vulnerabilities, secrets, and
-misconfigurations. The command also exports the Git revision recorded in both
-images and scans that source tree for secrets and configuration mistakes. It
-rejects image pairs built from different revisions or a revision unavailable in
-the checkout. Each target gets a complete JSON report and a policy-filtered JSON
-report. Configuration, scanner, and filesystem errors fail atomically without
-publishing partial evidence. A finding at the default `HIGH,CRITICAL` threshold
-still scans both images, publishes complete evidence with
-`result: rejected`, and returns status `2`. The signing command rejects image
-metadata unless the source and both image scans passed. Set `TRIVY_SEVERITIES`
-differently only through an approved release policy.
+The publisher stages each local image as an OCI layout, copies it with digest
+preservation, resolves the registry-reported digest, and fails unless that digest
+equals the reviewed local manifest. It prints two immutable digest references.
+Use those exact outputs to create a private evidence directory:
+
+```sh
+sh hack/release-artifacts.sh ./release-evidence \
+  quay.io/foundata/openldap-declarative@sha256:... \
+  quay.io/foundata/openldap-declarative-generator@sha256:...
+```
+
+The evidence command accepts no tags. It resolves each registry digest, pulls it
+back into an OCI layout, compares the resulting manifest, and generates the SPDX
+SBOM and Trivy reports from that registry artifact. It also exports and scans the
+Git revision recorded in both images. It rejects image pairs built from different
+revisions or an unavailable revision. Configuration, registry, scanner, and
+filesystem errors fail atomically without publishing partial evidence. A finding
+at the default `HIGH,CRITICAL` threshold still publishes complete evidence with
+`result: rejected` and returns status `2`. Set `TRIVY_SEVERITIES` differently
+only through an approved release policy.
 
 Trivy 0.72.0 runs as the current rootless UID in a capability-free container.
 Its upstream image is pinned by digest and may be replaced with a verified
@@ -131,28 +142,40 @@ evidence, not risk acceptance: an applicable vulnerability remains a finding
 even when Debian does not plan a security update. Track accepted risks, owners,
 and review expiries separately rather than marking them `not_affected`.
 
-Review the reports, push both application images to the controlled registry, and
-confirm that each pushed digest equals the corresponding
-`oci_manifest_digest` in `runtime.metadata.json` or `generator.metadata.json`.
-Then sign only those immutable digest references and attach the matching SPDX
-attestations:
+The trusted release job must produce one SLSA Provenance v1 predicate per image
+from observed build data. It must identify the source revision, Containerfile,
+pinned base image, build parameters, builder identity, invocation, and timestamps.
+The signing command validates predicate structure but cannot establish that an
+untrusted caller described a build honestly.
+
+After reviewing passing reports, sign only the immutable references and attach
+the matching SPDX and SLSA attestations:
 
 ```sh
 COSIGN_KEY='kms-provider://production-image-signing-key' \
+COSIGN_VERIFY_KEY='./release-signing.pub' \
   sh hack/sign-release.sh \
-  registry.example.org/openldap-declarative@sha256:... \
+  quay.io/foundata/openldap-declarative@sha256:... \
   ./release-evidence/runtime.metadata.json \
-  registry.example.org/openldap-declarative-generator@sha256:... \
-  ./release-evidence/generator.metadata.json
+  ./provenance/runtime.slsa.json \
+  quay.io/foundata/openldap-declarative-generator@sha256:... \
+  ./release-evidence/generator.metadata.json \
+  ./provenance/generator.slsa.json
 ```
 
-`hack/sign-release.sh` requires Cosign in `PATH`, verifies the registry digest
-and SBOM hash against the release metadata, and rejects tags. CI must pin and
-verify the Cosign installation, authenticate to the registry, and provide a KMS
-or hardware-backed `COSIGN_KEY`; do not keep the image-signing key in the source
-checkout. Deployment policy must verify the image signature before mirroring or
-running the digest. Snapshot minisign keys and OCI release-signing keys are
-different trust domains and must not be reused.
+The command rejects tags and mismatched evidence, signs both digests, attaches
+both attestation types, and immediately verifies all three registry objects. CI
+must pin Cosign, authenticate to Quay, and provide a KMS- or hardware-backed
+`COSIGN_KEY`; do not keep the signing key in the source checkout.
+
+Only after that verification may `hack/promote-release.sh` move a convenience
+tag such as `:stable` within the same repository. Deployment policy must resolve
+all tags and verify the resulting digest. A scheduled release job must rerun
+`hack/release-artifacts.sh` against every supported digest as vulnerability data
+changes, retain dated evidence, alert on rejection, and trigger a rebuild or
+time-bounded exception review. Registry retention must preserve image digests,
+signatures, SBOMs, and provenance throughout support. Snapshot minisign keys and
+OCI release-signing keys are different trust domains and must not be reused.
 
 ## Generate snapshots
 
@@ -346,8 +369,10 @@ For an independent systemd timer, install
 [`timer`](examples/systemd/openldap-example-backstop.timer) in
 `~/.config/systemd/user`. Adjust the container name, reload the user manager,
 and enable the timer through the deployment automation. The helper runs only as
-the rootless service account. It stops a running container after any health-check
-failure and returns non-zero so the event remains visible in the journal.
+the rootless service account. It verifies the host-side snapshot signature,
+service identity, and expiry in a separate capability-free container created from
+the running service's immutable image ID. It then checks service health and stops
+the service if either independent check fails.
 
 Revision state must survive container replacement. Losing it weakens replay
 protection until a newer snapshot is accepted. Expiry remains the final bound.
@@ -398,7 +423,8 @@ Run the complete local verification sequence with:
 sh hack/check.sh
 ```
 
-Static shell checks use `shfmt`, ShellCheck, and `checkbashisms`:
+The complete check requires Hadolint, `shfmt`, ShellCheck, `checkbashisms`, `jq`,
+Python 3, Podman, and GNU `timeout`. Static checks include:
 
 ```sh
 shfmt --language-dialect posix --indent 2 --case-indent \
@@ -407,6 +433,7 @@ shellcheck --shell=sh --severity=style \
   --exclude=SC2292 --exclude=SC3040 --exclude=SC3043 \
   --enable=all scripts/*.sh tests/*.sh hack/*.sh
 checkbashisms scripts/*.sh tests/*.sh hack/*.sh
+hadolint Containerfile Containerfile.generator
 ```
 
 ## Limitations
