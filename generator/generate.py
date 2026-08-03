@@ -378,8 +378,6 @@ def parse_credentials(path: Path) -> Credentials:
             optional={"password_file", "service_password_files"},
             context=f"credentials.users.{source_id}",
         )
-        if "password_file" not in item and "service_password_files" not in item:
-            error(f"credentials.users.{source_id} must define at least one password source")
         default_password = None
         if "password_file" in item:
             default_password = credential_path(
@@ -399,6 +397,8 @@ def parse_credentials(path: Path) -> Credentials:
                         f"credentials.users.{source_id}.service_password_files.{validated_service_id}"
                     ),
                 )
+        if default_password is None and not service_passwords:
+            error(f"credentials.users.{source_id} must define at least one password source")
         users[source_id] = {"password_file": default_password, "service_password_files": service_passwords}
 
     if not isinstance(root["services"], dict):
