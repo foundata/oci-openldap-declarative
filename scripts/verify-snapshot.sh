@@ -19,6 +19,10 @@ readonly VERIFIED_MANIFEST_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-man
 readonly VERIFIED_FILES_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-files"
 readonly VERIFIED_SNAPSHOT_DIR="${LDAP_RUNTIME_DIR:-/run/openldap}/verified-snapshot"
 readonly VERIFICATION_KEYS_FILE="${LDAP_RUNTIME_DIR:-/run/openldap}/verification-keys"
+readonly MAX_MANIFEST_BYTES=1048576
+readonly MAX_SIGNATURE_BYTES=16384
+readonly MAX_SNAPSHOT_FILES=32
+readonly MAX_SNAPSHOT_BYTES=16777216
 
 validate_input_files() {
   validation_errors=0
@@ -40,6 +44,21 @@ validate_input_files() {
       validation_errors=$((validation_errors + 1))
     fi
   done
+
+  if [ -f "${MANIFEST_FILE}" ] && [ ! -L "${MANIFEST_FILE}" ]; then
+    manifest_size=$(wc -c <"${MANIFEST_FILE}") || return "${EXIT_INTERNAL}"
+    if [ "${manifest_size}" -gt "${MAX_MANIFEST_BYTES}" ]; then
+      log_error "Snapshot manifest exceeds ${MAX_MANIFEST_BYTES} bytes"
+      validation_errors=$((validation_errors + 1))
+    fi
+  fi
+  if [ -f "${SIGNATURE_FILE}" ] && [ ! -L "${SIGNATURE_FILE}" ]; then
+    signature_size=$(wc -c <"${SIGNATURE_FILE}") || return "${EXIT_INTERNAL}"
+    if [ "${signature_size}" -gt "${MAX_SIGNATURE_BYTES}" ]; then
+      log_error "Snapshot signature exceeds ${MAX_SIGNATURE_BYTES} bytes"
+      validation_errors=$((validation_errors + 1))
+    fi
+  fi
 
   if [ "${validation_errors}" -ne 0 ]; then
     return "${EXIT_INPUT}"
@@ -124,7 +143,7 @@ verify_signature() {
 }
 
 validate_manifest_schema() {
-  if ! jq -e '
+  if ! jq -e --argjson max_snapshot_files "${MAX_SNAPSHOT_FILES}" '
     type == "object" and
     ((keys | sort) == ["base_dn", "expires_at", "files", "format_version", "generated_at", "revision", "service_id", "soft_expires_at", "uuid_namespace"]) and
     (.format_version == 1) and
@@ -135,7 +154,7 @@ validate_manifest_schema() {
     (.soft_expires_at | type == "string" and fromdateiso8601 >= 0) and
     (.expires_at | type == "string" and fromdateiso8601 >= 0) and
     (.uuid_namespace | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")) and
-    (.files | type == "array" and length > 0) and
+    (.files | type == "array" and length > 0 and length <= $max_snapshot_files) and
     (all(.files[];
       type == "object" and
       ((keys | sort) == ["path", "sha256"]) and
@@ -190,6 +209,7 @@ validate_manifest_files() {
   mkdir -p "${VERIFIED_SNAPSHOT_DIR}" || return "${EXIT_INTERNAL}"
   find "${VERIFIED_SNAPSHOT_DIR}" -mindepth 1 -delete || return "${EXIT_INTERNAL}"
   : >"${VERIFIED_FILES_FILE}" || return "${EXIT_INTERNAL}"
+  total_snapshot_bytes=0
 
   jq -r '.files[].path' "${VERIFIED_MANIFEST_FILE}" \
     | while IFS= read -r relative_path; do
@@ -205,6 +225,12 @@ validate_manifest_files() {
         exit "${EXIT_INTERNAL}"
       fi
       chmod 0600 "${verified_snapshot_file}" || exit "${EXIT_INTERNAL}"
+      verified_file_size=$(wc -c <"${verified_snapshot_file}") || exit "${EXIT_INTERNAL}"
+      total_snapshot_bytes=$((total_snapshot_bytes + verified_file_size))
+      if [ "${total_snapshot_bytes}" -gt "${MAX_SNAPSHOT_BYTES}" ]; then
+        log_error "Snapshot LDIF data exceeds ${MAX_SNAPSHOT_BYTES} bytes"
+        exit "${EXIT_SNAPSHOT}"
+      fi
 
       expected_digest=$(jq -r --arg path "${relative_path}" \
         '.files[] | select(.path == $path) | .sha256' "${VERIFIED_MANIFEST_FILE}") || exit "${EXIT_SNAPSHOT}"

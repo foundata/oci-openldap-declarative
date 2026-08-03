@@ -202,6 +202,10 @@ public key. Public-key symlinks and empty key directories are rejected.
 There is no unsigned mode, empty-password mode, ignored-expiry switch, or
 fail-open import path in the release image.
 
+The runtime accepts at most 32 LDIF files and 16 MiB of LDIF data; manifests are
+limited to 1 MiB and detached signatures to 16 KiB. These are defensive bounds,
+not capacity targets. The directory is intended to remain far smaller.
+
 ## Snapshot lifecycle
 
 For every authorization, group, password, or identity change:

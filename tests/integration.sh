@@ -439,6 +439,18 @@ test_rejected_snapshots() {
     "${resource_prefix}-membership-state" ldap || return 1
   inconsistent_membership_container=${created_container_name}
   expect_container_exit "${inconsistent_membership_container}" 65 || return 1
+
+  cp -R "${workspace}/valid" "${workspace}/too-many-files" || return 1
+  digest=$(sha256sum "${workspace}/too-many-files/directory.ldif" | cut -d ' ' -f 1) || return 1
+  jq --arg digest "${digest}" \
+    '.files = [range(0; 33) as $index | {path: ("directory-" + ($index | tostring) + ".ldif"), sha256: $digest}]' \
+    "${workspace}/too-many-files/manifest.json" >"${workspace}/too-many-files/manifest.json.new" || return 1
+  mv "${workspace}/too-many-files/manifest.json.new" \
+    "${workspace}/too-many-files/manifest.json" || return 1
+  sign_manifest "${workspace}/too-many-files" || return 1
+  create_container too-many-files too-many-files test-service "${resource_prefix}-file-count-state" ldap || return 1
+  too_many_files_container=${created_container_name}
+  expect_container_exit "${too_many_files_container}" 65 || return 1
 }
 
 test_runtime_expiry() {
