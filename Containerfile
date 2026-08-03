@@ -31,6 +31,11 @@ RUN apt-get update \
   && find /usr/share/doc -type f ! -name copyright -delete \
   && find /usr/share/doc -type l -delete \
   && find /usr/share/doc -depth -type d -empty -delete \
+  && find /usr/lib/ldap -mindepth 1 \
+    ! -name 'argon2.*' \
+    ! -name 'back_mdb.*' \
+    ! -name 'memberof.*' \
+    -delete \
   && install -d -m 0755 /usr/local/share/openldap-declarative \
   && dpkg-query -W -f='${Package}\t${Version}\n' \
     | sort > /usr/local/share/openldap-declarative/package-versions.txt \

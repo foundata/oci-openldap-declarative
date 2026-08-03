@@ -40,7 +40,9 @@ snapshot until that snapshot is replaced or expires.
 The runtime image is built from a digest-pinned Debian 13 slim base and contains
 OpenLDAP, the Debian Argon2 module, LDAP clients, OpenSSL, `jq`, and `minisign`.
 It runs as UID/GID 1001 and contains no compiler, editor, `sudo`, or network
-diagnostic suite.
+diagnostic suite. The image retains only the `back_mdb`, `argon2`, and `memberof`
+loadable OpenLDAP modules. `memberof` supplies the attribute schema for static
+membership data; the mutable memberof overlay is not configured.
 
 The generator is a separate image. It adds Debian-packaged Python, PyYAML,
 `python-ldap`, and Argon2. It never becomes part of the application-side runtime.
