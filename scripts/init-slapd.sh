@@ -64,9 +64,22 @@ prepare_root_password() {
       log_error 'LDAP_ADMIN_PASSWORD_FILE must contain exactly one line'
       return "${EXIT_INPUT}"
     fi
-    if ! cp "${LDAP_ADMIN_PASSWORD_FILE}" "${root_password_input}"; then
+    password_value=''
+    IFS= read -r password_value <"${LDAP_ADMIN_PASSWORD_FILE}" || {
+      if [ -z "${password_value}" ]; then
+        log_error 'LDAP_ADMIN_PASSWORD_FILE must contain exactly one non-empty line'
+        return "${EXIT_INPUT}"
+      fi
+    }
+    carriage_return=$(printf '\r') || return "${EXIT_INTERNAL}"
+    case "${password_value}" in
+      *"${carriage_return}") password_value=${password_value%"${carriage_return}"} ;;
+      *) ;;
+    esac
+    if ! printf '%s' "${password_value}" >"${root_password_input}"; then
       return "${EXIT_INTERNAL}"
     fi
+    unset password_value
   elif [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
     if [ -z "${LDAP_ADMIN_PASSWORD}" ]; then
       log_error 'LDAP_ADMIN_PASSWORD must not be empty'
@@ -195,12 +208,12 @@ write_base_configuration() {
       'olcDatabase: {-1}frontend' \
       'olcSizeLimit: 500' \
       'olcTimeLimit: 10' \
-      "olcAccess: {0}to * by dn.exact=${external_identity} manage by * break" \
+      "olcAccess: {0}to * by dn.exact=${external_identity} read by * break" \
       '' \
       'dn: olcDatabase={0}config,cn=config' \
       'objectClass: olcDatabaseConfig' \
       'olcDatabase: {0}config' \
-      "olcAccess: {0}to * by dn.exact=${external_identity} manage by * none" \
+      "olcAccess: {0}to * by dn.exact=${external_identity} read by * none" \
       '' \
       'dn: cn=module{0},cn=config' \
       'objectClass: olcModuleList' \
@@ -225,7 +238,8 @@ write_base_configuration() {
       'olcDbIndex: entryUUID eq' \
       'olcDbMaxSize: 67108864' \
       "olcAccess: {0}to attrs=userPassword by dn.exact=cn=admin,${base_dn} manage by self auth by anonymous auth by * none" \
-      "olcAccess: {1}to * by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by users read by * none"
+      "olcAccess: {1}to attrs=entry,children,objectClass,entryUUID,dc,o,ou,uid,cn,sn,givenName,displayName,mail,member,memberOf by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by users read by * none" \
+      "olcAccess: {2}to * by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by * none"
   } >>"${config_file}" || return "${EXIT_INTERNAL}"
 
   return 0

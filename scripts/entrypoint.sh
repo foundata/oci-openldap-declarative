@@ -220,6 +220,12 @@ supervise_slapd() {
     -d "${LDAP_LOG_LEVEL:-256}" &
   slapd_pid=$!
 
+  if [ "${shutdown_requested}" -eq 1 ]; then
+    kill -TERM "${slapd_pid}" 2>/dev/null || true
+    wait "${slapd_pid}" 2>/dev/null || true
+    return 0
+  fi
+
   (
     watch_snapshot_expiry "$$"
     watchdog_status=$?
@@ -266,11 +272,26 @@ supervise_slapd() {
 
 main() {
   umask 077
+  trap forward_shutdown TERM INT HUP
   mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
   validate_runtime_configuration || exit $?
-  "${script_dir}/verify-snapshot.sh" || exit $?
+  "${script_dir}/verify-snapshot.sh"
+  verification_status=$?
+  if [ "${shutdown_requested}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${verification_status}" -ne 0 ]; then
+    return "${verification_status}"
+  fi
   validate_revision || exit $?
-  "${script_dir}/init-slapd.sh" || exit $?
+  "${script_dir}/init-slapd.sh"
+  initialization_status=$?
+  if [ "${shutdown_requested}" -eq 1 ]; then
+    return 0
+  fi
+  if [ "${initialization_status}" -ne 0 ]; then
+    return "${initialization_status}"
+  fi
   record_revision || die "${EXIT_INTERNAL}" 'Cannot record the accepted snapshot revision'
   cp "${verified_manifest_file}" "${runtime_dir}/active-manifest.json" || die "${EXIT_INTERNAL}" 'Cannot record active snapshot metadata'
   supervise_slapd || exit $?
