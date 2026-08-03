@@ -10,6 +10,7 @@ readonly runtime_image="${RUNTIME_IMAGE:-localhost/openldap-declarative:latest}"
 readonly generator_image="${GENERATOR_IMAGE:-localhost/openldap-declarative-generator:latest}"
 readonly trivy_severities="${TRIVY_SEVERITIES:-HIGH,CRITICAL}"
 readonly trivy_vex_file="${TRIVY_VEX_FILE:-}"
+readonly trivy_expected_digest="sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
 readonly trivy_image="${TRIVY_IMAGE:-docker.io/aquasec/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f}"
 readonly podman_binary="${PODMAN:-podman}"
 readonly skopeo_binary="${SKOPEO:-skopeo}"
@@ -98,6 +99,13 @@ validate_configuration() {
   fi
   requested_output=${1}
 
+  case "${trivy_image}" in
+    *@"${trivy_expected_digest}") ;;
+    *)
+      fail "TRIVY_IMAGE must use the reviewed scanner digest: ${trivy_expected_digest}"
+      return 64
+      ;;
+  esac
   if ! validate_severities; then
     fail 'TRIVY_SEVERITIES must be a comma-separated list of uppercase Trivy severities'
     return 64

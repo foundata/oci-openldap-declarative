@@ -103,6 +103,19 @@ registries. `release.json` records the tool digest, vulnerability database hash
 and checks-bundle digest used for the verdict; scanner results can change when
 any of those inputs changes.
 
+Before adopting or mirroring a new Trivy pin, verify its keyless signature with
+Cosign:
+
+```sh
+sh hack/verify-trivy.sh
+```
+
+The verifier constrains the digest, GitHub Actions certificate issuer, and Trivy
+workflow identity. The release command accepts a company-mirrored `TRIVY_IMAGE`
+only when it retains that reviewed digest. Updating Trivy therefore requires a
+reviewed code change to both pins, a successful signature check, and a fresh
+finding baseline.
+
 Trivy severity and Debian's support decision are separate inputs. Do not hide
 unfixed or Debian no-DSA findings with a blanket ignore rule. When a review
 concludes that a reported vulnerability does not affect these images, record the

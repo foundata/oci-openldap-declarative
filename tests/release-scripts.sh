@@ -8,6 +8,7 @@ project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
 readonly release_script="${project_dir}/hack/release-artifacts.sh"
 readonly sign_script="${project_dir}/hack/sign-release.sh"
+readonly verify_trivy_script="${project_dir}/hack/verify-trivy.sh"
 
 workspace=''
 
@@ -68,6 +69,14 @@ main() {
     fail 'Rejected Trivy severity input left an output directory'
   fi
 
+  if TRIVY_IMAGE='registry.example.org/trivy@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
+    "${release_script}" "${workspace}/scanner-output" >/dev/null 2>&1; then
+    fail 'Release command accepted an unreviewed Trivy digest'
+  fi
+  if [ -e "${workspace}/scanner-output" ]; then
+    fail 'Rejected Trivy digest left an output directory'
+  fi
+
   ln -s "${workspace}/missing-vex.json" "${workspace}/vex-link.json" \
     || fail 'Cannot create VEX symlink fixture'
   if TRIVY_VEX_FILE="${workspace}/vex-link.json" \
@@ -85,6 +94,22 @@ main() {
   fi
   if [ -e "${workspace}/invalid-vex-output" ]; then
     fail 'Invalid VEX JSON left an output directory'
+  fi
+
+  : >"${workspace}/cosign-calls"
+  COSIGN="${workspace}/cosign" \
+    COSIGN_CALLS="${workspace}/cosign-calls" \
+    "${verify_trivy_script}" >/dev/null \
+    || fail 'Reviewed Trivy image was rejected'
+  grep -F -q 'verify ghcr.io/aquasecurity/trivy@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f' \
+    "${workspace}/cosign-calls" || fail 'Trivy signature verification was not issued'
+  grep -F -q -- '--certificate-oidc-issuer https://token.actions.githubusercontent.com' \
+    "${workspace}/cosign-calls" || fail 'Trivy certificate issuer was not constrained'
+  if TRIVY_UPSTREAM_IMAGE='ghcr.io/aquasecurity/trivy:0.72.0' \
+    COSIGN="${workspace}/cosign" \
+    COSIGN_CALLS="${workspace}/cosign-calls" \
+    "${verify_trivy_script}" >/dev/null 2>&1; then
+    fail 'Mutable Trivy tag was accepted for signature verification'
   fi
 
   : >"${workspace}/cosign-calls"
