@@ -47,135 +47,116 @@ membership data; the mutable memberof overlay is not configured.
 The generator is a separate image. It adds Debian-packaged Python, PyYAML,
 `python-ldap`, and Argon2. It never becomes part of the application-side runtime.
 
-Build both images with:
+[`conclear.toml`](conclear.toml) declares the runtime and generator as independent
+release images in their actual Quay repositories. ConClear supplies the controlled
+`IMAGE_CREATED`, `IMAGE_REVISION`, and `IMAGE_VERSION` build arguments, builds an
+isolated committed revision, validates its labels, imports the exact OCI layouts,
+and runs the repository hooks against those layouts. The runtime hook receives the
+generator layout built from the same revision and platform for compatibility
+testing. Neither hook builds an image or selects a mutable tag.
 
-```sh
-sh hack/build.sh
-```
+Both images currently declare only `linux/amd64`. On 2026-09-03 the qualification
+workstation had neither native arm64 capacity nor an arm64 binfmt handler. The
+maintainers must run the full build and behavioral path on an approved arm64
+worker before adding `linux/arm64`; until then this repository makes no arm64 or
+multi-platform claim.
 
-The build-context allowlist excludes local snapshots, credentials, release
-evidence, Git metadata, and untracked working files from both image builds.
-
-Override `RUNTIME_IMAGE` or `GENERATOR_IMAGE` to select different local tags.
-Set `IMAGE_VERSION` to the reviewed release version for a production build;
-`hack/build.sh` labels both images with that version, the current Git revision,
-the source commit time, and whether all tracked files plus untracked build inputs
-were clean. `IMAGE_CREATED` can override the timestamp; `SOURCE_DATE_EPOCH`
-provides the standard reproducible-build input. Direct Containerfile builds retain
-explicit development provenance. The release-evidence command rejects development
-versions, invalid revisions, and dirty source trees.
-Production builds should record package inventories and SBOMs, scan and sign the
-result, mirror it to the company registry, and deploy only an immutable image
-digest. A pinned base digest does not freeze packages downloaded by `apt` during
-the build; rebuilds must remain controlled release artifacts.
+The default-deny [`.containerignore`](.containerignore) allowlist excludes local
+snapshots, credentials, release evidence, Git metadata, tests and untracked
+working files from both contexts. `conclear check` validates its effective
+semantics. Repository tests lock its narrow project-specific contents and the
+required `COPY` inputs.
 
 Each image records its exact Debian package set at
 `/usr/local/share/openldap-declarative/package-versions.txt` and preserves package
 copyright notices plus the repository license. The package inventory supports an
 SBOM; it is not a substitute for one.
 
-### Release evidence
 
-After `hack/check.sh` passes, commit the reviewed source and build both final
-images with a release version. Publish immutable version tags first:
+### Install ConClear
 
-```sh
-IMAGE_VERSION=1.0.0 sh hack/build.sh
-sh hack/publish-release.sh \
-  quay.io/foundata/openldap-declarative:1.0.0 \
-  quay.io/foundata/openldap-declarative-generator:1.0.0
-```
-
-The publisher stages each local image as an OCI layout, copies it with digest
-preservation, resolves the registry-reported digest, and fails unless that digest
-equals the reviewed local manifest. It prints two immutable digest references.
-Use those exact outputs to create a private evidence directory:
+ConClear is not published yet. Maintainers obtain the reviewed identity-bearing
+wheel from the organization's protected ConClear artifact handoff produced by
+the clean-checkout distribution gate. Store it outside this checkout, set
+`CONCLEAR_WHEEL` to that retained artifact, and verify it before installing it
+into an isolated environment:
 
 ```sh
-sh hack/release-artifacts.sh ./release-evidence \
-  quay.io/foundata/openldap-declarative@sha256:... \
-  quay.io/foundata/openldap-declarative-generator@sha256:...
+: "${CONCLEAR_WHEEL:?set CONCLEAR_WHEEL to the reviewed ConClear wheel}"
+printf '%s  %s\n' \
+  6de86e0272ce3df54eabd2ae61f507eb9b71d9d290a6686f9fe9ed08130d87a9 \
+  "$CONCLEAR_WHEEL" | sha256sum --check
+python3.12 -m venv ~/.local/share/conclear/venv
+~/.local/share/conclear/venv/bin/pip install "$CONCLEAR_WHEEL"
+~/.local/share/conclear/venv/bin/conclear version --format json
 ```
 
-The evidence command accepts no tags. It resolves each registry digest, pulls it
-back into an OCI layout, compares the resulting manifest, and generates the SPDX
-SBOM and Trivy reports from that registry artifact. It also exports and scans the
-Git revision recorded in both images. It rejects image pairs built from different
-revisions or an unavailable revision. Configuration, registry, scanner, and
-filesystem errors fail atomically without publishing partial evidence. A finding
-at the default `HIGH,CRITICAL` threshold still publishes complete evidence with
-`result: rejected` and returns status `2`. Set `TRIVY_SEVERITIES` differently
-only through an approved release policy.
+The expected version is `0.1.0`, source revision
+`1919b96d869d27abdabf3d4967311d0424bfa5f3`, and embedded guide revision
+`cd914cd5a9b7ec7c171f92d4a80b5e48f0c67c9b`. A command reporting
+`development-source-tree` is not an acceptable release tool.
 
-Trivy 0.72.0 runs as the current rootless UID in a capability-free container.
-Its upstream image is pinned by digest and may be replaced with a verified
-company mirror through `TRIVY_IMAGE`. Each invocation needs registry access to
-refresh the vulnerability database and misconfiguration checks; the first also
-needs access to the scanner image. The workflow does not require a Trivy server.
-Mirror those inputs for release automation that must not depend on public
-registries. `release.json` records the tool digest, vulnerability database hash
-and checks-bundle digest used for the verdict; scanner results can change when
-any of those inputs changes.
+### Check and qualify
 
-Before adopting or mirroring a new Trivy pin, verify its keyless signature with
-Cosign:
+Run repository-specific checks directly, then ConClear's generic and pin gates:
 
 ```sh
-sh hack/verify-trivy.sh
+sh hack/check.sh
+conclear check --image runtime
+conclear check --image generator
+conclear pins check --image runtime
+conclear pins check --image generator
 ```
 
-The verifier constrains the digest, GitHub Actions certificate issuer, and Trivy
-workflow identity. The release command accepts a company-mirrored `TRIVY_IMAGE`
-only when it retains that reviewed digest. Updating Trivy therefore requires a
-reviewed code change to both pins, a successful signature check, and a fresh
-finding baseline.
-
-Trivy severity and Debian's support decision are separate inputs. Do not hide
-unfixed or Debian no-DSA findings with a blanket ignore rule. When a review
-concludes that a reported vulnerability does not affect these images, record the
-product, vulnerability, status, justification, author, and timestamp in an
-OpenVEX document and pass it as `TRIVY_VEX_FILE`. The command copies that
-document into the evidence directory, applies it to both scans, and records its
-SHA-256 digest in `release.json`. Trivy marks VEX support experimental, so test
-VEX documents again whenever its pinned version changes. VEX is applicability
-evidence, not risk acceptance: an applicable vulnerability remains a finding
-even when Debian does not plan a security update. Track accepted risks, owners,
-and review expiries separately rather than marking them `not_affected`.
-
-The trusted release job must produce one SLSA Provenance v1 predicate per image
-from observed build data. It must identify the source revision, Containerfile,
-pinned base image, build parameters, builder identity, invocation, and timestamps.
-The signing command validates predicate structure but cannot establish that an
-untrusted caller described a build honestly.
-
-After reviewing passing reports, sign only the immutable references and attach
-the matching SPDX and SLSA attestations:
+Qualification requires a clean, committed revision because ConClear creates an
+isolated worktree. The repository's `origin` must be the credential-free HTTPS
+project URL declared in `conclear.toml`; keep SSH credentials and URL rewrites
+outside the qualification environment. Use one version for both independent
+image results:
 
 ```sh
-COSIGN_KEY='kms-provider://production-image-signing-key' \
-COSIGN_VERIFY_KEY='./release-signing.pub' \
-  sh hack/sign-release.sh \
-  quay.io/foundata/openldap-declarative@sha256:... \
-  ./release-evidence/runtime.metadata.json \
-  ./provenance/runtime.slsa.json \
-  quay.io/foundata/openldap-declarative-generator@sha256:... \
-  ./release-evidence/generator.metadata.json \
-  ./provenance/generator.slsa.json
+revision=$(git rev-parse HEAD)
+version=0.1.0-test.1
+conclear qualify --source . --revision "$revision" \
+  --image runtime --version "$version" --platform linux/amd64
+conclear qualify --source . --revision "$revision" \
+  --image generator --version "$version" --platform linux/amd64
 ```
 
-The command rejects tags and mismatched evidence, signs both digests, attaches
-both attestation types, and immediately verifies all three registry objects. CI
-must pin Cosign, authenticate to Quay, and provide a KMS- or hardware-backed
-`COSIGN_KEY`; do not keep the signing key in the source checkout.
+These commands are identical on a maintainer workstation and in future CI. CI
+is a caller; it must not reconstruct ConClear's build, scan, evidence or signing
+logic. `hack/check.sh` intentionally does not duplicate `conclear check`,
+`conclear pins check`, or `conclear qualify`.
 
-Only after that verification may `hack/promote-release.sh` move a convenience
-tag such as `:stable` within the same repository. Deployment policy must resolve
-all tags and verify the resulting digest. A scheduled release job must rerun
-`hack/release-artifacts.sh` against every supported digest as vulnerability data
-changes, retain dated evidence, alert on rejection, and trigger a rebuild or
-time-bounded exception review. Registry retention must preserve image digests,
-signatures, SBOMs, and provenance throughout support. Snapshot minisign keys and
-OCI release-signing keys are different trust domains and must not be reused.
+### Release operations
+
+A signed release requires an external protected ConClear profile containing the
+approved builder identity, Quay authentication, signing authority and public
+verification key. None belongs in this repository. An authorized maintainer runs
+each image from the same revision and version:
+
+```sh
+conclear release --source . --revision "$revision" --image runtime \
+  --version "$version" --profile production
+conclear release --source . --revision "$revision" --image generator \
+  --version "$version" --profile production
+```
+
+ConClear owns candidate naming, isolated builds, OCI layout validation, SBOM and
+Trivy evidence, provenance, publication, Cosign signing and attestation,
+verification, promotion and cleanup. Resume an interrupted run with
+`conclear release --profile production --resume RUN_ID`; remove only its owned
+ephemeral resources with `conclear cleanup --profile production RUN_ID`. Rescan
+a released immutable subject with:
+
+```sh
+conclear rescan quay.io/foundata/openldap-declarative@sha256:... \
+  --image-id runtime --profile production --authoritative
+```
+
+Do not publish or sign from a local qualification without that protected
+profile. Snapshot minisign keys and OCI release-signing keys are separate trust
+domains and must not be reused.
 
 ## Generate snapshots
 
@@ -201,6 +182,13 @@ The generator also performs LDAP-aware and cross-reference checks that JSON
 Schema alone cannot express. It rejects duplicate YAML keys, aliases, unknown
 fields, invalid DNs, duplicate LDAP names, dangling memberships, missing
 credentials, and ambiguous output paths.
+
+Every service declares the same policy maximums through `soft_ttl_seconds` and
+`hard_ttl_seconds`, plus an explicit `expiry_offset_seconds` from 0 through
+86400. The offset must be smaller than the soft TTL and is subtracted from both
+deadlines, so staggering can only expire a service earlier and always preserves
+`soft_expires_at < expires_at`. All services generated in one invocation use the
+same controlled `generated_at` value.
 
 Create and protect a minisign key pair. `-W` creates an unencrypted automation
 key, so the secret key must be held by a dedicated signing worker or secret
@@ -274,6 +262,17 @@ volume, and a persistent revision-state volume. It uses:
 - Podman health monitoring with kill-on-failure as a watchdog backstop;
 - no network recovery administrator password.
 
+The resource values match the qualified runtime profile. The generator is a
+bounded one-shot with the same 256 MiB and one-CPU limits, but only 64 PIDs,
+`nofile=512`, a 180-second execution timeout and `/output` writable. It has no
+listener, health command, shutdown grace period or runtime/state volumes.
+
+[`examples/policy/containers-policy.json`](examples/policy/containers-policy.json)
+is a deployment admission template: it rejects by default and trusts only the
+two release repositories through an externally provisioned public key. A
+deployment owner must install the real trust root and enforce the policy. The
+example contains no production key and is not ConClear build policy.
+
 The application container joins `openldap-example.network` and connects to
 `ldap://ldap:1389`. The LDAP listener must use `LDAP_LISTEN_HOST=0.0.0.0` inside
 that isolated container network. Do not publish the port unless a host process
@@ -334,14 +333,34 @@ For every authorization, group, password, or identity change:
 2. increase the affected service revision;
 3. generate and sign a complete new snapshot;
 4. transfer it to a private staging location on the target VM;
-5. verify transfer completeness and atomically switch the service snapshot;
-6. restart or recreate the Quadlet service;
-7. verify the active revision and application login behavior.
+5. run the staged-snapshot preflight against the existing revision state;
+6. atomically switch the active snapshot only after preflight exits `0`;
+7. restart or recreate the Quadlet service;
+8. verify the active revision and application login behavior.
+
+The future Ansible role invokes the candidate image without a listener, mounting
+the staged snapshot, verification key and existing state read-only, and a fresh
+private `/run/openldap` tmpfs:
+
+```sh
+/usr/local/lib/openldap-declarative/preflight-snapshot.sh \
+  SNAPSHOT KEY_OR_KEY_DIRECTORY SERVICE_ID REVISION_STATE
+```
+
+Exit `0` accepts a new revision, an exact revision/digest replay, or legacy
+revision-only state that the runtime will migrate after successful import. Exit
+`65` rejects rollback or same-revision/different-content; `66` rejects malformed
+state or inputs; `70` reports an internal failure; and `78` reports expiry. The
+preflight verifies signature, service ID, timestamps and file digests before the
+revision pair. It never mutates the state file or active snapshot. The deployment
+role remains responsible for the subsequent atomic path switch and restart.
 
 The container copies the signed manifest and LDIF into private runtime storage,
 verifies those copied bytes, constructs `cn=config` and MDB offline, validates
 UUIDs, password schemes, and reciprocal membership, and only then starts slapd.
-A malformed or partial replacement never becomes a listener.
+A malformed or partial replacement never becomes a listener. Verified LDIF
+plaintext is deleted immediately after semantic validation and on startup,
+initialization failure, shutdown and preflight completion.
 
 The health command reports the active revision. It warns after
 `soft_expires_at`; at `expires_at`, the PID 1 watchdog stops slapd and exits 78.
@@ -379,6 +398,11 @@ protection until a newer snapshot is accepted. Expiry remains the final bound.
 Never roll back the state volume merely to make an older authorization snapshot
 start.
 
+Within one service snapshot, every authenticated user may search the documented
+non-password attributes of other entries. Anonymous search, password verifiers,
+unlisted metadata and `cn=config` remain denied. Tightening this enumeration
+boundary would be a product-policy change and requires a separate owner decision.
+
 ## TLS
 
 For LDAPS, mount a certificate and private key readable by the mapped container
@@ -409,12 +433,28 @@ rejected.
 
 ## Tests
 
-The tests create only uniquely named rootless Podman resources and remove them on
-exit. Set `KEEP_TEST_RESOURCES=true` only for debugging.
+ConClear runs both integration suites against digest-verified OCI layouts. Those
+modes cannot build images. They use isolated Podman storage, collision-checked
+names and a run manifest. Set `KEEP_TEST_RESOURCES=true` only for debugging; the
+failure output identifies the manifest and inspection command.
 
 ```sh
-sh tests/integration.sh
-sh tests/generator-integration.sh
+conclear qualify --source . --revision "$(git rev-parse HEAD)" \
+  --image runtime --version 0.1.0-test.1 --platform linux/amd64
+conclear qualify --source . --revision "$(git rev-parse HEAD)" \
+  --image generator --version 0.1.0-test.1 --platform linux/amd64
+```
+
+The explicit non-release convenience mode requires an existing external test
+directory and may build local images:
+
+```sh
+test_run="$HOME/.local/share/openldap-declarative/test-run-$(date +%s)"
+mkdir -m 0700 -p "$test_run"
+OPENLDAP_TEST_RUN_DIR="$test_run" \
+  sh tests/integration.sh --developer-build
+OPENLDAP_TEST_RUN_DIR="$test_run" \
+  sh tests/generator-integration.sh --developer-build
 ```
 
 Run the complete local verification sequence with:
@@ -423,8 +463,11 @@ Run the complete local verification sequence with:
 sh hack/check.sh
 ```
 
-The complete check requires Hadolint, `shfmt`, ShellCheck, `checkbashisms`, `jq`,
-Python 3, Podman, and GNU `timeout`. Static checks include:
+The direct check requires Hadolint, `shfmt`, ShellCheck, `checkbashisms`, `jq`
+and `uv`. It covers shell, Containerfiles, Python formatting/lint/type checks,
+JSON Schema contracts, Quadlet generation, admission policy and the host
+backstop. ConClear separately owns generic OCI checks, pin state and all
+exact-image qualification.
 
 ```sh
 shfmt --language-dialect posix --indent 2 --case-indent \

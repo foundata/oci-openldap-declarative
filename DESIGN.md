@@ -1,6 +1,6 @@
 # Decentralized directory services for application authentication
 
-Status: implemented baseline; operational qualification pending
+Status: implementation integrated; qualification and operational rollout tracked separately
 
 This document describes a directory architecture for internal applications. It
 also records the assumptions that make the design defensible, the risks it does
@@ -204,11 +204,12 @@ service_id: zammad-production
 base_dn: dc=zammad,dc=services,dc=example,dc=org
 revision: 1842
 generated_at: 2026-08-03T12:00:00Z
+soft_expires_at: 2026-08-03T18:00:00Z
 expires_at: 2026-08-04T00:00:00Z
 uuid_namespace: 7f38d690-...
 files:
-  00-config.ldif: sha256:...
-  10-directory.ldif: sha256:...
+  - path: directory.ldif
+    sha256: 0123456789abcdef...
 ```
 
 The signature covers the manifest and, through the recorded digests, every input
@@ -241,9 +242,15 @@ disposable database. Its location, ownership and behavior across VM restores
 belong to the deployment design. It is a best-effort control; the short
 snapshot lifetime remains the primary protection against replay.
 
-The deployment process writes a new snapshot to a staging location, verifies it,
-and then switches it into place atomically. It never edits the active snapshot
-file by file.
+The deployment process writes a new snapshot to a staging location and invokes
+the image's non-listening `preflight-snapshot.sh` with that candidate, the
+verification key, expected service ID and the host's existing revision state.
+Preflight verifies the signature, identity, deadlines, file digests and
+revision/digest pair without changing the state file or active path. Only exit
+status 0 permits the future Ansible role to switch the active path atomically.
+Status 65 rejects rollback or same-revision/different-content, 66 rejects bad
+input or state, 70 reports an internal failure and 78 reports expiry. The
+runtime repeats the check before import as defense in depth.
 
 The verifier should be a small fail-fast program with tested, distinct exit
 codes. The spike's shell prototype showed how easily `set +e` around a helper
@@ -309,7 +316,9 @@ Startup must be transactional from the application's point of view:
    initialization listener only where offline tools do not suffice.
 4. Import all directory entries offline.
 5. Run `slaptest` and semantic checks against the completed database.
-6. Start slapd under the expiry watchdog (section 4.6) only after every check
+6. Delete the verified LDIF copy immediately; failure and shutdown paths delete
+   it as well.
+7. Start slapd under the expiry watchdog (section 4.6) only after every check
    succeeds.
 
 No TCP listener should accept application traffic during import. A malformed
@@ -377,9 +386,11 @@ anyone returns on Monday.
 
 Three measures keep such a failure gradual instead of simultaneous:
 
-1. Stagger the generated `expires_at` values across services. A fleet whose
-   deadlines are spread over several hours degrades service by service and
-   leaves operators a working window.
+1. Give each service an explicit `expiry_offset_seconds` between 0 and 86400,
+   smaller than the soft TTL. Subtract it from both deadlines derived from one
+   controlled `generated_at`. An offset can only expire a service earlier than
+   the maximum hard TTL and cannot collapse the soft/hard ordering. A fleet
+   whose deadlines are spread over several hours degrades service by service.
 2. Give each snapshot two deadlines. A soft deadline marks when a fresh
    snapshot should have arrived and only raises an alert. The hard deadline
    stops the service. The gap between them buys monitored reaction time
@@ -507,8 +518,8 @@ The implementation should:
 * store snapshot files with an account and SELinux label unavailable to the
   application container;
 * encrypt snapshot artifacts in transit and at rest outside the container;
-* remove temporary decrypted files after successful import when restart and
-  recovery requirements permit it.
+* remove the verified LDIF plaintext immediately after successful import and on
+  every initialization failure or shutdown path.
 
 Argon2 parameters need measurement. A spike benchmarked Debian 13's Argon2
 module on one host: the packaged default (`m=7168,t=5,p=1`) verified a
@@ -622,13 +633,13 @@ minimal-package spike measured 144 MB (51 MB compressed). The Debian 13 slim
 base alone is 81 MB. Slimming beyond this would save little compared with the
 simplicity of a plain Debian package installation.
 
-Every release should record its package manifest and SBOM, run vulnerability and
-integration scans, push the candidate by immutable digest to the controlled
-registry, and sign and verify that registry digest before promotion or deployment.
-The candidate is not a release while it remains unsigned or unverified. Automated
-update proposals keep the base digest and Debian security packages moving through
-the same tests. Releases currently target `linux/amd64` only; adding `linux/arm64`
-is tracked as later work under the build guide's platform expectations.
+ConClear implements isolated builds, exact-layout tests, SBOM generation, Trivy
+gates, evidence, provenance, candidate publication, Cosign operations,
+verification and promotion. Runtime and generator remain independent release
+images; their compatibility result names both same-revision layouts. Renovate is
+the sole automated proposal path for base digests, while ConClear only checks.
+Releases currently target `linux/amd64`; adding `linux/arm64` requires the full
+behavioral path on a native worker or an accurately recorded allowed emulator.
 
 Alpine was considered for a smaller filesystem. Its musl environment and
 different OpenLDAP module packaging would add another compatibility surface for
@@ -678,8 +689,11 @@ mount types, read-only flags and SELinux relabeling.
 
 Anonymous access to `userPassword` is limited to the LDAP `auth` privilege needed
 for password verification. Anonymous searches and attribute reads are denied, and
-an empty-password unauthenticated bind grants no access. Application bind accounts
-can search only their own service subtree and only approved attributes.
+an empty-password unauthenticated bind grants no access. Within one service-local
+snapshot, any authenticated user, including an application bind account, can
+enumerate other entries and read only the approved non-password attributes.
+Password verifiers, unlisted metadata and `cn=config` remain denied. Tightening
+this intentional boundary requires a separate product-owner decision.
 
 The server should set conservative size and time limits, indexed filters for
 expected application queries, connection limits, and a maximum MDB size. Logging
@@ -1000,10 +1014,10 @@ that migration open.
 
 ## 15. Implementation phases
 
-The work is ordered so that each phase leaves a testable artifact. Phases 1 and
-2 are implemented. Most of phase 3 and the generator portion of phase 4 are also
-implemented. The release gate exists but currently blocks the images pending a
-review of reported vulnerabilities. Appendix A records the remaining work.
+The work is ordered so that each phase leaves a testable artifact. Phases 1
+through 3 and the generator plus preflight portions of phase 4 are implemented.
+ConClear owns current qualification and release evidence. Appendix A records the
+remaining operational work; source documentation does not freeze scanner counts.
 
 ### Phase 1: freeze the runtime contract and test harness
 
@@ -1060,9 +1074,9 @@ review of reported vulnerabilities. Appendix A records the remaining work.
    profile.
 4. Enforce read-only ACLs, separate bind credentials, search size and time limits,
    indexed application filters, bind concurrency limits and Argon2id parameters.
-5. Pin the Debian base by digest, record exact packages, generate an SBOM, scan
-   the result, sign it and mirror the digest to the company registry. Automated
-   update proposals must rebuild and run the full compatibility suite.
+5. Pin the Debian base by digest and use ConClear for isolated builds, package
+   evidence, SBOMs, scans, provenance, signing, verification and promotion.
+   Renovate proposals must pass the full compatibility suite.
 
 ### Phase 4: build generation and deployment
 
@@ -1077,8 +1091,8 @@ review of reported vulnerabilities. Appendix A records the remaining work.
 4. Build an Ansible role that stages, verifies and atomically activates snapshots;
    records the highest accepted revision; installs the host expiry backstop; and
    reports the active revision to the control plane.
-5. Add the soft deadline, per-service hard deadline, staggered fleet expiry and
-   audited emergency override procedure.
+5. Select service TTL policy and the implemented bounded expiry offsets, and
+   define the audited emergency override procedure.
 
 The Ansible role is deliberately deferred to a dedicated task because the
 organization already has strong deployment conventions that this repository
@@ -1145,21 +1159,24 @@ are demonstrated by automated tests or an operational exercise:
 
 The following values need explicit owner approval before production deployment:
 
-* maximum snapshot lifetime per service, expiry staggering and the soft and
-  hard deadlines (section 4.7), plus the offboarding service-level objective;
+* maximum snapshot lifetime, per-service offset assignments and the offboarding
+  service-level objective (section 4.7);
 * custody and rotation of the snapshot signing key (the mechanism itself, a
   minisign-style detached signature, was validated in a spike);
 * custody and per-host provisioning of the snapshot decryption key;
 * password enrollment policy, including generated or breach-screened passwords
   and per-service passwords for internet-facing deployments;
 * Argon2 parameters and the bind concurrency limit;
-* vulnerability severity policy, VEX review ownership and the separate approval
-  and expiry process for accepted but applicable vulnerabilities;
-* exact LDAP schemas and group representation;
-* monotonic revision storage location and rollback procedure;
+* vulnerability decisions and any evidenced, owned, expiring ConClear
+  exceptions for applicable findings;
+* whether to tighten the documented authenticated-user enumeration ACL;
+* production revision-state location and exceptional rollback procedure;
 * application session invalidation procedures;
-* whether decrypted snapshots remain on disk between restarts;
 * emergency expiry override policy;
+* approved self-hosted Renovate runner or organization preset;
+* protected ConClear release profile, Quay controls, signing-key custody and
+  deployment admission trust-root provisioning;
+* native arm64 qualification capacity if that platform is required;
 * Dex topology and storage, if OIDC is added.
 
 ## 18. Conclusion
@@ -1190,91 +1207,53 @@ understanding that it introduces a central login dependency.
 
 The repository implements and tests the following baseline:
 
-* a Debian 13 slim runtime image with a fixed non-root account, no OCI volumes,
-  no development toolchain, only the required OpenLDAP modules and a recorded
-  package inventory;
-* signed manifests with service binding, file digests, input size limits, hard
-  expiry and overlapping verification keys for signing-key rotation;
-* rollback state that binds a monotonically increasing revision to the accepted
-  manifest digest;
-* complete offline `cn=config` and MDB construction before a TCP listener opens;
-* deterministic UUIDv5 enforcement, reciprocal `member` and `memberOf` checks,
-  and an Argon2id parameter floor;
-* a PID 1 watchdog that forwards signals, stops at hard expiry, detects its own
-  failure and returns distinct exit codes;
-* a strict YAML generator using `python-ldap` for DNs and LDIF, with separate
-  credential-file references, service-specific passwords and atomic output;
-* rootless Podman tests for tampering, replay, expiry, watchdog failure, TLS,
-  ACLs, resource limits, password rotation, offboarding and generated-snapshot
-  authentication;
-* a Quadlet example with an internal network, read-only filesystem, dropped
-  capabilities, explicit limits and Podman health supervision;
-* machine-readable freshness status plus a rootless systemd backstop example;
-* digest-pinned Trivy release tooling that records external package inventories,
-  SPDX SBOMs, security reports, scanner-input identities and OCI digests;
-* source revision, version, build time and clean-tree labels on both images,
-  with release rejection for dirty or unversioned builds;
-* a separate Cosign command that rejects tags and verifies the pushed image
-  digest and SPDX file hash before signing and attesting.
+* fixed UID/GID 1001 identities, root-owned immutable and read-only input paths,
+  and ownership limited to the declared runtime, state and generator-output
+  paths;
+* signed manifests whose JSON Schema, generator output and small fail-closed
+  runtime verifier are tested for agreement;
+* bounded expiry offsets that only shorten the common maximum TTLs and derive
+  both deadlines from one generation time;
+* non-listening staged revision preflight plus runtime replay defense that binds
+  revision to manifest digest and migrates legacy revision-only state;
+* offline OpenLDAP import without the unused NIS schema, followed by immediate
+  verified-LDIF plaintext deletion;
+* documented service-local authenticated enumeration with password,
+  administrative and unlisted attribute denial;
+* exact-layout rootless Podman tests for tampering, replay, expiry, watchdog,
+  TLS, ACL, resource, rotation, offboarding and cross-image compatibility;
+* ConClear configuration for the independent runtime and generator images,
+  including same-revision dependency layouts, runtime controls and current
+  `linux/amd64` qualification;
+* default-deny build context, digest-only Renovate proposals, a Quadlet example,
+  host expiry backstop and default-reject deployment admission template.
 
-The repository does not complete the operational system. These items remain:
+The repository does not complete the operational system. These external items
+remain:
 
-* Build the Ansible role that encrypts snapshots in transit, stages them under
-  private ownership, switches them atomically, restarts the Quadlet and reports
-  the active revision.
-* Decide where decrypted snapshots live and how the target host receives the
-  decryption key. The implementation signs snapshots but does not encrypt them.
-* Connect the implemented JSON status to fleet monitoring for soft deadlines,
-  hard deadlines and revision drift. Add collection for failed binds, resource
-  use and repeated startup failures.
-* Choose per-service deadlines and stagger them so a long control-plane outage
-  cannot stop the whole fleet at once.
-* Define and test the local emergency expiry override procedure. The container
-  intentionally has no environment switch that disables expiry.
-* Review and resolve the current vulnerability gate. A 2026-08-03 spike with
-  Trivy 0.72.0 reported 12 critical and 26 high findings in the runtime image,
-  plus 4 critical and 33 high findings in the generator, and blocked release.
-  These counts replace the earlier Syft and Grype baseline; scanner inventories,
-  advisory sources and severity choices are not interchangeable. Sampled
-  findings referred to installed package versions, while Debian classified some
-  high ecosystem severities as minor or no-DSA issues. Do not hide that mismatch
-  with a blanket ignore rule. The release command accepts a reviewed OpenVEX
-  document, applies it to both scans and hashes it into the release record.
-  Trivy's VEX support is experimental, so its behavior needs testing whenever the
-  pinned version changes. Record `not_affected` only when the vulnerable
-  component or code is absent, unreachable or otherwise demonstrably
-  inapplicable. Risk acceptance for an applicable Debian no-DSA issue is a
-  separate policy with an owner and review expiry; it must not be represented as
-  VEX `not_affected`.
-* The release command scans both images even when the first fails policy, writes
-  complete evidence with a rejected result and returns status 2. Rejected image
-  metadata cannot be passed to the signing command.
-* Trivy is the authoritative scanner for SBOM generation, vulnerabilities,
-  secrets and misconfiguration. Syft and Grype are a fallback only if Trivy
-  cannot process a required target or output format; fallback results must not
-  create a second release verdict. The image spike enabled all three Trivy
-  security scanners but found no embedded configuration files and no secrets.
-  The release command therefore exports the revision recorded in the images and
-  scans that committed source tree separately. The source scan found no secrets
-  and two low-severity `DS-0026` findings because health checks are defined in
-  Quadlet rather than in either Containerfile.
-* Trivy's release infrastructure was compromised in March 2026. The affected
-  container versions were 0.69.4 through 0.69.6; this project uses 0.72.0. A
-  version being outside the published incident range is not enough on its own.
-  Scanner updates require a digest pin, keyless Cosign verification against the
-  Trivy release-workflow identity, internal mirroring and a new finding baseline.
-  The keyless verification of the pinned 0.72.0 image succeeded during the
-  2026-08-03 spike, including certificate and transparency-log checks.
-* Run the release tooling in CI, sign both images with the approved Cosign key,
-  verify the resulting signatures and attestations, and mirror immutable digests
-  into the company registry. The hooks exist, but no registry credentials or
-  signing keys were available for this implementation pass.
-* Run clean-host recovery, offboarding, password rotation, VM rollback and clock
-  fault exercises against a real pilot application. Validate the application's
-  session and authorization-cache behavior as part of that pilot.
-* Approve the password enrollment policy, service-specific password scope,
-  Argon2 parameters, schema set, LDAP query indexes and bind limits for the
-  chosen VM class and application.
+* Build the organization-specific Ansible role that stages snapshots, invokes
+  the implemented preflight, switches the active path atomically, restarts the
+  Quadlet and reports the active revision.
+* Provision snapshot encryption and decryption-key delivery; signatures do not
+  encrypt the credential-bearing LDIF.
+* Connect status to fleet monitoring and run clean-host recovery, application
+  offboarding, VM rollback, clock-fault and session-cache exercises.
+* Select maximum TTLs and per-service offsets, and define an audited emergency
+  expiry procedure without adding a runtime bypass.
+* Provide the approved self-hosted Renovate runner or organization preset. The
+  repository configuration does not grant a hosted service write access and
+  does not auto-merge.
+* Provision the protected ConClear production profile, approved builder and
+  signing identities, Quay credentials and repository controls, key custody and
+  deployment trust root. Local qualification is not a signed release.
+* Review current ConClear vulnerability evidence and approve any exception only
+  with its required owner, rationale, reachability, controls and expiry. Current
+  scanner counts belong in retained evidence, not this design document.
+* Provide native arm64 capacity, or an allowed accurately recorded emulator, and
+  pass the complete behavioral path before declaring that platform.
+* Decide whether the documented authenticated-user enumeration ACL should be
+  tightened, and approve password, Argon2, bind and session policies for each
+  production application.
 * Evaluate Dex separately if an application needs OIDC. No Dex runtime or token
   lifecycle is part of this repository.
 
