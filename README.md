@@ -340,7 +340,7 @@ For every authorization, group, password, or identity change:
 
 The future Ansible role invokes the candidate image without a listener, mounting
 the staged snapshot, verification key and existing state read-only, and a fresh
-private `/run/openldap` tmpfs:
+private writable `/run/openldap` path:
 
 ```sh
 /usr/local/lib/openldap-declarative/preflight-snapshot.sh \

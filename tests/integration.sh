@@ -160,6 +160,7 @@ refresh_snapshot_signature() {
   jq --arg digest "${digest}" '.files[0].sha256 = $digest' \
     "${snapshot_dir}/manifest.json" >"${snapshot_dir}/manifest.json.new" || return 1
   mv "${snapshot_dir}/manifest.json.new" "${snapshot_dir}/manifest.json" || return 1
+  chmod 0644 "${snapshot_dir}/manifest.json" || return 1
   sign_manifest "${snapshot_dir}" || return 1
 }
 
@@ -203,6 +204,15 @@ create_snapshot() {
   sign_manifest "${snapshot_dir}" || return 1
   chmod 0755 "${snapshot_dir}"
   chmod 0644 "${snapshot_dir}"/*
+}
+
+copy_snapshot() {
+  source_snapshot=${1}
+  destination_snapshot=${2}
+
+  cp -R "${source_snapshot}" "${destination_snapshot}" || return 1
+  chmod 0755 "${destination_snapshot}" || return 1
+  chmod 0644 "${destination_snapshot}"/*
 }
 
 create_volume() {
@@ -300,7 +310,9 @@ expect_container_exit() {
   expected_message=${3:-}
 
   podman start "${container_name}" >/dev/null || return 1
-  actual_status=$(timeout 180 podman wait "${container_name}") || {
+  actual_status=$(timeout 180 "${podman_binary}" \
+    --root "${podman_root}" --runroot "${podman_runroot}" \
+    wait "${container_name}") || {
     podman logs "${container_name}" >&2 || true
     return 1
   }
@@ -530,7 +542,7 @@ test_revision_replay() {
   wait_until_healthy "${revision_two_repeat_container}" || return 1
   podman stop --time 3 "${revision_two_repeat_container}" >/dev/null || return 1
 
-  cp -R "${workspace}/revision-2" "${workspace}/revision-2-conflict" || return 1
+  copy_snapshot "${workspace}/revision-2" "${workspace}/revision-2-conflict" || return 1
   sed -i '/^o: Example$/a description: conflicting content' \
     "${workspace}/revision-2-conflict/directory.ldif" || return 1
   refresh_snapshot_signature "${workspace}/revision-2-conflict" || return 1
@@ -551,8 +563,10 @@ run_revision_preflight_case() {
   expected_message=${4}
   state_directory=${workspace}/preflight-${case_name}
   state_path=${state_directory}/highest-revision
+  preflight_runtime=${workspace}/preflight-runtime-${case_name}
 
   mkdir -m 0755 "${state_directory}" || return 1
+  mkdir -m 0700 "${preflight_runtime}" || return 1
   if [ "${state_content}" != absent ]; then
     printf '%s\n' "${state_content}" >"${state_path}" || return 1
     chmod 0644 "${state_path}" || return 1
@@ -568,7 +582,7 @@ run_revision_preflight_case() {
     --user 1001:1001 \
     --cap-drop=all \
     --security-opt=no-new-privileges \
-    --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=0700 \
+    --volume "${preflight_runtime}:/run/openldap:rw,Z" \
     --volume "${workspace}/valid:/candidate:ro,Z" \
     --volume "${workspace}/public/snapshot.pub:/keys/snapshot.pub:ro,Z" \
     --volume "${state_directory}:/existing-state:ro,Z" \
@@ -604,25 +618,26 @@ test_revision_preflight() {
 }
 
 test_rejected_snapshots() {
-  cp -R "${workspace}/valid" "${workspace}/tampered" || return 1
+  copy_snapshot "${workspace}/valid" "${workspace}/tampered" || return 1
   printf '%s\n' '# tampered' >>"${workspace}/tampered/directory.ldif"
   create_container tampered tampered test-service "${resource_prefix}-tampered-state" ldap || return 1
   tampered_container=${created_container_name}
   expect_container_exit "${tampered_container}" 65 \
     'Snapshot data digest does not match the manifest' || return 1
 
-  cp -R "${workspace}/valid" "${workspace}/tampered-manifest" || return 1
+  copy_snapshot "${workspace}/valid" "${workspace}/tampered-manifest" || return 1
   jq '.revision = 99' "${workspace}/tampered-manifest/manifest.json" \
     >"${workspace}/tampered-manifest/manifest.json.new" || return 1
   mv "${workspace}/tampered-manifest/manifest.json.new" \
     "${workspace}/tampered-manifest/manifest.json" || return 1
+  chmod 0644 "${workspace}/tampered-manifest/manifest.json" || return 1
   create_container tampered-manifest tampered-manifest test-service \
     "${resource_prefix}-tampered-manifest-state" ldap || return 1
   tampered_manifest_container=${created_container_name}
   expect_container_exit "${tampered_manifest_container}" 65 \
     'Snapshot manifest signature verification failed' || return 1
 
-  cp -R "${workspace}/valid" "${workspace}/unsigned" || return 1
+  copy_snapshot "${workspace}/valid" "${workspace}/unsigned" || return 1
   unlink "${workspace}/unsigned/manifest.json.minisig" || return 1
   create_container unsigned unsigned test-service \
     "${resource_prefix}-unsigned-state" ldap || return 1
@@ -674,13 +689,14 @@ test_rejected_snapshots() {
   expect_container_exit "${inconsistent_membership_container}" 65 \
     'member and memberOf attributes must describe the same relationships' || return 1
 
-  cp -R "${workspace}/valid" "${workspace}/too-many-files" || return 1
+  copy_snapshot "${workspace}/valid" "${workspace}/too-many-files" || return 1
   digest=$(sha256sum "${workspace}/too-many-files/directory.ldif" | cut -d ' ' -f 1) || return 1
   jq --arg digest "${digest}" \
     '.files = [range(0; 33) as $index | {path: ("directory-" + ($index | tostring) + ".ldif"), sha256: $digest}]' \
     "${workspace}/too-many-files/manifest.json" >"${workspace}/too-many-files/manifest.json.new" || return 1
   mv "${workspace}/too-many-files/manifest.json.new" \
     "${workspace}/too-many-files/manifest.json" || return 1
+  chmod 0644 "${workspace}/too-many-files/manifest.json" || return 1
   sign_manifest "${workspace}/too-many-files" || return 1
   create_container too-many-files too-many-files test-service "${resource_prefix}-file-count-state" ldap || return 1
   too_many_files_container=${created_container_name}
@@ -737,7 +753,9 @@ test_watchdog_failure() {
   podman start "${container_name}" >/dev/null || return 1
   wait_until_healthy "${container_name}" || return 1
   podman exec "${container_name}" sh -c 'kill "$(cat /run/openldap/watchdog.pid)"' || return 1
-  actual_status=$(timeout 180 podman wait "${container_name}") || return 1
+  actual_status=$(timeout 180 "${podman_binary}" \
+    --root "${podman_root}" --runroot "${podman_runroot}" \
+    wait "${container_name}") || return 1
   [ "${actual_status}" -eq 75 ] || return 1
   podman logs "${container_name}" 2>&1 \
     | grep -F -q 'snapshot expiry watchdog failed' || return 1
