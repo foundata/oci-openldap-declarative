@@ -34,6 +34,7 @@ services:
     revision: 2
     soft_ttl_seconds: 21600
     hard_ttl_seconds: 43200
+    expiry_offset_seconds: 0
     groups:
       - "group-staff"
     users: []
@@ -43,8 +44,9 @@ services:
   - id: "example-mail"
     base_dn: "dc=example-mail,dc=services,dc=example,dc=org"
     revision: 7
-    soft_ttl_seconds: 22200
-    hard_ttl_seconds: 44400
+    soft_ttl_seconds: 21600
+    hard_ttl_seconds: 43200
+    expiry_offset_seconds: 600
     groups:
       - "group-staff"
     users:

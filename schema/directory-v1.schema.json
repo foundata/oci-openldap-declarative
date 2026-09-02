@@ -150,6 +150,7 @@
         "revision",
         "soft_ttl_seconds",
         "hard_ttl_seconds",
+        "expiry_offset_seconds",
         "groups",
         "users",
         "bind_account"
@@ -177,6 +178,11 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 2147483647
+        },
+        "expiry_offset_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400
         },
         "groups": {
           "$ref": "#/$defs/referenceList"

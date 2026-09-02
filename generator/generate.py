@@ -18,14 +18,13 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import ldap.dn
 import yaml
 from argon2 import PasswordHasher, Type
 from ldif import LDIFWriter
 from yaml.events import AliasEvent
-
 
 SERVICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
@@ -34,6 +33,7 @@ MAX_YAML_BYTES = 1024 * 1024
 ARGON_MEMORY_COST = 19_456
 ARGON_TIME_COST = 2
 ARGON_PARALLELISM = 1
+MAX_EXPIRY_OFFSET_SECONDS = 86_400
 
 
 class ConfigurationError(Exception):
@@ -91,6 +91,7 @@ class Service:
     revision: int
     soft_ttl_seconds: int
     hard_ttl_seconds: int
+    expiry_offset_seconds: int
     groups: tuple[str, ...]
     users: tuple[str, ...]
     bind_account: BindAccount
@@ -115,7 +116,9 @@ def error(message: str) -> NoReturn:
     raise ConfigurationError(message)
 
 
-def strict_keys(value: Any, *, required: set[str], optional: set[str], context: str) -> dict[str, Any]:
+def strict_keys(
+    value: Any, *, required: set[str], optional: set[str], context: str
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         error(f"{context} must be a mapping")
     keys = set(value)
@@ -148,6 +151,12 @@ def string_list(value: Any, *, context: str) -> tuple[str, ...]:
 def positive_integer(value: Any, *, context: str, maximum: int = 2**31 - 1) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > maximum:
         error(f"{context} must be an integer from 1 through {maximum}")
+    return value
+
+
+def nonnegative_integer(value: Any, *, context: str, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+        error(f"{context} must be an integer from 0 through {maximum}")
     return value
 
 
@@ -204,13 +213,20 @@ def validate_base_dn(value: Any, *, context: str) -> str:
         error(f"{context} must not be the root DSE")
     if len(parsed[0]) != 1 or parsed[0][0][0].casefold() != "dc":
         error(f"{context} must begin with one dc RDN")
-    return canonical
+    return cast(str, canonical)
 
 
 def parse_directory(path: Path) -> Directory:
     root = strict_keys(
         load_yaml(path, context="directory YAML"),
-        required={"format_version", "uuid_namespace", "organization", "users", "groups", "services"},
+        required={
+            "format_version",
+            "uuid_namespace",
+            "organization",
+            "users",
+            "groups",
+            "services",
+        },
         optional=set(),
         context="directory YAML",
     )
@@ -248,7 +264,9 @@ def parse_directory(path: Path) -> Directory:
         users[source_id] = User(
             source_id=source_id,
             uid=uid,
-            common_name=text_value(item["common_name"], context=f"{context}.common_name", maximum=256),
+            common_name=text_value(
+                item["common_name"], context=f"{context}.common_name", maximum=256
+            ),
             surname=text_value(item["surname"], context=f"{context}.surname", maximum=256),
             mail=mail,
             active=item["active"],
@@ -294,6 +312,7 @@ def parse_directory(path: Path) -> Directory:
                 "revision",
                 "soft_ttl_seconds",
                 "hard_ttl_seconds",
+                "expiry_offset_seconds",
                 "groups",
                 "users",
                 "bind_account",
@@ -318,7 +337,9 @@ def parse_directory(path: Path) -> Directory:
         )
         bind_account = BindAccount(
             source_id=validate_source_id(bind_item["id"], context=f"{context}.bind_account.id"),
-            common_name=validate_uid(bind_item["common_name"], context=f"{context}.bind_account.common_name"),
+            common_name=validate_uid(
+                bind_item["common_name"], context=f"{context}.bind_account.common_name"
+            ),
         )
         if bind_account.source_id in bind_source_ids:
             error(f"duplicate service bind-account id: {bind_account.source_id}")
@@ -326,8 +347,15 @@ def parse_directory(path: Path) -> Directory:
             error(f"duplicate service id: {service_id}")
         soft_ttl = positive_integer(item["soft_ttl_seconds"], context=f"{context}.soft_ttl_seconds")
         hard_ttl = positive_integer(item["hard_ttl_seconds"], context=f"{context}.hard_ttl_seconds")
+        expiry_offset = nonnegative_integer(
+            item["expiry_offset_seconds"],
+            context=f"{context}.expiry_offset_seconds",
+            maximum=MAX_EXPIRY_OFFSET_SECONDS,
+        )
         if soft_ttl >= hard_ttl:
             error(f"{context}.soft_ttl_seconds must be less than hard_ttl_seconds")
+        if expiry_offset >= soft_ttl:
+            error(f"{context}.expiry_offset_seconds must be less than soft_ttl_seconds")
         services[service_id] = Service(
             service_id=service_id,
             base_dn=validate_base_dn(item["base_dn"], context=f"{context}.base_dn"),
@@ -336,6 +364,7 @@ def parse_directory(path: Path) -> Directory:
             ),
             soft_ttl_seconds=soft_ttl,
             hard_ttl_seconds=hard_ttl,
+            expiry_offset_seconds=expiry_offset,
             groups=selected_groups,
             users=selected_users,
             bind_account=bind_account,
@@ -399,7 +428,10 @@ def parse_credentials(path: Path) -> Credentials:
                 )
         if default_password is None and not service_passwords:
             error(f"credentials.users.{source_id} must define at least one password source")
-        users[source_id] = {"password_file": default_password, "service_password_files": service_passwords}
+        users[source_id] = {
+            "password_file": default_password,
+            "service_password_files": service_passwords,
+        }
 
     if not isinstance(root["services"], dict):
         error("credentials services must be a mapping keyed by service id")
@@ -455,7 +487,12 @@ def read_password(path_value: str, *, context: str) -> str:
         password_bytes = password_bytes[:-2]
     elif password_bytes.endswith(b"\n"):
         password_bytes = password_bytes[:-1]
-    if not password_bytes or b"\x00" in password_bytes or b"\r" in password_bytes or b"\n" in password_bytes:
+    if (
+        not password_bytes
+        or b"\x00" in password_bytes
+        or b"\r" in password_bytes
+        or b"\n" in password_bytes
+    ):
         error(f"{context} must contain exactly one non-empty line")
     try:
         return password_bytes.decode("utf-8")
@@ -468,10 +505,10 @@ def user_password_file(credentials: Credentials, user_id: str, service_id: str) 
         error(f"no credential is defined for authorized user {user_id}")
     item = credentials.users[user_id]
     if service_id in item["service_password_files"]:
-        return item["service_password_files"][service_id]
+        return cast(str, item["service_password_files"][service_id])
     if item["password_file"] is None:
         error(f"no default or {service_id}-specific credential is defined for user {user_id}")
-    return item["password_file"]
+    return cast(str, item["password_file"])
 
 
 def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
@@ -479,7 +516,9 @@ def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
 
 
 def byte_attributes(attributes: dict[str, list[str]]) -> dict[str, list[bytes]]:
-    return {name: [value.encode("utf-8") for value in values] for name, values in attributes.items()}
+    return {
+        name: [value.encode("utf-8") for value in values] for name, values in attributes.items()
+    }
 
 
 def write_entry(writer: LDIFWriter, dn: str, attributes: dict[str, list[str]]) -> None:
@@ -542,7 +581,11 @@ def write_service_ldif(
                 "entryUUID": [stable_uuid(directory.namespace, "service-base", service.service_id)],
             },
         )
-        for ou_name, ou_dn in (("people", people_dn), ("groups", groups_dn), ("services", services_dn)):
+        for ou_name, ou_dn in (
+            ("people", people_dn),
+            ("groups", groups_dn),
+            ("services", services_dn),
+        ):
             write_entry(
                 writer,
                 ou_dn,
@@ -550,7 +593,11 @@ def write_service_ldif(
                     "objectClass": ["top", "organizationalUnit"],
                     "ou": [ou_name],
                     "entryUUID": [
-                        stable_uuid(directory.namespace, "service-container", f"{service.service_id}:{ou_name}")
+                        stable_uuid(
+                            directory.namespace,
+                            "service-container",
+                            f"{service.service_id}:{ou_name}",
+                        )
                     ],
                 },
             )
@@ -657,11 +704,15 @@ def sign_manifest(manifest_path: Path, signing_key: Path, service_id: str, revis
         f"openldap snapshot {service_id} revision {revision}",
     ]
     try:
-        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+        result = subprocess.run(
+            command, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+        )
     except OSError as exc:
         error(f"cannot execute minisign: {exc}")
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+        detail = (
+            result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+        )
         error(f"minisign could not sign the manifest: {detail}")
     os.chmod(signature_path, 0o600)
 
@@ -685,8 +736,14 @@ def generate_service(
         "base_dn": service.base_dn,
         "revision": service.revision,
         "generated_at": iso_timestamp(generated_at),
-        "soft_expires_at": iso_timestamp(generated_at + timedelta(seconds=service.soft_ttl_seconds)),
-        "expires_at": iso_timestamp(generated_at + timedelta(seconds=service.hard_ttl_seconds)),
+        "soft_expires_at": iso_timestamp(
+            generated_at
+            + timedelta(seconds=service.soft_ttl_seconds - service.expiry_offset_seconds)
+        ),
+        "expires_at": iso_timestamp(
+            generated_at
+            + timedelta(seconds=service.hard_ttl_seconds - service.expiry_offset_seconds)
+        ),
         "uuid_namespace": str(directory.namespace),
         "files": [{"path": ldif_path.name, "sha256": digest}],
     }
@@ -700,12 +757,20 @@ def generate_service(
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--directory", required=True, type=Path, help="identity and authorization YAML")
-    parser.add_argument("--credentials", required=True, type=Path, help="credential file reference YAML")
+    parser.add_argument(
+        "--directory", required=True, type=Path, help="identity and authorization YAML"
+    )
+    parser.add_argument(
+        "--credentials", required=True, type=Path, help="credential file reference YAML"
+    )
     parser.add_argument("--signing-key", required=True, type=Path, help="minisign secret key")
     parser.add_argument("--output", required=True, type=Path, help="new output directory")
-    parser.add_argument("--service", action="append", default=[], help="generate only this service; repeatable")
-    parser.add_argument("--generated-at", help="fixed RFC 3339 UTC generation time, primarily for testing")
+    parser.add_argument(
+        "--service", action="append", default=[], help="generate only this service; repeatable"
+    )
+    parser.add_argument(
+        "--generated-at", help="fixed RFC 3339 UTC generation time, primarily for testing"
+    )
     return parser.parse_args()
 
 
