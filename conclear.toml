@@ -80,7 +80,7 @@ read_only = false
 [[images.test.preparations]]
 name = "initialize-runtime-work"
 image = "generator"
-command = ["/bin/sh", "-c", "printf '%s\n' 'conclear-owned-runtime' > /output/.prepared"]
+command = ["/bin/sh", "-c", "umask 077; printf '%s\n' 'conclear-owned-runtime' > /output/.prepared"]
 timeout_seconds = 30
 
 [[images.test.preparations.mounts]]
@@ -92,7 +92,7 @@ read_only = false
 [[images.test.preparations]]
 name = "initialize-revision-state"
 image = "generator"
-command = ["/bin/sh", "-c", "printf '%s\n' 'conclear-owned-state' > /output/.prepared"]
+command = ["/bin/sh", "-c", "umask 077; printf '%s\n' 'conclear-owned-state' > /output/.prepared"]
 timeout_seconds = 30
 
 [[images.test.preparations.mounts]]
