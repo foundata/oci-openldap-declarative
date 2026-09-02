@@ -27,6 +27,14 @@ secret = true
 [[images.test.outputs]]
 name = "snapshot"
 
+[[images.test.outputs]]
+name = "runtime-work"
+secret = true
+
+[[images.test.outputs]]
+name = "revision-state"
+secret = true
+
 [[images.test.preparations]]
 name = "create-test-credentials"
 image = "generator"
@@ -69,6 +77,30 @@ name = "snapshot"
 target = "/output"
 read_only = false
 
+[[images.test.preparations]]
+name = "initialize-runtime-work"
+image = "generator"
+command = ["/bin/sh", "-c", "printf '%s\n' 'conclear-owned-runtime' > /output/.prepared"]
+timeout_seconds = 30
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "runtime-work"
+target = "/output"
+read_only = false
+
+[[images.test.preparations]]
+name = "initialize-revision-state"
+image = "generator"
+command = ["/bin/sh", "-c", "printf '%s\n' 'conclear-owned-state' > /output/.prepared"]
+timeout_seconds = 30
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "revision-state"
+target = "/output"
+read_only = false
+
 [images.test.launch]
 environment = { LDAP_EXPECTED_SERVICE_ID = "example-app", LDAP_SNAPSHOT_DIR = "/snapshot/generated/example-app" }
 expected_exit_status = 0
@@ -84,6 +116,18 @@ source = "output"
 name = "snapshot"
 target = "/snapshot"
 read_only = true
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "runtime-work"
+target = "/run/openldap"
+read_only = false
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "revision-state"
+target = "/state"
+read_only = false
 
 [[images.hooks]]
 name = "runtime-integration"
