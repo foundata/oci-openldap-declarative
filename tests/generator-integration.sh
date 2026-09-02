@@ -52,6 +52,18 @@ cleanup() {
   testlib_finish
 }
 
+cleanup_on_exit() {
+  exit_status=$?
+  trap - EXIT
+  if ! cleanup; then
+    printf '%s\n' 'ERROR: test resource cleanup failed' >&2
+    if [ "${exit_status}" -eq 0 ]; then
+      exit_status=1
+    fi
+  fi
+  exit "${exit_status}"
+}
+
 check_generator_image() {
   podman run --rm --entrypoint sh "${generator_image}" -c '
     test "$(id -u):$(id -g)" = 1001:1001 || exit 1
@@ -449,7 +461,7 @@ main() {
     fail 'Select exactly one test mode'
   fi
   testlib_init "${test_mode}" generator-integration || exit $?
-  trap cleanup EXIT
+  trap cleanup_on_exit EXIT
   trap 'exit 130' HUP INT TERM
 
   generator_image=localhost/${resource_prefix}:generator

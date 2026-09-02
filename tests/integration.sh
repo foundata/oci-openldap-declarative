@@ -55,6 +55,18 @@ cleanup() {
   testlib_finish
 }
 
+cleanup_on_exit() {
+  exit_status=$?
+  trap - EXIT
+  if ! cleanup; then
+    printf '%s\n' 'ERROR: test resource cleanup failed' >&2
+    if [ "${exit_status}" -eq 0 ]; then
+      exit_status=1
+    fi
+  fi
+  exit "${exit_status}"
+}
+
 run_image_tool() {
   tool_name=${1}
   shift
@@ -820,7 +832,7 @@ main() {
     fail 'Select exactly one test mode'
   fi
   testlib_init "${test_mode}" runtime-integration || exit $?
-  trap cleanup EXIT
+  trap cleanup_on_exit EXIT
   trap 'exit 130' HUP INT TERM
 
   image_ref=localhost/${resource_prefix}:runtime

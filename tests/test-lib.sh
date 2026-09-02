@@ -161,7 +161,7 @@ testlib_import_image() {
   fi
 }
 
-testlib_remove_owned_directory() {
+testlib_validate_owned_directory() {
   owned_path=${1}
   marker=${owned_path}/.openldap-test-owner
 
@@ -179,6 +179,15 @@ testlib_remove_owned_directory() {
       "${owned_path}" >&2
     return 1
   fi
+}
+
+testlib_remove_owned_directory() {
+  owned_path=${1}
+
+  testlib_validate_owned_directory "${owned_path}" || return 1
+  if [ ! -d "${owned_path}" ]; then
+    return 0
+  fi
   rm -rf "${owned_path}"
 }
 
@@ -190,7 +199,12 @@ testlib_finish() {
     return 0
   fi
 
+  testlib_validate_owned_directory "${workspace}" || return 1
+  testlib_validate_owned_directory "${podman_root}" || return 1
+  testlib_validate_owned_directory "${podman_runroot}" || return 1
+
+  command "${podman_binary}" --root "${podman_root}" --runroot "${podman_runroot}" \
+    system reset --force >/dev/null || return 1
   testlib_remove_owned_directory "${workspace}" || return 1
-  testlib_remove_owned_directory "${podman_root}" || return 1
-  testlib_remove_owned_directory "${podman_runroot}" || return 1
+  rm -rf "${podman_root}" "${podman_runroot}"
 }
