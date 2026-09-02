@@ -1,9 +1,8 @@
 FROM docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f
 
-ARG OCI_IMAGE_CREATED="1970-01-01T00:00:00Z"
-ARG OCI_IMAGE_REVISION="unknown"
-ARG OCI_IMAGE_VERSION="development"
-ARG SOURCE_TREE_STATE="unknown"
+ARG IMAGE_CREATED
+ARG IMAGE_REVISION
+ARG IMAGE_VERSION
 
 LABEL org.opencontainers.image.title="OpenLDAP Declarative"
 LABEL org.opencontainers.image.description="Read-only OpenLDAP directory built from a signed snapshot"
@@ -11,15 +10,11 @@ LABEL org.opencontainers.image.vendor="foundata GmbH"
 LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
 LABEL org.opencontainers.image.base.name="docker.io/library/debian:13-slim"
-LABEL org.opencontainers.image.created="${OCI_IMAGE_CREATED}"
-LABEL org.opencontainers.image.revision="${OCI_IMAGE_REVISION}"
-LABEL org.opencontainers.image.version="${OCI_IMAGE_VERSION}"
-LABEL com.foundata.openldap-declarative.source-tree-state="${SOURCE_TREE_STATE}"
+LABEL org.opencontainers.image.created="${IMAGE_CREATED}"
+LABEL org.opencontainers.image.revision="${IMAGE_REVISION}"
+LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG USER_OPENLDAP_UID=1001
-ARG GROUP_OPENLDAP_GID=1001
-
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -47,13 +42,18 @@ RUN apt-get update \
     /usr/share/man/* \
     /var/lib/apt/lists/* \
     /var/lib/ldap/* \
-  && groupmod --gid "${GROUP_OPENLDAP_GID}" openldap \
-  && usermod --uid "${USER_OPENLDAP_UID}" --gid "${GROUP_OPENLDAP_GID}" openldap \
+  && if getent passwd 1001 >/dev/null || getent group 1001 >/dev/null; then \
+    printf '%s\n' 'UID or GID 1001 already exists in the pinned base image' >&2; \
+    exit 1; \
+  fi \
+  && groupmod --gid 1001 openldap \
+  && usermod --uid 1001 --gid 1001 openldap \
   && install -d -o openldap -g openldap -m 0700 \
-    /run/credentials \
     /run/openldap \
-    /snapshot \
     /state \
+  && install -d -o root -g root -m 0555 \
+    /run/credentials \
+    /snapshot \
     /tls
 
 ENV LDAP_RUNTIME_DIR="/run/openldap" \
@@ -70,9 +70,11 @@ COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarat
 COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
 COPY --chown=0:0 --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh
+COPY --chown=0:0 --chmod=0555 scripts/preflight-snapshot.sh /usr/local/lib/openldap-declarative/preflight-snapshot.sh
+COPY --chown=0:0 --chmod=0555 scripts/revision-state.sh /usr/local/lib/openldap-declarative/revision-state.sh
 COPY --chown=0:0 --chmod=0555 scripts/status.sh /usr/local/lib/openldap-declarative/status.sh
 COPY --chown=0:0 --chmod=0555 scripts/verify-snapshot.sh /usr/local/lib/openldap-declarative/verify-snapshot.sh
-COPY --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
+COPY --chown=0:0 --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 
 USER 1001:1001
 

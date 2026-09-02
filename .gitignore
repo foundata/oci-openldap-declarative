@@ -218,3 +218,24 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/git,vim,linux,macos,windows,jetbrains+all,visualstudiocode
+
+### OpenLDAP Declarative ###
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+/private/
+credentials.yaml
+*-password
+passwords/
+snapshot*.key
+/snapshots/
+/output/
+/evidence/
+/release-evidence/
+/.conclear/
+/conclear-workspaces/
+/test-runs/
+/retained-test-resources/

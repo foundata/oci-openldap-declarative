@@ -36,3 +36,22 @@ die() {
   log_error "$*"
   exit "${exit_code}"
 }
+
+remove_verified_snapshot() {
+  cleanup_runtime_dir=${1}
+  cleanup_snapshot_dir=${cleanup_runtime_dir}/verified-snapshot
+  cleanup_files_file=${cleanup_runtime_dir}/verified-files
+
+  if [ -L "${cleanup_snapshot_dir}" ] || [ -f "${cleanup_snapshot_dir}" ]; then
+    unlink "${cleanup_snapshot_dir}" || return "${EXIT_INTERNAL}"
+  elif [ -d "${cleanup_snapshot_dir}" ]; then
+    find "${cleanup_snapshot_dir}" -mindepth 1 -delete || return "${EXIT_INTERNAL}"
+    rmdir "${cleanup_snapshot_dir}" || return "${EXIT_INTERNAL}"
+  fi
+
+  if [ -e "${cleanup_files_file}" ] || [ -L "${cleanup_files_file}" ]; then
+    unlink "${cleanup_files_file}" || return "${EXIT_INTERNAL}"
+  fi
+
+  return 0
+}

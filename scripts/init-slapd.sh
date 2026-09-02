@@ -200,7 +200,6 @@ write_base_configuration() {
       'include: file:///etc/ldap/schema/core.ldif' \
       'include: file:///etc/ldap/schema/cosine.ldif' \
       'include: file:///etc/ldap/schema/inetorgperson.ldif' \
-      'include: file:///etc/ldap/schema/nis.ldif' \
       '' \
       'dn: olcDatabase={-1}frontend,cn=config' \
       'objectClass: olcDatabaseConfig' \
@@ -393,6 +392,9 @@ verify_built_database() {
 }
 
 main() {
+  trap 'remove_verified_snapshot "${runtime_dir}" || true' 0
+  trap 'exit 70' HUP INT TERM
+
   if [ ! -f "${verified_manifest_file}" ] || [ ! -f "${verified_files_file}" ]; then
     die "${EXIT_INTERNAL}" 'Snapshot verification output is missing'
   fi
@@ -420,6 +422,8 @@ main() {
   import_directory_data || exit $?
   slapindex -F "${config_dir}" -n 1 || die "${EXIT_INTERNAL}" 'Cannot build directory indexes'
   verify_built_database "${base_dn}" || exit $?
+  remove_verified_snapshot "${runtime_dir}" \
+    || die "${EXIT_INTERNAL}" 'Cannot remove verified snapshot data after import'
 
   log_info 'Built and validated the directory without opening a listener'
 }

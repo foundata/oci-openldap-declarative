@@ -6,16 +6,17 @@ set -u
 
 project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
-readonly image_ref="${IMAGE_REF:-localhost/oci-openldap-declarative:integration-test}"
-readonly resource_prefix=ldap-declarative-test-$$
 readonly backstop_script="${project_dir}/examples/systemd/openldap-expiry-backstop"
+# shellcheck source=tests/test-lib.sh
+. "${project_dir}/tests/test-lib.sh"
 
-workspace=''
+test_mode=${1:-}
+image_ref=''
 container_names=''
 volume_names=''
 created_container_name=''
+created_runtime_volume=''
 valid_state_volume=''
-built_image=0
 
 log() {
   printf '%s\n' "==> $*"
@@ -36,7 +37,7 @@ remember_volume() {
 
 cleanup() {
   if [ "${KEEP_TEST_RESOURCES:-false}" = true ]; then
-    log "Keeping test resources with prefix ${resource_prefix}"
+    testlib_finish
     return 0
   fi
 
@@ -50,12 +51,8 @@ cleanup() {
       podman volume rm "${volume_name}" >/dev/null 2>&1 || true
     fi
   done
-  if [ -n "${workspace}" ] && [ -d "${workspace}" ]; then
-    rm -rf "${workspace}"
-  fi
-  if [ "${built_image}" -eq 1 ]; then
-    podman image rm "${image_ref}" >/dev/null 2>&1 || true
-  fi
+  podman image rm "${image_ref}" >/dev/null 2>&1 || true
+  testlib_finish
 }
 
 run_image_tool() {
@@ -198,6 +195,7 @@ create_snapshot() {
 
 create_volume() {
   volume_name=${1}
+  testlib_plan_volume "${volume_name}" || return 1
   podman volume create "${volume_name}" >/dev/null || return 1
   remember_volume "${volume_name}"
 }
@@ -234,6 +232,7 @@ create_container() {
     create_volume "${state_volume}" || return 1
   fi
 
+  testlib_plan_container "${container_name}" || return 1
   podman create \
     --name "${container_name}" \
     --network none \
@@ -259,6 +258,7 @@ create_container() {
     "${image_ref}" >/dev/null || return 1
   remember_container "${container_name}"
   created_container_name=${container_name}
+  created_runtime_volume=${runtime_volume}
 }
 
 wait_until_healthy() {
@@ -304,7 +304,23 @@ expect_container_exit() {
     return 1
   fi
 
+  assert_verified_plaintext_absent "${container_name}-runtime" || return 1
+
   return 0
+}
+
+assert_verified_plaintext_absent() {
+  inspected_volume=${1}
+
+  podman run --rm \
+    --network none \
+    --read-only \
+    --cap-drop=all \
+    --security-opt=no-new-privileges \
+    --entrypoint sh \
+    --mount "type=volume,source=${inspected_volume},destination=/inspect,ro" \
+    "${image_ref}" -c \
+    'test ! -e /inspect/verified-snapshot && test ! -e /inspect/verified-files'
 }
 
 assert_valid_runtime() {
@@ -340,6 +356,28 @@ assert_valid_runtime() {
     return 1
   fi
 
+  enumeration_output=$(podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=app,ou=services,dc=example,dc=org \
+    -w test-bind-password \
+    -b dc=example,dc=org -s sub '(objectClass=*)' \
+    dn uid cn description userPassword) || return 1
+  printf '%s\n' "${enumeration_output}" \
+    | grep -F -q 'dn: uid=test,ou=people,dc=example,dc=org' || return 1
+  printf '%s\n' "${enumeration_output}" \
+    | grep -F -q 'dn: cn=users,ou=groups,dc=example,dc=org' || return 1
+  if printf '%s\n' "${enumeration_output}" \
+    | grep -E -q '^(description|userPassword):'; then
+    return 1
+  fi
+  if podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=app,ou=services,dc=example,dc=org \
+    -w test-bind-password \
+    -b cn=config -s base olcRootPW >/dev/null 2>&1; then
+    return 1
+  fi
+
   if printf '%s\n' \
     'dn: dc=example,dc=org' \
     'changetype: modify' \
@@ -361,13 +399,17 @@ assert_valid_runtime() {
   podman exec "${container_name}" sh -c '
     slapd_pid=$(cat /run/openldap/slapd.pid) || exit 1
     grep -F -q "Max open files            1024                 1024" "/proc/${slapd_pid}/limits"
+    test ! -e /run/openldap/verified-snapshot
+    test ! -e /run/openldap/verified-files
+    if grep -R -F -q "nis.ldif" /run/openldap/slapd.d; then
+      exit 1
+    fi
   ' || return 1
 
   return 0
 }
 
 prepare_workspace() {
-  workspace=$(mktemp -d /tmp/openldap-declarative-integration.XXXXXX) || return 1
   mkdir -p "${workspace}/admin" "${workspace}/private" "${workspace}/public" "${workspace}/tls" || return 1
 
   run_image_tool minisign \
@@ -394,6 +436,19 @@ prepare_workspace() {
   chmod 0600 "${workspace}/private/snapshot.key" "${workspace}/private/rotated.key"
   # This test-only key is mounted read-only into a user-namespaced container.
   chmod 0644 "${workspace}/tls/cert.key"
+
+  backstop_container=${resource_prefix}-backstop
+  testlib_plan_container "${backstop_container}" || return 1
+  cat >"${workspace}/podman-backstop" <<EOF
+#!/usr/bin/env sh
+if [ "\${1:-}" = run ]; then
+  shift
+  exec "${podman_binary}" --root "${podman_root}" --runroot "${podman_runroot}" \\
+    run --name "${backstop_container}" "\$@"
+fi
+exec "${podman_binary}" --root "${podman_root}" --runroot "${podman_runroot}" "\$@"
+EOF
+  chmod 0700 "${workspace}/podman-backstop" || return 1
 }
 
 test_valid_snapshot() {
@@ -404,11 +459,13 @@ test_valid_snapshot() {
   podman start "${container_name}" >/dev/null || return 1
   wait_until_healthy "${container_name}" || return 1
   assert_valid_runtime "${container_name}" || return 1
-  "${backstop_script}" "${container_name}" \
+  PODMAN="${workspace}/podman-backstop" \
+    "${backstop_script}" "${container_name}" \
     "${workspace}/valid" "${workspace}/public/snapshot.pub" test-service || return 1
   podman stop --time 3 "${container_name}" >/dev/null || return 1
   exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
   [ "${exit_status}" -eq 0 ] || return 1
+  assert_verified_plaintext_absent "${created_runtime_volume}" || return 1
 
   create_container key-directory valid test-service "${resource_prefix}-key-directory-state" ldap directory || return 1
   key_directory_container=${created_container_name}
@@ -473,6 +530,65 @@ test_revision_replay() {
   create_container replay valid test-service "${state_volume}" ldap || return 1
   replay_container=${created_container_name}
   expect_container_exit "${replay_container}" 65 'is older than accepted revision' || return 1
+}
+
+run_revision_preflight_case() {
+  case_name=${1}
+  state_content=${2}
+  expected_status=${3}
+  expected_message=${4}
+  state_directory=${workspace}/preflight-${case_name}
+  state_path=${state_directory}/highest-revision
+
+  mkdir -m 0755 "${state_directory}" || return 1
+  if [ "${state_content}" != absent ]; then
+    printf '%s\n' "${state_content}" >"${state_path}" || return 1
+    chmod 0644 "${state_path}" || return 1
+    state_digest_before=$(sha256sum "${state_path}") || return 1
+  else
+    state_digest_before=absent
+  fi
+
+  preflight_output=$(podman run --rm \
+    --network none \
+    --read-only \
+    --userns keep-id:uid=1001,gid=1001 \
+    --user 1001:1001 \
+    --cap-drop=all \
+    --security-opt=no-new-privileges \
+    --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=0700 \
+    --volume "${workspace}/valid:/candidate:ro,Z" \
+    --volume "${workspace}/public/snapshot.pub:/keys/snapshot.pub:ro,Z" \
+    --volume "${state_directory}:/existing-state:ro,Z" \
+    --entrypoint /usr/local/lib/openldap-declarative/preflight-snapshot.sh \
+    "${image_ref}" \
+    /candidate /keys/snapshot.pub test-service /existing-state/highest-revision 2>&1)
+  preflight_status=$?
+  if [ "${preflight_status}" -ne "${expected_status}" ] \
+    || ! printf '%s\n' "${preflight_output}" | grep -F -q "${expected_message}"; then
+    printf '%s\n' "${preflight_output}" >&2
+    return 1
+  fi
+
+  if [ "${state_content}" = absent ]; then
+    [ ! -e "${state_path}" ] || return 1
+  else
+    state_digest_after=$(sha256sum "${state_path}") || return 1
+    [ "${state_digest_after}" = "${state_digest_before}" ] || return 1
+  fi
+}
+
+test_revision_preflight() {
+  manifest_digest=$(sha256sum "${workspace}/valid/manifest.json" | cut -d ' ' -f 1) || return 1
+  run_revision_preflight_case new absent 0 '(new)' || return 1
+  run_revision_preflight_case exact "1 ${manifest_digest}" 0 '(exact-replay)' || return 1
+  run_revision_preflight_case legacy 1 0 '(legacy-state-migration)' || return 1
+  run_revision_preflight_case lower "2 ${manifest_digest}" 65 \
+    'is older than accepted revision 2' || return 1
+  run_revision_preflight_case malformed 'not-a-revision' 66 \
+    'does not contain a non-negative integer' || return 1
+  run_revision_preflight_case conflict "1 0000000000000000000000000000000000000000000000000000000000000000" 65 \
+    'was already accepted with different content'
 }
 
 test_rejected_snapshots() {
@@ -653,6 +769,7 @@ test_image_contents() {
   [ "${image_size}" -lt 170000000 ] || return 1
 
   podman run --rm --entrypoint sh "${image_ref}" -c '
+    test "$(id -u):$(id -g)" = 1001:1001 || exit 1
     test -s /usr/local/share/openldap-declarative/package-versions.txt || exit 1
     test -s /usr/local/share/openldap-declarative/LICENSE.txt || exit 1
     test -s /usr/share/doc/slapd/copyright || exit 1
@@ -661,6 +778,14 @@ test_image_contents() {
     test -s /usr/lib/ldap/back_mdb.so || exit 1
     test -s /usr/lib/ldap/argon2.so || exit 1
     test -s /usr/lib/ldap/memberof.so || exit 1
+    for input_path in /snapshot /tls /run/credentials; do
+      test "$(stat -c "%u:%g:%a" "${input_path}")" = 0:0:555 || exit 1
+    done
+    for writable_path in /run/openldap /state; do
+      test "$(stat -c "%u:%g:%a" "${writable_path}")" = 1001:1001:700 || exit 1
+    done
+    test "$(stat -c "%u:%g:%a" /usr/local/share/openldap-declarative/LICENSE.txt)" \
+      = 0:0:444 || exit 1
     for immutable_file in /usr/local/lib/openldap-declarative/*.sh; do
       ownership_and_mode=$(stat -c "%u:%g:%a" "${immutable_file}") || exit 1
       if [ "${ownership_and_mode}" != 0:0:555 ]; then
@@ -691,14 +816,32 @@ test_image_contents() {
 }
 
 main() {
+  if [ "$#" -ne 1 ]; then
+    fail 'Select exactly one test mode'
+  fi
+  testlib_init "${test_mode}" runtime-integration || exit $?
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
 
-  if [ "${BUILD_IMAGE:-true}" = true ]; then
-    log 'Building the runtime image'
-    podman build --pull=never --tag "${image_ref}" "${project_dir}" >/dev/null || fail 'Image build failed'
-    built_image=1
-  fi
+  image_ref=localhost/${resource_prefix}:runtime
+  case "${test_mode}" in
+    --conclear)
+      testlib_import_image primary runtime "${image_ref}" \
+        || fail 'Cannot import the exact ConClear runtime layout'
+      ;;
+    --developer-build)
+      testlib_record developer-image "${image_ref}"
+      revision=$(git -C "${project_dir}" rev-parse HEAD) || fail 'Cannot resolve source revision'
+      created=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fail 'Cannot determine build time'
+      log 'Building a non-release runtime image for developer testing'
+      podman build --pull=always --tag "${image_ref}" \
+        --build-arg "IMAGE_CREATED=${created}" \
+        --build-arg "IMAGE_REVISION=${revision}" \
+        --build-arg IMAGE_VERSION=developer-test \
+        "${project_dir}" >/dev/null || fail 'Image build failed'
+      ;;
+    *) fail 'The selected mode is not valid for the runtime integration suite' ;;
+  esac
 
   prepare_workspace || fail 'Cannot prepare signed test snapshots'
   test_image_contents || fail 'Runtime image contents do not match the production package boundary'
@@ -711,6 +854,8 @@ main() {
   test_immediate_shutdown || fail 'Immediate shutdown test failed'
   log 'Testing monotonic revision enforcement'
   test_revision_replay "${valid_state_volume}" || fail 'Revision replay test failed'
+  log 'Testing non-listening staged revision preflight'
+  test_revision_preflight || fail 'Revision preflight test failed'
   log 'Testing tampering, service identity, and startup expiry'
   test_rejected_snapshots || fail 'Rejected snapshot test failed'
   log 'Testing enforced runtime expiry'

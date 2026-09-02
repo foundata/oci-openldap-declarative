@@ -6,20 +6,20 @@ set -u
 
 project_dir=$(CDPATH='' cd "$(dirname "$0")/.." && pwd) || exit 1
 readonly project_dir
-readonly runtime_image="${RUNTIME_IMAGE:-localhost/oci-openldap-declarative:generator-integration}"
-readonly generator_image="${GENERATOR_IMAGE:-localhost/oci-openldap-declarative-generator:integration-test}"
-readonly resource_prefix=ldap-generator-test-$$
+# shellcheck source=tests/test-lib.sh
+. "${project_dir}/tests/test-lib.sh"
+
+test_mode=${1:-}
+runtime_image=''
+generator_image=''
 host_uid=$(id -u) || exit 1
 readonly host_uid
 host_gid=$(id -g) || exit 1
 readonly host_gid
 
-workspace=''
 container_name=''
 runtime_volume=''
 state_volume=''
-built_runtime_image=0
-built_generator_image=0
 
 log() {
   printf '%s\n' "==> $*"
@@ -32,7 +32,7 @@ fail() {
 
 cleanup() {
   if [ "${KEEP_TEST_RESOURCES:-false}" = true ]; then
-    log "Keeping test resources with prefix ${resource_prefix}"
+    testlib_finish
     return 0
   fi
 
@@ -45,56 +45,47 @@ cleanup() {
       podman volume rm "${volume_name}" >/dev/null 2>&1 || true
     fi
   done
-  if [ -n "${workspace}" ] && [ -d "${workspace}" ]; then
-    rm -rf "${workspace}"
-  fi
-  if [ "${built_generator_image}" -eq 1 ]; then
-    podman image rm "${generator_image}" >/dev/null 2>&1 || true
-  fi
-  if [ "${built_runtime_image}" -eq 1 ]; then
+  podman image rm "${generator_image}" >/dev/null 2>&1 || true
+  if [ -n "${runtime_image}" ]; then
     podman image rm "${runtime_image}" >/dev/null 2>&1 || true
   fi
+  testlib_finish
 }
 
-build_images() {
-  if [ "${BUILD_RUNTIME_IMAGE:-true}" = true ]; then
-    log 'Building the runtime image'
-    podman build --pull=never --tag "${runtime_image}" "${project_dir}" >/dev/null || return 1
-    built_runtime_image=1
-  fi
-  if [ "${BUILD_GENERATOR_IMAGE:-true}" = true ]; then
-    log 'Building the generator image'
-    podman build --pull=never --tag "${generator_image}" \
-      --file "${project_dir}/Containerfile.generator" "${project_dir}" >/dev/null || return 1
-    built_generator_image=1
-  fi
-
+check_generator_image() {
   podman run --rm --entrypoint sh "${generator_image}" -c '
+    test "$(id -u):$(id -g)" = 1001:1001 || exit 1
     test -s /usr/local/share/openldap-declarative/package-versions.txt || exit 1
     test -s /usr/local/share/openldap-declarative/LICENSE.txt || exit 1
     test -s /usr/share/doc/python3-ldap/copyright || exit 1
+    test "$(stat -c "%u:%g:%a" /usr/local/bin/openldap-snapshot-generator)" \
+      = 0:0:555 || exit 1
+    test "$(stat -c "%u:%g:%a" /usr/local/share/openldap-declarative/LICENSE.txt)" \
+      = 0:0:444 || exit 1
+    test "$(stat -c "%u:%g:%a" /input)" = 0:0:555 || exit 1
+    test "$(stat -c "%u:%g:%a" /run/credentials)" = 0:0:555 || exit 1
+    test "$(stat -c "%u:%g:%a" /output)" = 1001:1001:700 || exit 1
   ' || return 1
 }
 
 prepare_inputs() {
-  workspace=$(mktemp -d /tmp/openldap-generator-integration.XXXXXX) || return 1
   mkdir -p "${workspace}/credentials" "${workspace}/output" || return 1
   cp "${project_dir}/examples/generator/credentials.yaml.example" \
     "${workspace}/credentials/credentials.yaml" || return 1
 
-  printf '%s\n' 'default-user-password' >"${workspace}/credentials/person-0001" || return 1
-  printf '%s\n' 'app-user-password' >"${workspace}/credentials/person-0001-example-app" || return 1
-  printf '%s\n' 'mail-user-password' >"${workspace}/credentials/person-0001-example-mail" || return 1
-  printf '%s\n' 'bob-mail-password' >"${workspace}/credentials/person-0003-example-mail" || return 1
-  printf '%s\n' 'app-bind-password' >"${workspace}/credentials/bind-example-app" || return 1
-  printf '%s\n' 'mail-bind-password' >"${workspace}/credentials/bind-example-mail" || return 1
+  printf '%s\n' 'TEST-ONLY-default-user' >"${workspace}/credentials/person-0001" || return 1
+  printf '%s\n' 'TEST-ONLY-app-user' >"${workspace}/credentials/person-0001-example-app" || return 1
+  printf '%s\n' 'TEST-ONLY-mail-user' >"${workspace}/credentials/person-0001-example-mail" || return 1
+  printf '%s\n' 'TEST-ONLY-bob-mail' >"${workspace}/credentials/person-0003-example-mail" || return 1
+  printf '%s\n' 'TEST-ONLY-app-bind' >"${workspace}/credentials/bind-example-app" || return 1
+  printf '%s\n' 'TEST-ONLY-mail-bind' >"${workspace}/credentials/bind-example-mail" || return 1
   chmod 0600 "${workspace}/credentials"/* || return 1
 
   podman run --rm \
     --user 0:0 \
     --entrypoint minisign \
     --volume "${workspace}:/work:Z" \
-    "${runtime_image}" \
+    "${generator_image}" \
     -G -W \
     -p /work/credentials/snapshot.pub \
     -s /work/credentials/snapshot.key >/dev/null || return 1
@@ -141,15 +132,103 @@ generate_snapshots() {
   [ -n "${alice_app_uuid}" ] && [ "${alice_app_uuid}" = "${alice_mail_uuid}" ] || return 1
 
   if grep -R -F -q \
-    -e 'default-user-password' \
-    -e 'app-user-password' \
-    -e 'mail-user-password' \
-    -e 'bob-mail-password' \
-    -e 'app-bind-password' \
-    -e 'mail-bind-password' -- \
+    -e 'TEST-ONLY-default-user' \
+    -e 'TEST-ONLY-app-user' \
+    -e 'TEST-ONLY-mail-user' \
+    -e 'TEST-ONLY-bob-mail' \
+    -e 'TEST-ONLY-app-bind' \
+    -e 'TEST-ONLY-mail-bind' -- \
     "${workspace}/output/generated"; then
     return 1
   fi
+}
+
+validate_generated_manifests() {
+  schema_environment=${workspace}/schema-venv
+  testlib_record python-environment "${schema_environment}"
+  for service_id in example-app example-mail; do
+    UV_PROJECT_ENVIRONMENT="${schema_environment}" uv run --frozen \
+      python tests/validate_snapshot_manifest.py \
+      "${workspace}/output/generated/${service_id}/manifest.json" || return 1
+  done
+
+  app_manifest=${workspace}/output/generated/example-app/manifest.json
+  mail_manifest=${workspace}/output/generated/example-mail/manifest.json
+  app_generated=$(jq -r '.generated_at | fromdateiso8601' "${app_manifest}") || return 1
+  app_soft=$(jq -r '.soft_expires_at | fromdateiso8601' "${app_manifest}") || return 1
+  app_hard=$(jq -r '.expires_at | fromdateiso8601' "${app_manifest}") || return 1
+  mail_generated=$(jq -r '.generated_at | fromdateiso8601' "${mail_manifest}") || return 1
+  mail_soft=$(jq -r '.soft_expires_at | fromdateiso8601' "${mail_manifest}") || return 1
+  mail_hard=$(jq -r '.expires_at | fromdateiso8601' "${mail_manifest}") || return 1
+  [ "${app_generated}" -eq "${mail_generated}" ] || return 1
+  [ $((app_soft - app_generated)) -eq 21600 ] || return 1
+  [ $((app_hard - app_generated)) -eq 43200 ] || return 1
+  [ $((mail_soft - mail_generated)) -eq 21000 ] || return 1
+  [ $((mail_hard - mail_generated)) -eq 42600 ] || return 1
+  [ $((app_soft - mail_soft)) -eq 600 ] || return 1
+  [ $((app_hard - mail_hard)) -eq 600 ] || return 1
+}
+
+test_controlled_expiry_output() {
+  podman run --rm \
+    --userns=keep-id \
+    --user "${host_uid}:${host_gid}" \
+    --network none \
+    --volume "${project_dir}/examples/generator:/input:ro,Z" \
+    --volume "${workspace}/credentials:/run/credentials:ro,Z" \
+    --volume "${workspace}/output:/output:Z" \
+    "${generator_image}" \
+    --directory /input/directory.yaml \
+    --credentials /run/credentials/credentials.yaml \
+    --signing-key /run/credentials/snapshot.key \
+    --generated-at 2030-01-01T00:00:00Z \
+    --output /output/controlled >/dev/null || return 1
+
+  jq -e '
+    .generated_at == "2030-01-01T00:00:00Z" and
+    .soft_expires_at == "2030-01-01T06:00:00Z" and
+    .expires_at == "2030-01-01T12:00:00Z"
+  ' "${workspace}/output/controlled/example-app/manifest.json" >/dev/null || return 1
+  jq -e '
+    .generated_at == "2030-01-01T00:00:00Z" and
+    .soft_expires_at == "2030-01-01T05:50:00Z" and
+    .expires_at == "2030-01-01T11:50:00Z"
+  ' "${workspace}/output/controlled/example-mail/manifest.json" >/dev/null
+}
+
+expect_expiry_offset_rejection() {
+  test_name=${1}
+  offset=${2}
+  expected_message=${3}
+  input_file=${workspace}/${test_name}.yaml
+
+  sed "0,/expiry_offset_seconds: 0/s//expiry_offset_seconds: ${offset}/" \
+    "${project_dir}/examples/generator/directory.yaml" >"${input_file}" || return 1
+  rejection_output=$(podman run --rm \
+    --userns=keep-id \
+    --user "${host_uid}:${host_gid}" \
+    --network none \
+    --volume "${input_file}:/input/directory.yaml:ro,Z" \
+    --volume "${workspace}/credentials:/run/credentials:ro,Z" \
+    --volume "${workspace}/output:/output:Z" \
+    "${generator_image}" \
+    --directory /input/directory.yaml \
+    --credentials /run/credentials/credentials.yaml \
+    --signing-key /run/credentials/snapshot.key \
+    --output "/output/${test_name}" 2>&1)
+  rejection_status=$?
+  [ "${rejection_status}" -eq 2 ] || return 1
+  printf '%s\n' "${rejection_output}" | grep -F -q "${expected_message}" || return 1
+  [ ! -e "${workspace}/output/${test_name}" ]
+}
+
+test_expiry_offset_rejections() {
+  expect_expiry_offset_rejection negative-offset -1 \
+    'expiry_offset_seconds must be an integer from 0 through 86400' || return 1
+  expect_expiry_offset_rejection excessive-offset 86401 \
+    'expiry_offset_seconds must be an integer from 0 through 86400' || return 1
+  expect_expiry_offset_rejection soft-boundary 21600 \
+    'expiry_offset_seconds must be less than soft_ttl_seconds'
 }
 
 generate_update_snapshot() {
@@ -172,7 +251,7 @@ generate_update_snapshot() {
 }
 
 test_generator_rejections() {
-  if podman run --rm \
+  rejection_output=$(podman run --rm \
     --userns=keep-id \
     --user "${host_uid}:${host_gid}" \
     --network none \
@@ -184,12 +263,14 @@ test_generator_rejections() {
     --credentials /run/credentials/credentials.yaml \
     --signing-key /run/credentials/snapshot.key \
     --service unknown-service \
-    --output /output/rejected >/dev/null 2>&1; then
-    return 1
-  fi
+    --output /output/rejected 2>&1)
+  rejection_status=$?
+  [ "${rejection_status}" -eq 2 ] || return 1
+  printf '%s\n' "${rejection_output}" \
+    | grep -F -q 'unknown selected services: unknown-service' || return 1
   [ ! -e "${workspace}/output/rejected" ] || return 1
 
-  if podman run --rm \
+  rejection_output=$(podman run --rm \
     --userns=keep-id \
     --user "${host_uid}:${host_gid}" \
     --network none \
@@ -200,9 +281,11 @@ test_generator_rejections() {
     --directory /input/directory.yaml \
     --credentials /run/credentials/credentials.yaml \
     --signing-key /run/credentials/snapshot.key \
-    --output /output/generated >/dev/null 2>&1; then
-    return 1
-  fi
+    --output /output/generated 2>&1)
+  rejection_status=$?
+  [ "${rejection_status}" -eq 2 ] || return 1
+  printf '%s\n' "${rejection_output}" \
+    | grep -F -q 'output path already exists: /output/generated'
 }
 
 wait_until_healthy() {
@@ -249,7 +332,14 @@ start_runtime_snapshot() {
     --volume "${workspace}/credentials/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z" \
     "${runtime_image}" >/dev/null || return 1
   podman start "${container_name}" >/dev/null || return 1
-  wait_until_healthy
+  wait_until_healthy || return 1
+  podman exec "${container_name}" sh -c '
+    test ! -e /run/openldap/verified-snapshot
+    test ! -e /run/openldap/verified-files
+    if grep -R -F -q "nis.ldif" /run/openldap/slapd.d; then
+      exit 1
+    fi
+  '
 }
 
 alice_bind_succeeds() {
@@ -265,7 +355,10 @@ consume_generated_snapshot() {
   container_name=${resource_prefix}-runtime
   runtime_volume=${container_name}-runtime
   state_volume=${container_name}-state
+  testlib_plan_container "${container_name}" || return 1
+  testlib_plan_volume "${runtime_volume}" || return 1
   podman volume create "${runtime_volume}" >/dev/null || return 1
+  testlib_plan_volume "${state_volume}" || return 1
   podman volume create "${state_volume}" >/dev/null || return 1
 
   start_runtime_snapshot \
@@ -274,46 +367,59 @@ consume_generated_snapshot() {
   podman exec "${container_name}" ldapwhoami \
     -x -H ldap://127.0.0.1:1389 \
     -D uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org \
-    -w app-user-password \
+    -w TEST-ONLY-app-user \
     | grep -F -q 'dn:uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org' || return 1
   if podman exec "${container_name}" ldapwhoami \
     -x -H ldap://127.0.0.1:1389 \
     -D uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org \
-    -w default-user-password >/dev/null 2>&1; then
+    -w TEST-ONLY-default-user >/dev/null 2>&1; then
     return 1
   fi
   podman exec "${container_name}" ldapsearch \
     -LLL -x -H ldap://127.0.0.1:1389 \
     -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
-    -w app-bind-password \
+    -w TEST-ONLY-app-bind \
     -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
     uid memberOf \
     | grep -F -q 'memberOf: cn=staff,ou=groups,dc=example-app,dc=services,dc=example,dc=org' || return 1
+
+  enumeration_output=$(podman exec "${container_name}" ldapsearch \
+    -LLL -x -H ldap://127.0.0.1:1389 \
+    -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
+    -w TEST-ONLY-app-bind \
+    -b dc=example-app,dc=services,dc=example,dc=org -s sub \
+    '(objectClass=*)' dn uid cn userPassword) || return 1
+  printf '%s\n' "${enumeration_output}" \
+    | grep -F -q 'dn: uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org' \
+    || return 1
+  if printf '%s\n' "${enumeration_output}" | grep -F -q 'userPassword:'; then
+    return 1
+  fi
 }
 
 test_password_rotation_and_offboarding() {
   initial_uuid=$(podman exec "${container_name}" ldapsearch \
     -LLL -x -H ldap://127.0.0.1:1389 \
     -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
-    -w app-bind-password \
+    -w TEST-ONLY-app-bind \
     -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
     entryUUID | awk '/^entryUUID: / { print $2 }') || return 1
   [ -n "${initial_uuid}" ] || return 1
 
-  printf '%s\n' 'rotated-app-user-password' \
+  printf '%s\n' 'TEST-ONLY-rotated-app-user' \
     >"${workspace}/credentials/person-0001-example-app" || return 1
   chmod 0600 "${workspace}/credentials/person-0001-example-app" || return 1
   generate_update_snapshot directory-revision-2.yaml generated-2 || return 1
   start_runtime_snapshot \
     "${workspace}/output/generated-2/example-app" || return 1
-  if alice_bind_succeeds app-user-password; then
+  if alice_bind_succeeds TEST-ONLY-app-user; then
     return 1
   fi
-  alice_bind_succeeds rotated-app-user-password || return 1
+  alice_bind_succeeds TEST-ONLY-rotated-app-user || return 1
   rotated_uuid=$(podman exec "${container_name}" ldapsearch \
     -LLL -x -H ldap://127.0.0.1:1389 \
     -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
-    -w app-bind-password \
+    -w TEST-ONLY-app-bind \
     -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
     entryUUID | awk '/^entryUUID: / { print $2 }') || return 1
   [ "${rotated_uuid}" = "${initial_uuid}" ] || return 1
@@ -321,14 +427,14 @@ test_password_rotation_and_offboarding() {
   generate_update_snapshot directory-revision-3.yaml generated-3 || return 1
   start_runtime_snapshot \
     "${workspace}/output/generated-3/example-app" || return 1
-  if alice_bind_succeeds app-user-password \
-    || alice_bind_succeeds rotated-app-user-password; then
+  if alice_bind_succeeds TEST-ONLY-app-user \
+    || alice_bind_succeeds TEST-ONLY-rotated-app-user; then
     return 1
   fi
   if podman exec "${container_name}" ldapsearch \
     -LLL -x -H ldap://127.0.0.1:1389 \
     -D cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org \
-    -w app-bind-password \
+    -w TEST-ONLY-app-bind \
     -b uid=alice,ou=people,dc=example-app,dc=services,dc=example,dc=org -s base \
     uid 2>/dev/null | grep -F -q 'uid: alice'; then
     return 1
@@ -339,19 +445,63 @@ test_password_rotation_and_offboarding() {
 }
 
 main() {
+  if [ "$#" -ne 1 ]; then
+    fail 'Select exactly one test mode'
+  fi
+  testlib_init "${test_mode}" generator-integration || exit $?
   trap cleanup EXIT
   trap 'exit 130' HUP INT TERM
 
-  build_images || fail 'Cannot build test images'
+  generator_image=localhost/${resource_prefix}:generator
+  case "${test_mode}" in
+    --conclear-generator)
+      testlib_import_image primary generator "${generator_image}" \
+        || fail 'Cannot import the exact ConClear generator layout'
+      ;;
+    --conclear-runtime)
+      runtime_image=localhost/${resource_prefix}:runtime
+      testlib_import_image primary runtime "${runtime_image}" \
+        || fail 'Cannot import the exact ConClear runtime layout'
+      testlib_import_image dependency generator "${generator_image}" \
+        || fail 'Cannot import the exact same-revision generator layout'
+      ;;
+    --developer-build)
+      runtime_image=localhost/${resource_prefix}:runtime
+      revision=$(git -C "${project_dir}" rev-parse HEAD) || fail 'Cannot resolve source revision'
+      created=$(date -u +%Y-%m-%dT%H:%M:%SZ) || fail 'Cannot determine build time'
+      testlib_record developer-image "${runtime_image}"
+      log 'Building non-release images for developer testing'
+      podman build --pull=always --tag "${runtime_image}" \
+        --build-arg "IMAGE_CREATED=${created}" \
+        --build-arg "IMAGE_REVISION=${revision}" \
+        --build-arg IMAGE_VERSION=developer-test \
+        "${project_dir}" >/dev/null || fail 'Runtime image build failed'
+      testlib_record developer-image "${generator_image}"
+      podman build --pull=always --tag "${generator_image}" \
+        --file "${project_dir}/Containerfile.generator" \
+        --build-arg "IMAGE_CREATED=${created}" \
+        --build-arg "IMAGE_REVISION=${revision}" \
+        --build-arg IMAGE_VERSION=developer-test \
+        "${project_dir}" >/dev/null || fail 'Generator image build failed'
+      ;;
+    *) fail 'The selected mode is not valid for the generator integration suite' ;;
+  esac
+
+  check_generator_image || fail 'Generator image contents do not match the declared boundary'
   prepare_inputs || fail 'Cannot prepare generator inputs'
   log 'Generating signed service-specific snapshots'
   generate_snapshots || fail 'Snapshot generation test failed'
+  validate_generated_manifests || fail 'Generated manifests do not match the JSON Schema contract'
+  test_controlled_expiry_output || fail 'Controlled expiry staggering test failed'
+  test_expiry_offset_rejections || fail 'Expiry staggering boundary test failed'
   log 'Testing generator rejection paths'
   test_generator_rejections || fail 'Generator rejection test failed'
-  log 'Importing and authenticating against generated output'
-  consume_generated_snapshot || fail 'Generated snapshot runtime test failed'
-  log 'Testing password rotation and offboarding revisions'
-  test_password_rotation_and_offboarding || fail 'Lifecycle update test failed'
+  if [ -n "${runtime_image}" ]; then
+    log 'Importing and authenticating against generated output'
+    consume_generated_snapshot || fail 'Generated snapshot runtime test failed'
+    log 'Testing password rotation and offboarding revisions'
+    test_password_rotation_and_offboarding || fail 'Lifecycle update test failed'
+  fi
   log 'Generator integration tests passed'
 }
 

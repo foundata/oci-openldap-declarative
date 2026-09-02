@@ -8,6 +8,8 @@ script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd) || exit 70
 readonly script_dir
 # shellcheck source=scripts/common.sh
 . "${script_dir}/common.sh"
+# shellcheck source=scripts/revision-state.sh
+. "${script_dir}/revision-state.sh"
 
 readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
 readonly config_dir="${runtime_dir}/slapd.d"
@@ -61,65 +63,6 @@ validate_runtime_configuration() {
   if [ "${validation_errors}" -ne 0 ]; then
     return "${EXIT_USAGE}"
   fi
-
-  return 0
-}
-
-validate_revision() {
-  snapshot_revision=$(jq -r '.revision' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
-  snapshot_manifest_digest=$(sha256sum "${verified_manifest_file}" | cut -d ' ' -f 1) || return "${EXIT_INTERNAL}"
-
-  if [ -e "${revision_state_file}" ]; then
-    if [ ! -f "${revision_state_file}" ] || [ -L "${revision_state_file}" ] || [ ! -r "${revision_state_file}" ]; then
-      log_error "Revision state is not a readable regular file: ${revision_state_file}"
-      return "${EXIT_INPUT}"
-    fi
-    highest_revision=''
-    highest_manifest_digest=''
-    unexpected_state_field=''
-    IFS=' ' read -r highest_revision highest_manifest_digest unexpected_state_field \
-      <"${revision_state_file}" || return "${EXIT_INTERNAL}"
-    if ! printf '%s\n' "${highest_revision}" | grep -E -q '^[0-9]+$'; then
-      log_error 'Revision state does not contain a non-negative integer'
-      return "${EXIT_INPUT}"
-    fi
-    if [ -n "${unexpected_state_field}" ] \
-      || { [ -n "${highest_manifest_digest}" ] \
-        && ! printf '%s\n' "${highest_manifest_digest}" | grep -E -q '^[0-9a-f]{64}$'; }; then
-      log_error 'Revision state has an invalid manifest digest'
-      return "${EXIT_INPUT}"
-    fi
-    if [ "${snapshot_revision}" -lt "${highest_revision}" ]; then
-      log_error "Snapshot revision ${snapshot_revision} is older than accepted revision ${highest_revision}"
-      return "${EXIT_SNAPSHOT}"
-    fi
-    if [ "${snapshot_revision}" -eq "${highest_revision}" ] \
-      && [ -n "${highest_manifest_digest}" ] \
-      && [ "${snapshot_manifest_digest}" != "${highest_manifest_digest}" ]; then
-      log_error "Snapshot revision ${snapshot_revision} was already accepted with different content"
-      return "${EXIT_SNAPSHOT}"
-    fi
-  fi
-
-  return 0
-}
-
-record_revision() {
-  snapshot_revision=$(jq -r '.revision' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
-  snapshot_manifest_digest=$(sha256sum "${verified_manifest_file}" | cut -d ' ' -f 1) || return "${EXIT_INTERNAL}"
-  revision_directory=$(dirname "${revision_state_file}") || return "${EXIT_INTERNAL}"
-  mkdir -p "${revision_directory}" || return "${EXIT_INTERNAL}"
-  temporary_revision=$(mktemp "${revision_directory}/highest-revision.XXXXXX") || return "${EXIT_INTERNAL}"
-
-  if ! printf '%s %s\n' "${snapshot_revision}" "${snapshot_manifest_digest}" >"${temporary_revision}"; then
-    unlink "${temporary_revision}"
-    return "${EXIT_INTERNAL}"
-  fi
-  chmod 0600 "${temporary_revision}" || {
-    unlink "${temporary_revision}"
-    return "${EXIT_INTERNAL}"
-  }
-  mv "${temporary_revision}" "${revision_state_file}" || return "${EXIT_INTERNAL}"
 
   return 0
 }
@@ -274,6 +217,7 @@ main() {
   umask 077
   trap forward_shutdown TERM INT HUP
   mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
+  remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove stale verified snapshot data'
   validate_runtime_configuration || exit $?
   "${script_dir}/verify-snapshot.sh"
   verification_status=$?
@@ -281,20 +225,32 @@ main() {
     return 0
   fi
   if [ "${verification_status}" -ne 0 ]; then
+    remove_verified_snapshot "${runtime_dir}" || true
     return "${verification_status}"
   fi
-  validate_revision || exit $?
+  validate_snapshot_revision "${verified_manifest_file}" "${revision_state_file}"
+  revision_status=$?
+  if [ "${revision_status}" -ne 0 ]; then
+    remove_verified_snapshot "${runtime_dir}" || true
+    return "${revision_status}"
+  fi
   "${script_dir}/init-slapd.sh"
   initialization_status=$?
   if [ "${shutdown_requested}" -eq 1 ]; then
     return 0
   fi
   if [ "${initialization_status}" -ne 0 ]; then
+    remove_verified_snapshot "${runtime_dir}" || true
     return "${initialization_status}"
   fi
-  record_revision || die "${EXIT_INTERNAL}" 'Cannot record the accepted snapshot revision'
+  remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove verified snapshot data'
+  record_snapshot_revision "${verified_manifest_file}" "${revision_state_file}" \
+    || die "${EXIT_INTERNAL}" 'Cannot record the accepted snapshot revision'
   cp "${verified_manifest_file}" "${runtime_dir}/active-manifest.json" || die "${EXIT_INTERNAL}" 'Cannot record active snapshot metadata'
-  supervise_slapd || exit $?
+  supervise_slapd
+  supervision_status=$?
+  remove_verified_snapshot "${runtime_dir}" || true
+  return "${supervision_status}"
 }
 
 main "$@"

@@ -1,0 +1,29 @@
+{
+  "default": [
+    {
+      "type": "reject"
+    }
+  ],
+  "transports": {
+    "docker": {
+      "quay.io/foundata/openldap-declarative": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/etc/foundata/container-trust/openldap-release.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ],
+      "quay.io/foundata/openldap-declarative-generator": [
+        {
+          "type": "sigstoreSigned",
+          "keyPath": "/etc/foundata/container-trust/openldap-release.pub",
+          "signedIdentity": {
+            "type": "matchRepository"
+          }
+        }
+      ]
+    }
+  }
+}

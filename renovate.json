@@ -1,0 +1,37 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "enabledManagers": [
+    "dockerfile"
+  ],
+  "automerge": false,
+  "dependencyDashboard": true,
+  "packageRules": [
+    {
+      "description": "Propose reviewed OCI base-image digest updates",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "enabled": true,
+      "groupName": "OCI base image digests"
+    },
+    {
+      "description": "Keep base tag changes outside the automated write path",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor",
+        "patch",
+        "pin",
+        "rollback"
+      ],
+      "enabled": false
+    }
+  ],
+  "prConcurrentLimit": 2,
+  "prHourlyLimit": 1
+}

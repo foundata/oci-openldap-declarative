@@ -1,0 +1,216 @@
+schema_version = 1
+
+[project]
+name = "oci-openldap-declarative"
+source = "https://github.com/foundata/oci-openldap-declarative"
+
+[[images]]
+id = "runtime"
+containerfile = "Containerfile"
+context = "."
+repository = "quay.io/foundata/openldap-declarative"
+platforms = ["linux/amd64"]
+native_test_platforms = ["linux/amd64"]
+arm64_omission_reason = "2026-09-03, OpenLDAP maintainers: this qualification host has neither a native arm64 worker nor an arm64 binfmt handler; arm64 must pass the complete behavioral path before it is declared."
+
+[images.test]
+dependencies = ["generator"]
+
+[[images.test.fixtures]]
+name = "generator-input"
+path = "examples/generator"
+
+[[images.test.outputs]]
+name = "credentials"
+secret = true
+
+[[images.test.outputs]]
+name = "snapshot"
+
+[[images.test.preparations]]
+name = "create-test-credentials"
+image = "generator"
+command = ["/bin/sh", "-c", "set -eu; cp /input/credentials.yaml.example /output/credentials.yaml; printf '%s\\n' 'TEST-ONLY-user-default-20260903' > /output/person-0001; printf '%s\\n' 'TEST-ONLY-user-app-20260903' > /output/person-0001-example-app; printf '%s\\n' 'TEST-ONLY-user-mail-20260903' > /output/person-0001-example-mail; printf '%s\\n' 'TEST-ONLY-user-bob-20260903' > /output/person-0003-example-mail; printf '%s\\n' 'TEST-ONLY-bind-app-20260903' > /output/bind-example-app; printf '%s\\n' 'TEST-ONLY-bind-mail-20260903' > /output/bind-example-mail; minisign -G -W -p /output/snapshot-public-key -s /output/snapshot.key >/dev/null; chmod 0600 /output/*"]
+timeout_seconds = 60
+
+[[images.test.preparations.mounts]]
+source = "fixture"
+name = "generator-input"
+target = "/input"
+read_only = true
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "credentials"
+target = "/output"
+read_only = false
+
+[[images.test.preparations]]
+name = "generate-runtime-snapshot"
+image = "generator"
+command = ["/usr/local/bin/openldap-snapshot-generator", "--directory", "/input/directory.yaml", "--credentials", "/run/credentials/credentials.yaml", "--signing-key", "/run/credentials/snapshot.key", "--service", "example-app", "--output", "/output/generated"]
+timeout_seconds = 120
+
+[[images.test.preparations.mounts]]
+source = "fixture"
+name = "generator-input"
+target = "/input"
+read_only = true
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "credentials"
+target = "/run/credentials"
+read_only = true
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "snapshot"
+target = "/output"
+read_only = false
+
+[images.test.launch]
+environment = { LDAP_EXPECTED_SERVICE_ID = "example-app", LDAP_SNAPSHOT_DIR = "/snapshot/generated/example-app" }
+expected_exit_status = 0
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "credentials"
+target = "/run/credentials"
+read_only = true
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "snapshot"
+target = "/snapshot"
+read_only = true
+
+[[images.hooks]]
+name = "runtime-integration"
+command = ["sh", "tests/integration.sh", "--conclear"]
+timeout_seconds = 1800
+
+[[images.hooks]]
+name = "same-revision-generator-compatibility"
+command = ["sh", "tests/generator-integration.sh", "--conclear-runtime"]
+timeout_seconds = 1800
+
+[[images.pins]]
+reference = "docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f"
+tag_intent = "moving-release-line"
+
+[images.release]
+immutable_tags = ["{version}"]
+moving_tags = ["stable"]
+
+[images.runtime]
+profile = "service"
+user = 1001
+read_only = true
+writable_mounts = ["/run/openldap", "/state"]
+memory = "256MiB"
+cpus = 1.0
+pids = 128
+nofile = 1024
+health_command = ["/usr/local/lib/openldap-declarative/healthcheck.sh"]
+immutable_paths = ["/usr/local/lib/openldap-declarative", "/usr/local/share/openldap-declarative"]
+startup_timeout_seconds = 120
+shutdown_timeout_seconds = 15
+
+[[images]]
+id = "generator"
+containerfile = "Containerfile.generator"
+context = "."
+repository = "quay.io/foundata/openldap-declarative-generator"
+platforms = ["linux/amd64"]
+native_test_platforms = ["linux/amd64"]
+arm64_omission_reason = "2026-09-03, OpenLDAP maintainers: this qualification host has neither a native arm64 worker nor an arm64 binfmt handler; arm64 must pass the complete behavioral path before it is declared."
+
+[[images.test.fixtures]]
+name = "generator-input"
+path = "examples/generator"
+
+[[images.test.outputs]]
+name = "credentials"
+secret = true
+
+[[images.test.outputs]]
+name = "snapshot"
+
+[[images.test.preparations]]
+name = "create-test-credentials"
+image = "generator"
+command = ["/bin/sh", "-c", "set -eu; cp /input/credentials.yaml.example /output/credentials.yaml; printf '%s\\n' 'TEST-ONLY-user-default-20260903' > /output/person-0001; printf '%s\\n' 'TEST-ONLY-user-app-20260903' > /output/person-0001-example-app; printf '%s\\n' 'TEST-ONLY-user-mail-20260903' > /output/person-0001-example-mail; printf '%s\\n' 'TEST-ONLY-user-bob-20260903' > /output/person-0003-example-mail; printf '%s\\n' 'TEST-ONLY-bind-app-20260903' > /output/bind-example-app; printf '%s\\n' 'TEST-ONLY-bind-mail-20260903' > /output/bind-example-mail; minisign -G -W -p /output/snapshot-public-key -s /output/snapshot.key >/dev/null; chmod 0600 /output/*"]
+timeout_seconds = 60
+
+[[images.test.preparations.mounts]]
+source = "fixture"
+name = "generator-input"
+target = "/input"
+read_only = true
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "credentials"
+target = "/output"
+read_only = false
+
+[[images.test.preparations]]
+name = "initialize-snapshot-output"
+image = "generator"
+command = ["/bin/sh", "-c", "printf '%s\\n' 'conclear-owned-output' > /output/.prepared"]
+timeout_seconds = 30
+
+[[images.test.preparations.mounts]]
+source = "output"
+name = "snapshot"
+target = "/output"
+read_only = false
+
+[images.test.launch]
+arguments = ["--directory", "/input/directory.yaml", "--credentials", "/run/credentials/credentials.yaml", "--signing-key", "/run/credentials/snapshot.key", "--output", "/output/generated"]
+expected_exit_status = 0
+
+[[images.test.launch.mounts]]
+source = "fixture"
+name = "generator-input"
+target = "/input"
+read_only = true
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "credentials"
+target = "/run/credentials"
+read_only = true
+
+[[images.test.launch.mounts]]
+source = "output"
+name = "snapshot"
+target = "/output"
+read_only = false
+
+[[images.hooks]]
+name = "generator-integration"
+command = ["sh", "tests/generator-integration.sh", "--conclear-generator"]
+timeout_seconds = 1800
+
+[[images.pins]]
+reference = "docker.io/library/debian:13-slim@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f"
+tag_intent = "moving-release-line"
+
+[images.release]
+immutable_tags = ["{version}"]
+moving_tags = ["stable"]
+
+[images.runtime]
+profile = "one-shot"
+user = 1001
+read_only = true
+writable_mounts = ["/output"]
+memory = "256MiB"
+cpus = 1.0
+pids = 64
+nofile = 512
+immutable_paths = ["/usr/local/bin/openldap-snapshot-generator", "/usr/local/share/openldap-declarative"]
+startup_timeout_seconds = 180
+shutdown_timeout_seconds = 10
