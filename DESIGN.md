@@ -636,8 +636,10 @@ simplicity of a plain Debian package installation.
 ConClear implements isolated builds, exact-layout tests, SBOM generation, Trivy
 gates, evidence, provenance, candidate publication, Cosign operations,
 verification and promotion. Runtime and generator remain independent release
-images; their compatibility result names both same-revision layouts. Renovate is
-the sole automated proposal path for base digests, while ConClear only checks.
+images; their compatibility result names both same-revision layouts. ConClear
+also proposes and applies verified, repository-wide base-digest updates without
+committing them. An external updater is optional and must preserve the same
+review and qualification boundary.
 Releases currently target `linux/amd64`; adding `linux/arm64` requires the full
 behavioral path on a native worker or an accurately recorded allowed emulator.
 
@@ -1076,7 +1078,7 @@ remaining operational work; source documentation does not freeze scanner counts.
    indexed application filters, bind concurrency limits and Argon2id parameters.
 5. Pin the Debian base by digest and use ConClear for isolated builds, package
    evidence, SBOMs, scans, provenance, signing, verification and promotion.
-   Renovate proposals must pass the full compatibility suite.
+   Every proposed pin change must pass the full compatibility suite.
 
 ### Phase 4: build generation and deployment
 
@@ -1173,7 +1175,6 @@ The following values need explicit owner approval before production deployment:
 * production revision-state location and exceptional rollback procedure;
 * application session invalidation procedures;
 * emergency expiry override policy;
-* approved self-hosted Renovate runner or organization preset;
 * protected ConClear release profile, Quay controls, signing-key custody and
   deployment admission trust-root provisioning;
 * native arm64 qualification capacity if that platform is required;
@@ -1225,8 +1226,9 @@ The repository implements and tests the following baseline:
 * ConClear configuration for the independent runtime and generator images,
   including same-revision dependency layouts, runtime controls and current
   `linux/amd64` qualification;
-* default-deny build context, digest-only Renovate proposals, a Quadlet example,
-  host expiry backstop and default-reject deployment admission template.
+* default-deny build context, verified all-or-nothing digest updates, a Quadlet
+  example, host expiry backstop and default-reject deployment admission
+  template.
 
 The repository does not complete the operational system. These external items
 remain:
@@ -1240,9 +1242,6 @@ remain:
   offboarding, VM rollback, clock-fault and session-cache exercises.
 * Select maximum TTLs and per-service offsets, and define an audited emergency
   expiry procedure without adding a runtime bypass.
-* Provide the approved self-hosted Renovate runner or organization preset. The
-  repository configuration does not grant a hosted service write access and
-  does not auto-merge.
 * Provision the protected ConClear production profile, approved builder and
   signing identities, Quay credentials and repository controls, key custody and
   deployment trust root. Local qualification is not a signed release.

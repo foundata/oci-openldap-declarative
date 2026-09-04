@@ -72,91 +72,7 @@ Each image records its exact Debian package set at
 copyright notices plus the repository license. The package inventory supports an
 SBOM; it is not a substitute for one.
 
-
-### Install ConClear
-
-ConClear is not published yet. Maintainers obtain the reviewed identity-bearing
-wheel from the organization's protected ConClear artifact handoff produced by
-the clean-checkout distribution gate. Store it outside this checkout, set
-`CONCLEAR_WHEEL` to that retained artifact, and verify it before installing it
-into an isolated environment:
-
-```sh
-: "${CONCLEAR_WHEEL:?set CONCLEAR_WHEEL to the reviewed ConClear wheel}"
-printf '%s  %s\n' \
-  6de86e0272ce3df54eabd2ae61f507eb9b71d9d290a6686f9fe9ed08130d87a9 \
-  "$CONCLEAR_WHEEL" | sha256sum --check
-python3.12 -m venv ~/.local/share/conclear/venv
-~/.local/share/conclear/venv/bin/pip install "$CONCLEAR_WHEEL"
-~/.local/share/conclear/venv/bin/conclear version --format json
-```
-
-The expected version is `0.1.0`, source revision
-`1919b96d869d27abdabf3d4967311d0424bfa5f3`, and embedded guide revision
-`cd914cd5a9b7ec7c171f92d4a80b5e48f0c67c9b`. A command reporting
-`development-source-tree` is not an acceptable release tool.
-
-### Check and qualify
-
-Run repository-specific checks directly, then ConClear's generic and pin gates:
-
-```sh
-sh hack/check.sh
-conclear check --image runtime
-conclear check --image generator
-conclear pins check --image runtime
-conclear pins check --image generator
-```
-
-Qualification requires a clean, committed revision because ConClear creates an
-isolated worktree. The repository's `origin` must be the credential-free HTTPS
-project URL declared in `conclear.toml`; keep SSH credentials and URL rewrites
-outside the qualification environment. Use one version for both independent
-image results:
-
-```sh
-revision=$(git rev-parse HEAD)
-version=0.1.0-test.1
-conclear qualify --source . --revision "$revision" \
-  --image runtime --version "$version" --platform linux/amd64
-conclear qualify --source . --revision "$revision" \
-  --image generator --version "$version" --platform linux/amd64
-```
-
-These commands are identical on a maintainer workstation and in future CI. CI
-is a caller; it must not reconstruct ConClear's build, scan, evidence or signing
-logic. `hack/check.sh` intentionally does not duplicate `conclear check`,
-`conclear pins check`, or `conclear qualify`.
-
-### Release operations
-
-A signed release requires an external protected ConClear profile containing the
-approved builder identity, Quay authentication, signing authority and public
-verification key. None belongs in this repository. An authorized maintainer runs
-each image from the same revision and version:
-
-```sh
-conclear release --source . --revision "$revision" --image runtime \
-  --version "$version" --profile production
-conclear release --source . --revision "$revision" --image generator \
-  --version "$version" --profile production
-```
-
-ConClear owns candidate naming, isolated builds, OCI layout validation, SBOM and
-Trivy evidence, provenance, publication, Cosign signing and attestation,
-verification, promotion and cleanup. Resume an interrupted run with
-`conclear release --profile production --resume RUN_ID`; remove only its owned
-ephemeral resources with `conclear cleanup --profile production RUN_ID`. Rescan
-a released immutable subject with:
-
-```sh
-conclear rescan quay.io/foundata/openldap-declarative@sha256:... \
-  --image-id runtime --profile production --authoritative
-```
-
-Do not publish or sign from a local qualification without that protected
-profile. Snapshot minisign keys and OCI release-signing keys are separate trust
-domains and must not be reused.
+Maintainer commands are documented in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Generate snapshots
 
@@ -435,49 +351,18 @@ rejected.
 
 ConClear runs both integration suites against digest-verified OCI layouts. Those
 modes cannot build images. They use isolated Podman storage, collision-checked
-names and a run manifest. Set `KEEP_TEST_RESOURCES=true` only for debugging; the
-failure output identifies the manifest and inspection command.
-
-```sh
-conclear qualify --source . --revision "$(git rev-parse HEAD)" \
-  --image runtime --version 0.1.0-test.1 --platform linux/amd64
-conclear qualify --source . --revision "$(git rev-parse HEAD)" \
-  --image generator --version 0.1.0-test.1 --platform linux/amd64
-```
+names and a run manifest. Failure output identifies the manifest and inspection
+command.
 
 The explicit non-release convenience mode requires an existing external test
-directory and may build local images:
-
-```sh
-test_run="$HOME/.local/share/openldap-declarative/test-run-$(date +%s)"
-mkdir -m 0700 -p "$test_run"
-OPENLDAP_TEST_RUN_DIR="$test_run" \
-  sh tests/integration.sh --developer-build
-OPENLDAP_TEST_RUN_DIR="$test_run" \
-  sh tests/generator-integration.sh --developer-build
-```
-
-Run the complete local verification sequence with:
-
-```sh
-sh hack/check.sh
-```
+directory and may build local images. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for
+the maintained commands.
 
 The direct check requires Hadolint, `shfmt`, ShellCheck, `checkbashisms`, `jq`
 and `uv`. It covers shell, Containerfiles, Python formatting/lint/type checks,
 JSON Schema contracts, Quadlet generation, admission policy and the host
 backstop. ConClear separately owns generic OCI checks, pin state and all
 exact-image qualification.
-
-```sh
-shfmt --language-dialect posix --indent 2 --case-indent \
-  --binary-next-line --simplify --diff scripts/*.sh tests/*.sh hack/*.sh
-shellcheck --shell=sh --severity=style \
-  --exclude=SC2292 --exclude=SC3040 --exclude=SC3043 \
-  --enable=all scripts/*.sh tests/*.sh hack/*.sh
-checkbashisms scripts/*.sh tests/*.sh hack/*.sh
-hadolint Containerfile Containerfile.generator
-```
 
 ## Limitations
 

@@ -49,7 +49,7 @@ main() {
   for schema_file in schema/*.json; do
     jq -e . "${schema_file}" >/dev/null || return 1
   done
-  jq -e . examples/policy/containers-policy.json renovate.json >/dev/null || return 1
+  jq -e . examples/policy/containers-policy.json >/dev/null || return 1
 
   printf '%s\n' 'Checking the Quadlet deployment definition'
   QUADLET_UNIT_DIRS="${project_dir}/examples/quadlet" \
