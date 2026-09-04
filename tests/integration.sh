@@ -302,6 +302,28 @@ wait_until_healthy() {
   return 1
 }
 
+wait_until_initializing() {
+  container_name=${1}
+
+  wait_iteration=0
+  while [ "${wait_iteration}" -lt 80 ]; do
+    container_state=$(podman inspect "${container_name}" --format '{{.State.Status}}') || return 1
+    if [ "${container_state}" != running ]; then
+      podman logs "${container_name}" >&2 || true
+      return 1
+    fi
+    if podman logs "${container_name}" 2>&1 \
+      | grep -F -q 'Starting snapshot initialization for service'; then
+      return 0
+    fi
+    wait_iteration=$((wait_iteration + 1))
+    sleep 0.25
+  done
+
+  podman logs "${container_name}" >&2 || true
+  return 1
+}
+
 expect_container_exit() {
   container_name=${1}
   expected_status=${2}
@@ -520,9 +542,11 @@ test_immediate_shutdown() {
     "${resource_prefix}-immediate-stop-state" ldap || return 1
   container_name=${created_container_name}
   podman start "${container_name}" >/dev/null || return 1
-  podman stop --time 3 "${container_name}" >/dev/null || return 1
+  wait_until_initializing "${container_name}" || return 1
+  podman stop --time 15 "${container_name}" >/dev/null || return 1
   exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
   [ "${exit_status}" -eq 0 ] || return 1
+  assert_verified_plaintext_absent "${created_runtime_volume}" || return 1
 }
 
 test_revision_replay() {

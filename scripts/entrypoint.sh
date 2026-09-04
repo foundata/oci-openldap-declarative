@@ -19,6 +19,7 @@ readonly expected_service_id="${LDAP_EXPECTED_SERVICE_ID:-}"
 
 slapd_pid=''
 watchdog_pid=''
+startup_phase_pid=''
 snapshot_expired=0
 shutdown_requested=0
 watchdog_failed=0
@@ -112,9 +113,21 @@ watch_snapshot_expiry() {
 
 forward_shutdown() {
   shutdown_requested=1
+  if [ -n "${startup_phase_pid}" ]; then
+    kill -TERM "${startup_phase_pid}" 2>/dev/null || true
+  fi
   if [ -n "${slapd_pid}" ]; then
     kill -TERM "${slapd_pid}" 2>/dev/null || true
   fi
+}
+
+run_startup_phase() {
+  "$@" &
+  startup_phase_pid=$!
+  wait "${startup_phase_pid}"
+  startup_phase_status=$?
+  startup_phase_pid=''
+  return "${startup_phase_status}"
 }
 
 expire_snapshot() {
@@ -219,9 +232,11 @@ main() {
   mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
   remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove stale verified snapshot data'
   validate_runtime_configuration || exit $?
-  "${script_dir}/verify-snapshot.sh"
+  log_info "Starting snapshot initialization for service ${expected_service_id}"
+  run_startup_phase "${script_dir}/verify-snapshot.sh"
   verification_status=$?
   if [ "${shutdown_requested}" -eq 1 ]; then
+    remove_verified_snapshot "${runtime_dir}" || true
     return 0
   fi
   if [ "${verification_status}" -ne 0 ]; then
@@ -234,9 +249,10 @@ main() {
     remove_verified_snapshot "${runtime_dir}" || true
     return "${revision_status}"
   fi
-  "${script_dir}/init-slapd.sh"
+  run_startup_phase "${script_dir}/init-slapd.sh"
   initialization_status=$?
   if [ "${shutdown_requested}" -eq 1 ]; then
+    remove_verified_snapshot "${runtime_dir}" || true
     return 0
   fi
   if [ "${initialization_status}" -ne 0 ]; then
