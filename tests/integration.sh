@@ -236,15 +236,15 @@ create_container() {
   case "${key_mode}" in
     directory)
       public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_DIR=/run/credentials/snapshot-public-keys
-      public_key_mount=${workspace}/public:/run/credentials/snapshot-public-keys:ro,Z
+      public_key_mount=${workspace}/public:/run/credentials/snapshot-public-keys:ro,z
       ;;
     file)
       public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
-      public_key_mount=${workspace}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z
+      public_key_mount=${workspace}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,z
       ;;
     rotated)
       public_key_environment=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key
-      public_key_mount=${workspace}/public/rotated.pub:/run/credentials/snapshot-public-key:ro,Z
+      public_key_mount=${workspace}/public/rotated.pub:/run/credentials/snapshot-public-key:ro,z
       ;;
     *) return 1 ;;
   esac
@@ -271,7 +271,7 @@ create_container() {
     --env "${extra_environment}" \
     --mount "type=volume,source=${runtime_volume},destination=/run/openldap" \
     --mount "type=volume,source=${state_volume},destination=/state" \
-    --volume "${workspace}/${snapshot_name}:/snapshot:ro,Z" \
+    --volume "${workspace}/${snapshot_name}:/snapshot:ro,z" \
     --volume "${public_key_mount}" \
     --volume "${workspace}/admin:/run/credentials/admin:ro,Z" \
     --volume "${workspace}/tls:/tls:ro,Z" \

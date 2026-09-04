@@ -61,8 +61,8 @@ main() {
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env LDAP_SNAPSHOT_DIR=/snapshot \
     --env LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key \
-    --volume "${snapshot_directory}:/snapshot:ro" \
-    --volume "${public_key_file}:/run/credentials/snapshot-public-key:ro" \
+    --volume "${snapshot_directory}:/snapshot:ro,z" \
+    --volume "${public_key_file}:/run/credentials/snapshot-public-key:ro,z" \
     --entrypoint /usr/local/lib/openldap-declarative/verify-snapshot.sh \
     "${image_id}" >/dev/null; then
     printf 'Host-side snapshot verification failed; stopping %s\n' \
