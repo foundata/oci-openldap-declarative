@@ -265,8 +265,6 @@ create_container() {
     --pids-limit=128 \
     --cap-drop=all \
     --security-opt=no-new-privileges \
-    --health-cmd /usr/local/lib/openldap-declarative/healthcheck.sh \
-    --health-timeout 3s \
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env "LDAP_TRANSPORT=${transport}" \
     --env "${public_key_environment}" \
