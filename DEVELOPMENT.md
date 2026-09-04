@@ -129,9 +129,11 @@ Qualification uses an isolated checkout, so commit the reviewed changes first. Q
 ```sh
 revision=$(git rev-parse HEAD)
 version=0.1.0-test.1
-for image in runtime generator; do
-  conclear qualify --source . --revision "$revision" \
-    --image "$image" --version "$version" --platform linux/amd64
+for platform in linux/amd64 linux/arm64; do
+  for image in runtime generator; do
+    conclear qualify --source . --revision "$revision" \
+      --image "$image" --version "$version" --platform "$platform"
+  done
 done
 ```
 

@@ -55,12 +55,6 @@ and runs the repository hooks against those layouts. The runtime hook receives t
 generator layout built from the same revision and platform for compatibility
 testing. Neither hook builds an image or selects a mutable tag.
 
-Both images currently declare only `linux/amd64`. On 2026-09-03 the qualification
-workstation had neither native arm64 capacity nor an arm64 binfmt handler. The
-maintainers must run the full build and behavioral path on an approved arm64
-worker before adding `linux/arm64`; until then this repository makes no arm64 or
-multi-platform claim.
-
 The default-deny [`.containerignore`](.containerignore) allowlist excludes local
 snapshots, credentials, release evidence, Git metadata, tests and untracked
 working files from both contexts. `conclear check` validates its effective

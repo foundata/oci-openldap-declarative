@@ -7,8 +7,7 @@ source = "https://github.com/foundata/oci-openldap-declarative"
 [[images]]
 id = "runtime"
 repository = "quay.io/foundata/openldap-declarative"
-platforms = ["linux/amd64"]
-arm64_omission_reason = "2026-09-03, OpenLDAP maintainers: this qualification host has neither a native arm64 worker nor an arm64 binfmt handler; arm64 must pass the complete behavioral path before it is declared."
+platforms = ["linux/amd64", "linux/arm64"]
 scanner = "trivy"
 
 [images.test]
@@ -113,8 +112,7 @@ shutdown_timeout_seconds = 15
 id = "generator"
 containerfile = "Containerfile.generator"
 repository = "quay.io/foundata/openldap-declarative-generator"
-platforms = ["linux/amd64"]
-arm64_omission_reason = "2026-09-03, OpenLDAP maintainers: this qualification host has neither a native arm64 worker nor an arm64 binfmt handler; arm64 must pass the complete behavioral path before it is declared."
+platforms = ["linux/amd64", "linux/arm64"]
 scanner = "trivy"
 
 [[images.test.fixtures]]

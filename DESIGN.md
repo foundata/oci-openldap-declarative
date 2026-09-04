@@ -640,8 +640,9 @@ images; their compatibility result names both same-revision layouts. ConClear
 also proposes and applies verified, repository-wide base-digest updates without
 committing them. An external updater is optional and must preserve the same
 review and qualification boundary.
-Releases currently target `linux/amd64`; adding `linux/arm64` requires the full
-behavioral path on a native worker or an accurately recorded allowed emulator.
+Releases target `linux/amd64` and `linux/arm64`. The complete arm64 build and
+behavioral path passed under ConClear's recorded qemu-user emulation mode on
+2026-09-04; each release revision must qualify both platforms independently.
 
 Alpine was considered for a smaller filesystem. Its musl environment and
 different OpenLDAP module packaging would add another compatibility surface for
@@ -1177,7 +1178,6 @@ The following values need explicit owner approval before production deployment:
 * emergency expiry override policy;
 * protected ConClear release profile, Quay controls, signing-key custody and
   deployment admission trust-root provisioning;
-* native arm64 qualification capacity if that platform is required;
 * Dex topology and storage, if OIDC is added.
 
 ## 18. Conclusion
@@ -1248,8 +1248,6 @@ remain:
 * Review current ConClear vulnerability evidence and approve any exception only
   with its required owner, rationale, reachability, controls and expiry. Current
   scanner counts belong in retained evidence, not this design document.
-* Provide native arm64 capacity, or an allowed accurately recorded emulator, and
-  pass the complete behavioral path before declaring that platform.
 * Decide whether the documented authenticated-user enumeration ACL should be
   tightened, and approve password, Argon2, bind and session policies for each
   production application.
