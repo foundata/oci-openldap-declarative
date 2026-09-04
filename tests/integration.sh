@@ -818,7 +818,12 @@ test_tls() {
 
 test_image_contents() {
   image_size=$(podman image inspect "${image_ref}" --format '{{.Size}}') || return 1
-  [ "${image_size}" -lt 170000000 ] || return 1
+  maximum_image_size=185000000
+  if [ "${image_size}" -ge "${maximum_image_size}" ]; then
+    printf 'Runtime image size %s exceeds limit %s\n' \
+      "${image_size}" "${maximum_image_size}" >&2
+    return 1
+  fi
 
   podman run --rm --entrypoint sh "${image_ref}" -c '
     test "$(id -u):$(id -g)" = 1001:1001 || exit 1

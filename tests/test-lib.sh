@@ -16,6 +16,33 @@ testlib_record() {
     "${resource_kind}" "${resource_identifier}" >>"${resource_manifest}"
 }
 
+testlib_label_podman_storage() {
+  if [ ! -r /sys/fs/selinux/enforce ]; then
+    return 0
+  fi
+  selinux_enforcing=$(cat /sys/fs/selinux/enforce) || return 1
+  if [ "${selinux_enforcing}" != 1 ]; then
+    return 0
+  fi
+
+  account_uid=$(id -u) || return 1
+  account_record=$(getent passwd "${account_uid}") || return 1
+  account_home=$(printf '%s\n' "${account_record}" | cut -d: -f6) || return 1
+  reference_overlay=${account_home}/.local/share/containers/storage/overlay
+  if [ ! -d "${reference_overlay}" ] || [ -L "${reference_overlay}" ]; then
+    printf 'ERROR: SELinux reference storage is unavailable: %s\n' \
+      "${reference_overlay}" >&2
+    return 1
+  fi
+
+  for storage_path in \
+    artifacts overlay overlay-containers overlay-images overlay-layers; do
+    mkdir -m 0700 "${podman_root}/${storage_path}" || return 1
+    chcon --reference="${reference_overlay}" \
+      "${podman_root}/${storage_path}" || return 1
+  done
+}
+
 testlib_init() {
   requested_mode=${1}
   suite_name=${2}
@@ -76,6 +103,7 @@ testlib_init() {
   mkdir -m 0700 "${podman_root}" "${podman_runroot}" || return 1
   printf '%s\n' "${run_key}" >"${podman_root}/.openldap-test-owner" || return 1
   printf '%s\n' "${run_key}" >"${podman_runroot}/.openldap-test-owner" || return 1
+  testlib_label_podman_storage || return 1
 
   export resource_manifest resource_prefix run_key workspace podman_root podman_runroot
 }
