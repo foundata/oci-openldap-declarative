@@ -71,7 +71,8 @@ main() {
     return 1
   fi
 
-  if "${podman_binary}" healthcheck run "${container_name}"; then
+  if "${podman_binary}" exec "${container_name}" \
+    /usr/local/lib/openldap-declarative/healthcheck.sh; then
     return 0
   fi
 

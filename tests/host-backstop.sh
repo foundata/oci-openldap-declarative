@@ -41,7 +41,7 @@ case "${1:-} ${2:-} ${3:-} ${4:-}" in
   'run --rm --network none')
     [ "${SNAPSHOT_VALID}" = true ]
     ;;
-  'healthcheck run test-directory ')
+  'exec test-directory /usr/local/lib/openldap-declarative/healthcheck.sh ')
     [ "${CONTAINER_HEALTHY}" = true ]
     ;;
   'stop --time 10 test-directory')
@@ -85,6 +85,10 @@ main() {
   run_backstop true true true true || fail 'Healthy signed snapshot was rejected'
   grep -F -q 'run --rm --network none --read-only' "${workspace}/calls" \
     || fail 'Host snapshot verifier was not isolated from the network'
+  grep -F -q \
+    'exec test-directory /usr/local/lib/openldap-declarative/healthcheck.sh' \
+    "${workspace}/calls" \
+    || fail 'Container health command was not executed directly'
   if grep -F -q 'stop --time' "${workspace}/calls"; then
     fail 'Healthy container was stopped'
   fi
@@ -94,7 +98,9 @@ main() {
     fail 'Invalid host snapshot was accepted'
   fi
   assert_stopped 'Invalid-snapshot'
-  if grep -F -q 'healthcheck run' "${workspace}/calls"; then
+  if grep -F -q \
+    'exec test-directory /usr/local/lib/openldap-declarative/healthcheck.sh' \
+    "${workspace}/calls"; then
     fail 'Container health was trusted after host snapshot verification failed'
   fi
 
