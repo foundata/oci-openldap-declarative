@@ -51,6 +51,12 @@ validate_runtime_configuration() {
     fi
   done
 
+  if [ "${LDAP_TRANSPORT:-ldap}" = both ] \
+    && [ "${LDAP_PORT:-1389}" = "${LDAP_LDAPS_PORT:-1636}" ]; then
+    log_error 'LDAP_PORT and LDAP_LDAPS_PORT must differ when LDAP_TRANSPORT is both'
+    validation_errors=$((validation_errors + 1))
+  fi
+
   if ! printf '%s\n' "${LDAP_LOG_LEVEL:-256}" | grep -E -q '^-?[0-9]+$'; then
     log_error 'LDAP_LOG_LEVEL must be an integer'
     validation_errors=$((validation_errors + 1))

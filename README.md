@@ -207,7 +207,7 @@ not silently redefine signed values.
 | `LDAP_TRANSPORT` | `ldap` | `ldap`, `ldaps`, or `both`. |
 | `LDAP_LISTEN_HOST` | `127.0.0.1` | `127.0.0.1` or `0.0.0.0`. |
 | `LDAP_PORT` | `1389` | Unprivileged LDAP port. |
-| `LDAP_LDAPS_PORT` | `1636` | Unprivileged LDAPS port. |
+| `LDAP_LDAPS_PORT` | `1636` | Unprivileged LDAPS port; must differ from `LDAP_PORT` for `both`. |
 | `LDAP_LOG_LEVEL` | `256` | Numeric slapd log mask. |
 | `LDAP_TLS_CERT_FILE` | `/tls/cert.pem` | Required for `ldaps` or `both`. |
 | `LDAP_TLS_KEY_FILE` | `/tls/cert.key` | Required for `ldaps` or `both`. |

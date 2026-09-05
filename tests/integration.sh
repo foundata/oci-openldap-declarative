@@ -549,6 +549,14 @@ test_immediate_shutdown() {
   assert_verified_plaintext_absent "${created_runtime_volume}" || return 1
 }
 
+test_configuration_rejections() {
+  create_container same-port valid test-service "${resource_prefix}-same-port-state" \
+    both file LDAP_LDAPS_PORT=1389 || return 1
+  same_port_container=${created_container_name}
+  expect_container_exit "${same_port_container}" 64 \
+    'LDAP_PORT and LDAP_LDAPS_PORT must differ when LDAP_TRANSPORT is both'
+}
+
 test_revision_replay() {
   state_volume=${1}
   create_snapshot revision-2 2 '+10 minutes' '+20 minutes' || return 1
@@ -918,6 +926,8 @@ main() {
   test_admin_password_files || fail 'Recovery password file test failed'
   log 'Testing shutdown during early initialization'
   test_immediate_shutdown || fail 'Immediate shutdown test failed'
+  log 'Testing listener configuration validation'
+  test_configuration_rejections || fail 'Configuration validation test failed'
   log 'Testing monotonic revision enforcement'
   test_revision_replay "${valid_state_volume}" || fail 'Revision replay test failed'
   log 'Testing non-listening staged revision preflight'
