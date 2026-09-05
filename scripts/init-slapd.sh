@@ -17,6 +17,29 @@ readonly verified_files_file="${runtime_dir}/verified-files"
 readonly root_password_input="${runtime_dir}/root-password"
 readonly verified_snapshot_dir="${runtime_dir}/verified-snapshot"
 
+config_file=''
+directory_dump=''
+group_memberships=''
+user_memberships=''
+password_values=''
+
+remove_build_artifacts() {
+  for build_artifact in \
+    "${root_password_input}" "${config_file}" "${directory_dump}" \
+    "${group_memberships}" "${user_memberships}" "${password_values}"; do
+    if [ -n "${build_artifact}" ] && [ -e "${build_artifact}" ]; then
+      unlink "${build_artifact}" || return "${EXIT_INTERNAL}"
+    fi
+  done
+
+  return 0
+}
+
+cleanup_initialization() {
+  remove_build_artifacts || true
+  remove_verified_snapshot "${runtime_dir}" || true
+}
+
 validate_compatibility_inputs() {
   base_dn="${1}"
   validation_errors=0
@@ -272,36 +295,21 @@ import_directory_data() {
 verify_built_database() {
   base_dn="${1}"
   directory_dump=$(mktemp "${runtime_dir}/directory.XXXXXX") || return "${EXIT_INTERNAL}"
-  group_memberships=$(mktemp "${runtime_dir}/group-memberships.XXXXXX") || {
-    unlink "${directory_dump}"
-    return "${EXIT_INTERNAL}"
-  }
-  user_memberships=$(mktemp "${runtime_dir}/user-memberships.XXXXXX") || {
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    return "${EXIT_INTERNAL}"
-  }
+  group_memberships=$(mktemp "${runtime_dir}/group-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
+  user_memberships=$(mktemp "${runtime_dir}/user-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
+  password_values=$(mktemp "${runtime_dir}/password-values.XXXXXX") || return "${EXIT_INTERNAL}"
 
   if ! slaptest -F "${config_dir}" -u; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'Generated slapd configuration failed validation'
     return "${EXIT_INTERNAL}"
   fi
 
   if ! slapcat -F "${config_dir}" -b "${base_dn}" -o ldif-wrap=no >"${directory_dump}"; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'Generated directory could not be read back'
     return "${EXIT_INTERNAL}"
   fi
 
   if ! grep -F -q "dn: ${base_dn}" "${directory_dump}"; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'Generated directory does not contain the manifest base DN'
     return "${EXIT_SNAPSHOT}"
   fi
@@ -309,9 +317,6 @@ verify_built_database() {
   entry_count=$(grep -c '^dn: ' "${directory_dump}") || entry_count=0
   uuid_count=$(grep -c '^entryUUID: ' "${directory_dump}") || uuid_count=0
   if [ "${entry_count}" -ne "${uuid_count}" ]; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'Every directory entry must have an explicit deterministic entryUUID'
     return "${EXIT_SNAPSHOT}"
   fi
@@ -319,14 +324,10 @@ verify_built_database() {
   if grep '^entryUUID: ' "${directory_dump}" \
     | cut -d ' ' -f 2- \
     | grep -E -v -q '^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'Every directory entryUUID must be a lowercase UUIDv5 value'
     return "${EXIT_SNAPSHOT}"
   fi
 
-  password_values=$(mktemp "${runtime_dir}/password-values.XXXXXX") || return "${EXIT_INTERNAL}"
   while IFS= read -r password_line; do
     case "${password_line}" in
       'userPassword: '*)
@@ -345,28 +346,17 @@ verify_built_database() {
   # shellcheck disable=SC2016
   if grep -E -v -q '^\{ARGON2\}\$argon2id\$v=19\$m=[0-9]+,t=[0-9]+,p=[0-9]+\$[^$]+\$[^$]+$' \
     "${password_values}"; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
-    unlink "${password_values}"
     log_error 'Every userPassword must use a valid Argon2id verifier'
     return "${EXIT_SNAPSHOT}"
   fi
 
   # Dollar signs in the next expression are literal Argon2 separators.
   # shellcheck disable=SC2016
-  if sed -n 's/^{ARGON2}\$argon2id\$v=19\$m=\([0-9][0-9]*\),t=\([0-9][0-9]*\),p=\([0-9][0-9]*\)\$.*/\1 \2 \3/p' \
+  if ! sed -n 's/^{ARGON2}\$argon2id\$v=19\$m=\([0-9][0-9]*\),t=\([0-9][0-9]*\),p=\([0-9][0-9]*\)\$.*/\1 \2 \3/p' \
     "${password_values}" | awk '$1 < 19456 || $2 < 2 || $3 < 1 { invalid = 1 } END { exit invalid }'; then
-    :
-  else
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
-    unlink "${password_values}"
     log_error 'Every Argon2id verifier must use at least m=19456,t=2,p=1'
     return "${EXIT_SNAPSHOT}"
   fi
-  unlink "${password_values}"
 
   awk '
     /^dn: / { dn = substr($0, 5) }
@@ -378,21 +368,15 @@ verify_built_database() {
   ' "${directory_dump}" | sort >"${user_memberships}" || return "${EXIT_INTERNAL}"
 
   if ! cmp -s "${group_memberships}" "${user_memberships}"; then
-    unlink "${directory_dump}"
-    unlink "${group_memberships}"
-    unlink "${user_memberships}"
     log_error 'member and memberOf attributes must describe the same relationships'
     return "${EXIT_SNAPSHOT}"
   fi
 
-  unlink "${directory_dump}"
-  unlink "${group_memberships}"
-  unlink "${user_memberships}"
   return 0
 }
 
 main() {
-  trap 'remove_verified_snapshot "${runtime_dir}" || true' 0
+  trap cleanup_initialization 0
   trap 'exit 70' HUP INT TERM
 
   if [ ! -f "${verified_manifest_file}" ] || [ ! -f "${verified_files_file}" ]; then
@@ -406,22 +390,17 @@ main() {
   root_password_hash=$(hash_root_password) || exit $?
   config_file=$(mktemp "${runtime_dir}/config.XXXXXX") || die "${EXIT_INTERNAL}" 'Cannot create the configuration input'
 
-  write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}"
-  initialization_status=$?
-  if [ "${initialization_status}" -ne 0 ]; then
-    unlink "${config_file}"
-    exit "${initialization_status}"
-  fi
+  write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}" || exit $?
 
   if ! slapadd -F "${config_dir}" -n 0 -l "${config_file}"; then
-    unlink "${config_file}"
     die "${EXIT_INTERNAL}" 'Cannot create the slapd configuration database'
   fi
-  unlink "${config_file}"
+  unlink "${config_file}" || die "${EXIT_INTERNAL}" 'Cannot remove the configuration input'
 
   import_directory_data || exit $?
   slapindex -F "${config_dir}" -n 1 || die "${EXIT_INTERNAL}" 'Cannot build directory indexes'
   verify_built_database "${base_dn}" || exit $?
+  remove_build_artifacts || die "${EXIT_INTERNAL}" 'Cannot remove initialization artifacts'
   remove_verified_snapshot "${runtime_dir}" \
     || die "${EXIT_INTERNAL}" 'Cannot remove verified snapshot data after import'
 
