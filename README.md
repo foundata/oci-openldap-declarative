@@ -212,6 +212,8 @@ not silently redefine signed values.
 | `LDAP_TLS_CERT_FILE` | `/tls/cert.pem` | Required for `ldaps` or `both`. |
 | `LDAP_TLS_KEY_FILE` | `/tls/cert.key` | Required for `ldaps` or `both`. |
 | `LDAP_TLS_CA_FILE` | `/tls/ca.pem` | Optional server trust bundle. |
+| `LDAP_SNAPSHOT_DIR` | `/snapshot` | Directory holding `manifest.json`, `manifest.json.minisig`, and the listed LDIF files. |
+| `LDAP_REVISION_STATE_FILE` | `/state/highest-revision` | Highest accepted revision; keep its volume across container replacement. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_FILE` | `/run/credentials/snapshot-public-key` | One minisign verification key. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_DIR` | none | Directory of `*.pub` verification keys for rotation; mutually exclusive with the file input. |
 | `LDAP_ADMIN_PASSWORD_FILE` | none | Optional recovery root password file. Avoid in normal operation. |
