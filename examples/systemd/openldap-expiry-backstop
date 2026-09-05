@@ -49,6 +49,8 @@ main() {
     return 1
   fi
 
+  # The tmpfs holds the verified copies; the runtime accepts up to 16 MiB of
+  # LDIF plus a 1 MiB manifest, so a smaller bound would stop a valid service.
   if ! "${podman_binary}" run --rm \
     --network none \
     --read-only \
@@ -57,7 +59,7 @@ main() {
     --user 1001:1001 \
     --cap-drop all \
     --security-opt no-new-privileges \
-    --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=2m,mode=1777 \
+    --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=1777 \
     --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
     --env LDAP_SNAPSHOT_DIR=/snapshot \
     --env LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key \

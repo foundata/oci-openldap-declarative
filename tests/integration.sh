@@ -506,6 +506,18 @@ test_valid_snapshot() {
   PODMAN="${workspace}/podman-backstop" \
     "${backstop_script}" "${container_name}" \
     "${workspace}/valid" "${workspace}/public/snapshot.pub" test-service || return 1
+  copy_snapshot "${workspace}/valid" "${workspace}/valid-large" || return 1
+  awk 'BEGIN {
+    for (line_number = 0; line_number < 60000; line_number++) {
+      printf "# padding %06d exceeds a 2 MiB copy budget within the accepted 16 MiB bound\n", line_number
+    }
+  }' >>"${workspace}/valid-large/directory.ldif" || return 1
+  refresh_snapshot_signature "${workspace}/valid-large" || return 1
+  PODMAN="${workspace}/podman-backstop" \
+    "${backstop_script}" "${container_name}" \
+    "${workspace}/valid-large" "${workspace}/public/snapshot.pub" test-service || return 1
+  container_running=$(podman inspect "${container_name}" --format '{{.State.Running}}') || return 1
+  [ "${container_running}" = true ] || return 1
   podman stop --time 3 "${container_name}" >/dev/null || return 1
   exit_status=$(podman inspect "${container_name}" --format '{{.State.ExitCode}}') || return 1
   [ "${exit_status}" -eq 0 ] || return 1
