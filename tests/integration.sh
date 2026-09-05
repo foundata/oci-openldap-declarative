@@ -583,6 +583,7 @@ run_revision_preflight_case() {
   state_content=${2}
   expected_status=${3}
   expected_message=${4}
+  state_terminator=${5:-newline}
   state_directory=${workspace}/preflight-${case_name}
   state_path=${state_directory}/highest-revision
   preflight_runtime=${workspace}/preflight-runtime-${case_name}
@@ -590,7 +591,11 @@ run_revision_preflight_case() {
   mkdir -m 0755 "${state_directory}" || return 1
   mkdir -m 0700 "${preflight_runtime}" || return 1
   if [ "${state_content}" != absent ]; then
-    printf '%s\n' "${state_content}" >"${state_path}" || return 1
+    if [ "${state_terminator}" = newline ]; then
+      printf '%s\n' "${state_content}" >"${state_path}" || return 1
+    else
+      printf '%s' "${state_content}" >"${state_path}" || return 1
+    fi
     chmod 0644 "${state_path}" || return 1
     state_digest_before=$(sha256sum "${state_path}") || return 1
   else
@@ -631,6 +636,10 @@ test_revision_preflight() {
   run_revision_preflight_case new absent 0 '(new)' || return 1
   run_revision_preflight_case exact "1 ${manifest_digest}" 0 '(exact-replay)' || return 1
   run_revision_preflight_case legacy 1 0 '(legacy-state-migration)' || return 1
+  run_revision_preflight_case unterminated "1 ${manifest_digest}" 0 '(exact-replay)' \
+    unterminated || return 1
+  run_revision_preflight_case empty '' 66 \
+    'does not contain a non-negative integer' unterminated || return 1
   run_revision_preflight_case lower "2 ${manifest_digest}" 65 \
     'is older than accepted revision 2' || return 1
   run_revision_preflight_case malformed 'not-a-revision' 66 \

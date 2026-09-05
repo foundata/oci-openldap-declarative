@@ -25,8 +25,10 @@ validate_snapshot_revision() {
   highest_revision=''
   highest_manifest_digest=''
   unexpected_state_field=''
+  # read reports end of file for a final line without a newline; the value
+  # checks below decide whether the state is usable.
   IFS=' ' read -r highest_revision highest_manifest_digest unexpected_state_field \
-    <"${revision_state_path}" || return "${EXIT_INTERNAL}"
+    <"${revision_state_path}" || true
   if ! printf '%s\n' "${highest_revision}" | grep -E -q '^[0-9]+$'; then
     log_error 'Revision state does not contain a non-negative integer'
     return "${EXIT_INPUT}"
