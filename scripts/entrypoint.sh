@@ -132,6 +132,12 @@ run_startup_phase() {
   startup_phase_pid=$!
   wait "${startup_phase_pid}"
   startup_phase_status=$?
+  # A trapped shutdown signal interrupts wait; keep waiting so the phase can
+  # finish its own cleanup before this process exits.
+  while kill -0 "${startup_phase_pid}" 2>/dev/null; do
+    wait "${startup_phase_pid}"
+    startup_phase_status=$?
+  done
   startup_phase_pid=''
   return "${startup_phase_status}"
 }

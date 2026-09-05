@@ -364,7 +364,12 @@ assert_verified_plaintext_absent() {
     --entrypoint sh \
     --mount "type=volume,source=${inspected_volume},destination=/inspect,ro" \
     "${image_ref}" -c \
-    'test ! -e /inspect/verified-snapshot && test ! -e /inspect/verified-files'
+    'test ! -e /inspect/verified-snapshot \
+      && test ! -e /inspect/verified-files \
+      && test ! -e /inspect/root-password \
+      && ! find /inspect -maxdepth 1 \( -name "config.*" -o -name "directory.*" \
+        -o -name "group-memberships.*" -o -name "user-memberships.*" \
+        -o -name "password-values.*" \) | grep -q .'
 }
 
 assert_valid_runtime() {
