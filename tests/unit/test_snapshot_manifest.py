@@ -9,9 +9,10 @@ from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError
-from validate_snapshot_manifest import validate_manifest
 
-ROOT = Path(__file__).resolve().parents[1]
+from tests.validate_snapshot_manifest import validate_manifest
+
+ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "schema/snapshot-manifest-v1.schema.json"
 VALID_PATH = ROOT / "tests/fixtures/snapshot-manifest-valid.json"
 

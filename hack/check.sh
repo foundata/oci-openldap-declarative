@@ -38,12 +38,8 @@ main() {
   hadolint Containerfile Containerfile.generator || return 1
 
   printf '%s\n' 'Checking Python and JSON contracts'
-  uv run --frozen ruff format --check \
-    generator/generate.py tests/test_snapshot_manifest.py \
-    tests/test_repository_policy.py tests/validate_snapshot_manifest.py || return 1
-  uv run --frozen ruff check \
-    generator/generate.py tests/test_snapshot_manifest.py \
-    tests/test_repository_policy.py tests/validate_snapshot_manifest.py || return 1
+  uv run --frozen ruff format --check . || return 1
+  uv run --frozen ruff check . || return 1
   uv run --frozen mypy || return 1
   uv run --frozen pytest || return 1
   for schema_file in schema/*.json; do

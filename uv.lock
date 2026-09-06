@@ -435,7 +435,7 @@ dev = [
     { name = "argon2-cffi" },
     { name = "jsonschema", extras = ["format"] },
     { name = "mypy" },
-    { name = "pytest" },
+    { name = "pytest", specifier = ">=9.0" },
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]

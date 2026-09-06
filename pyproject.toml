@@ -8,7 +8,7 @@ dev = [
   "argon2-cffi",
   "jsonschema[format]",
   "mypy",
-  "pytest",
+  "pytest>=9.0",
   "ruff",
   "types-pyyaml",
 ]
@@ -17,8 +17,10 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-addopts = "--strict-config --strict-markers"
-testpaths = ["tests"]
+addopts = ["--import-mode=importlib"]
+filterwarnings = ["error"]
+strict = true
+testpaths = ["tests/unit"]
 
 [tool.ruff]
 line-length = 88
