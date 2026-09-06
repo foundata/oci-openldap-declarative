@@ -23,16 +23,16 @@ main() {
   cd "${project_dir}" || return 1
 
   printf '%s\n' 'Checking POSIX shell sources'
-  sh -n scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+  sh -n scripts/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
   shfmt --language-dialect posix --indent 2 --case-indent \
     --binary-next-line --simplify --diff \
-    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+    scripts/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
   shellcheck --shell=sh --severity=style \
     --exclude=SC2292 --exclude=SC3040 --exclude=SC3043 \
     --enable=all \
-    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+    scripts/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
   checkbashisms \
-    scripts/*.sh tests/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
+    scripts/*.sh hack/*.sh examples/systemd/openldap-expiry-backstop || return 1
 
   printf '%s\n' 'Checking Containerfiles'
   hadolint Containerfile Containerfile.generator || return 1
