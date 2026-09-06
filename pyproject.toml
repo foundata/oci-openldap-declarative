@@ -10,6 +10,8 @@ dev = [
   "mypy",
   "pytest>=9.0",
   "pytest-testinfra",
+  "python-ldap",
+  "pyyaml",
   "ruff",
   "types-pyyaml",
 ]

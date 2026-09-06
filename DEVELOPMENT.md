@@ -19,7 +19,7 @@ live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Prerequisites<a id="prerequisites"></a>
 
-- **Python 3.12 or later** and **[uv](https://docs.astral.sh/uv/)** for Python tests.
+- **Python 3.12 or later** and **[uv](https://docs.astral.sh/uv/)** for Python tests. The development group includes `python-ldap`, which builds from source on Python versions without a wheel and then needs the OpenLDAP and Python headers (`openldap-devel` and `python3-devel` on Fedora; `libldap-dev`, `libsasl2-dev` and `python3-dev` on Debian).
 - **Git**, **jq**, **shfmt**, **ShellCheck**, **checkbashisms** and **Hadolint** for repository checks.
 - **Rootless Buildah and Podman** for container tests.
 - **ConClear** from the organization's protected artifact handoff for pin checks, qualification and releases.
