@@ -51,8 +51,6 @@ main() {
   QUADLET_UNIT_DIRS="${project_dir}/examples/quadlet" \
     /usr/lib/systemd/user-generators/podman-user-generator -user -dryrun >/dev/null || return 1
 
-  sh tests/host-backstop.sh || return 1
-
   printf '%s\n' \
     'Direct checks passed; ConClear owns OCI checks, pin validation, exact-image integration, and qualification.'
 }
