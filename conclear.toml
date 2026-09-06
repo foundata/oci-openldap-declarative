@@ -79,12 +79,12 @@ mounts = [
 
 [[images.hooks]]
 name = "runtime-integration"
-command = ["sh", "tests/integration.sh", "--conclear"]
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_runtime.py", "--mode=conclear"]
 timeout_seconds = 1800
 
 [[images.hooks]]
 name = "same-revision-generator-compatibility"
-command = ["sh", "tests/generator-integration.sh", "--conclear-runtime"]
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-runtime"]
 timeout_seconds = 1800
 
 [[images.pins]]
@@ -154,7 +154,7 @@ mounts = [
 
 [[images.hooks]]
 name = "generator-integration"
-command = ["sh", "tests/generator-integration.sh", "--conclear-generator"]
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-generator"]
 timeout_seconds = 1800
 
 [[images.pins]]

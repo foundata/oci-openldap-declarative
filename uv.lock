@@ -424,6 +424,7 @@ dev = [
     { name = "jsonschema", extra = ["format"] },
     { name = "mypy" },
     { name = "pytest" },
+    { name = "pytest-testinfra" },
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
@@ -436,6 +437,7 @@ dev = [
     { name = "jsonschema", extras = ["format"] },
     { name = "mypy" },
     { name = "pytest", specifier = ">=9.0" },
+    { name = "pytest-testinfra" },
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
@@ -499,6 +501,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e4/47/b9efed96c114afcfa3c9d3fe98a76a1d14c74a9e266d397cf6eb64be5e01/pytest-9.1.1.tar.gz", hash = "sha256:1088fbde8f2b49d95a549a195707afa7a76a3ce9bcadc26b6d71f0ffda5fe313", size = 1636369, upload-time = "2026-06-19T10:58:32.857Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/24/25/1de2678b631f5a49215c6c96fff41ba892b0a34df68d6d80292b1b48aa7f/pytest-9.1.1-py3-none-any.whl", hash = "sha256:37a86b45efb9a47a61a36449063e8e18d0cab3161329fc099eb21783169c4f0c", size = 386536, upload-time = "2026-06-19T10:58:31.347Z" },
+]
+
+[[package]]
+name = "pytest-testinfra"
+version = "10.2.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/33/15/b650133bb3eb3509704c7605348bec4205b6a399f7a79874ced6c30a3e15/pytest_testinfra-10.2.2.tar.gz", hash = "sha256:537fd5eb88da618c1f461248aa20594cf8d44512e8519b239837e83875e1e9cd", size = 76153, upload-time = "2025-03-30T09:06:02.224Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/75/8b002ad110ae4a71bce9bb47020ee77176e27defe99ce6d7b62e52debeb9/pytest_testinfra-10.2.2-py3-none-any.whl", hash = "sha256:b785602b0aa868c858e4ef121a8cc0d13a81c04b74ec0364d70969540f8e7c31", size = 76912, upload-time = "2025-03-30T09:06:00.358Z" },
 ]
 
 [[package]]

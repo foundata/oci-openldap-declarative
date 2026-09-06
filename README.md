@@ -370,9 +370,8 @@ modes cannot build images. They use isolated Podman storage, collision-checked
 names and a run manifest. Failure output identifies the manifest and inspection
 command.
 
-The explicit non-release convenience mode requires an existing external test
-directory and may build local images. See [`DEVELOPMENT.md`](DEVELOPMENT.md) for
-the maintained commands.
+The explicit non-release convenience mode may build local images. See
+[`DEVELOPMENT.md`](DEVELOPMENT.md) for the maintained commands.
 
 The direct check requires Hadolint, `shfmt`, ShellCheck, `checkbashisms`, `jq`
 and `uv`. It covers shell, Containerfiles, Python formatting/lint/type checks,

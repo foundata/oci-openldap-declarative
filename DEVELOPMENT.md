@@ -107,16 +107,15 @@ for image in runtime generator; do
 done
 ```
 
-For an explicit non-release container test, create an external run directory and use rootless Podman:
+The direct check runs only the unit tests below `tests/unit`. The container suites below `tests/integration` need rootless Podman and an image source selected with `--mode`. For an explicit non-release container test, build developer images into an isolated store:
 
 ```sh
 test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-test.XXXXXX")
-OPENLDAP_TEST_RUN_DIR="$test_run" sh tests/integration.sh --developer-build
-OPENLDAP_TEST_RUN_DIR="$test_run" sh tests/generator-integration.sh --developer-build
+uv run --frozen pytest tests/integration --mode=developer-build --run-dir "$test_run"
 rm -rf "$test_run"
 ```
 
-Set `KEEP_TEST_RESOURCES=true` only while diagnosing a failure. The test reports its external resource manifest and cleanup commands.
+Without `--run-dir` the suite uses a pytest temporary directory. Set `KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then reports its resource manifest and the inspection command instead of resetting the isolated store.
 
 
 ## Pin updates<a id="pin-updates"></a>

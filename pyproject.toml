@@ -9,6 +9,7 @@ dev = [
   "jsonschema[format]",
   "mypy",
   "pytest>=9.0",
+  "pytest-testinfra",
   "ruff",
   "types-pyyaml",
 ]
@@ -19,6 +20,9 @@ package = false
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
 filterwarnings = ["error"]
+markers = [
+  "integration: needs rootless Podman, an image source and real time",
+]
 strict = true
 testpaths = ["tests/unit"]
 
