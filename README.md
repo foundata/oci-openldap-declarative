@@ -1,22 +1,42 @@
-# OCI Image: OpenLDAP Declarative
+# OpenLDAP Declarative
 
-This project runs a small, read-only OpenLDAP directory from a signed and
-expiring service snapshot. A central build process selects the users and groups
-for one application, creates deterministic LDAP identifiers, signs the complete
-snapshot, and deploys it next to that application. The container verifies and
-imports the snapshot offline before it opens an LDAP listener.
+**Disposable, read-only OpenLDAP sidecars built from a signed, expiring
+snapshot, so applications authenticate locally without a network path to a
+central directory.**
+
+Users, groups, and their memberships are declared once in YAML. A central
+generator turns that declaration into deterministic LDAP identifiers and a
+signed, expiring snapshot for one application, which is then deployed next to
+it. The runtime container verifies and imports the snapshot offline before it
+opens an LDAP listener.
 
 The local database is disposable. LDAP writes are not an administration
 interface, and restarting the container reconstructs the directory from the
 snapshot. The only persistent runtime state is the highest accepted snapshot
 revision, used to reject rollbacks.
 
-This model is intended for a modest number of isolated services where avoiding a
-central authentication network path is worth bounded propagation delay and the
-operational cost of distributing credentials. It is not a general-purpose,
-mutable, replicated directory service.
+This model is intended for a modest number of isolated services where avoiding
+a central authentication network path is worth bounded propagation delay and
+the operational cost of distributing credentials. It is not a general-purpose,
+mutable, replicated directory service. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
+for the full design, its security assumptions, and the alternatives it rejects.
 
-## Security boundary
+## Table of contents<a id="toc"></a>
+
+- [Security boundary](#security-boundary)
+- [Images](#images)
+- [Generate snapshots](#generate-snapshots)
+- [Run with rootless Podman](#run-with-rootless-podman)
+- [Runtime inputs](#runtime-inputs)
+- [Snapshot lifecycle](#snapshot-lifecycle)
+- [TLS](#tls)
+- [Backup and recovery](#backup-and-recovery)
+- [Tests](#tests)
+- [Limitations](#limitations)
+- [Licensing, copyright](#licensing-copyright)
+- [Author information](#author-information)
+
+## Security boundary<a id="security-boundary"></a>
 
 Each snapshot contains password verifiers for its authorized users. A stolen
 snapshot permits offline password guessing. The generator therefore produces
@@ -35,7 +55,7 @@ Hard expiry bounds stale authorization. It does not provide immediate
 offboarding: a removed user can still bind to a host that retains an older valid
 snapshot until that snapshot is replaced or expires.
 
-## Images
+## Images<a id="images"></a>
 
 The runtime image is built from a digest-pinned Debian 13 slim base and contains
 OpenLDAP, the Debian Argon2 module, LDAP clients, OpenSSL, `jq`, and `minisign`.
@@ -68,7 +88,7 @@ SBOM; it is not a substitute for one.
 
 Maintainer commands are documented in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
-## Generate snapshots
+## Generate snapshots<a id="generate-snapshots"></a>
 
 The generator accepts two strict YAML documents:
 
@@ -151,7 +171,7 @@ in every service and after every rebuild. Disabled users are omitted. Static
 `member` and `memberOf` values are emitted together because OpenLDAP overlays do
 not run during offline import.
 
-## Run with rootless Podman
+## Run with rootless Podman<a id="run-with-rootless-podman"></a>
 
 The recommended deployment is a rootless Quadlet user service. Start with the
 four files in [`examples/quadlet`](examples/quadlet), replace the image digest,
@@ -195,7 +215,7 @@ host compromise is already considered equivalent to application compromise.
 Use LDAPS for any traffic that leaves that boundary and for clients, such as Dex,
 whose LDAP connector requires or is moving toward encrypted transport.
 
-## Runtime inputs
+## Runtime inputs<a id="runtime-inputs"></a>
 
 The signed manifest is authoritative for the service ID, base DN, revision,
 validity period, UUID namespace, file order, and file digests. Runtime inputs may
@@ -237,7 +257,7 @@ The runtime accepts at most 32 LDIF files and 16 MiB of LDIF data; manifests are
 limited to 1 MiB and detached signatures to 16 KiB. These are defensive bounds,
 not capacity targets. The directory is intended to remain far smaller.
 
-## Snapshot lifecycle
+## Snapshot lifecycle<a id="snapshot-lifecycle"></a>
 
 For every authorization, group, password, or identity change:
 
@@ -315,7 +335,7 @@ non-password attributes of other entries. Anonymous search, password verifiers,
 unlisted metadata and `cn=config` remain denied. Tightening this enumeration
 boundary would be a product-policy change and requires a separate owner decision.
 
-## TLS
+## TLS<a id="tls"></a>
 
 For LDAPS, mount a certificate and private key readable by the mapped container
 UID and set `LDAP_TRANSPORT=ldaps` or `both`. The runtime requires TLS 1.2 or 1.3
@@ -327,7 +347,7 @@ Certificate issuance, renewal, deployment, hostname selection, and expiry
 monitoring remain deployment responsibilities. Restart the container after
 rotating certificate files so startup validation is repeated.
 
-## Backup and recovery
+## Backup and recovery<a id="backup-and-recovery"></a>
 
 Do not back up the disposable MDB database as authoritative state. Back up and
 test recovery of:
@@ -343,7 +363,7 @@ start the pinned image, compare UUIDs with production, and verify representative
 user and bind-account authentication. Restored expired snapshots must remain
 rejected.
 
-## Tests
+## Tests<a id="tests"></a>
 
 ConClear runs both integration suites against digest-verified OCI layouts. Those
 modes cannot build images. They use isolated Podman storage, collision-checked
@@ -360,7 +380,7 @@ JSON Schema contracts, Quadlet generation, admission policy and the host
 backstop. ConClear separately owns generic OCI checks, pin state and all
 exact-image qualification.
 
-## Limitations
+## Limitations<a id="limitations"></a>
 
 - Revocation and password changes take effect when a new snapshot is deployed,
   or at hard expiry, not immediately.
@@ -380,7 +400,7 @@ At larger scale, or when immediate revocation and a central network path become
 acceptable, migrate the stable identities into a central directory or identity
 provider rather than extending this snapshot model indefinitely.
 
-## Licensing and copyright
+## Licensing, copyright<a id="licensing-copyright"></a>
 
 <!--REUSE-IgnoreStart-->
 Copyright (c) 2025 foundata GmbH (https://foundata.com)
@@ -397,3 +417,8 @@ contents.
 The built images contain Debian packages governed by their respective licenses.
 Operators remain responsible for license compliance and for producing release
 SBOMs that describe the actual image contents.
+
+## Author information<a id="author-information"></a>
+
+This project was created and is maintained by
+[foundata GmbH](https://foundata.com).
