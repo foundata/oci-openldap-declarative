@@ -1,8 +1,8 @@
 # Development
 
 This file provides information for maintainers and contributors to OpenLDAP
-Declarative. The system design and security boundaries live in
-[`DESIGN.md`](DESIGN.md).
+Declarative. What the system is, why it exists, and its security boundaries
+live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 
 ## Table of contents<a id="toc"></a>
@@ -56,11 +56,28 @@ Declarative. The system design and security boundaries live in
 
 ## Project structure<a id="project-structure"></a>
 
+The repository builds two independent images from one pipeline, split by
+`Containerfile`. The runtime image contains only what a listening LDAP service
+needs: OpenLDAP, the Argon2 module, LDAP clients, and the scripts that verify
+and import a snapshot. It carries no compiler, no interpreter, and no Python,
+which keeps the attack surface small on the host where it actually accepts
+network connections.
+
+Generating a snapshot from declarative YAML instead needs Python, PyYAML, and
+`python-ldap`. Those dependencies live in `Containerfile.generator`, a
+separate image that never runs next to an application and is never part of
+the release the runtime depends on. Generation happens offline, ahead of
+deployment; its only output is a signed, self-contained snapshot that the
+runtime image treats as untrusted input to verify, not as code to execute.
+Keeping the two Containerfiles apart makes that separation structural: the
+generator's dependencies have no path into the image that holds an
+application's credentials.
+
 ```text
 Containerfile                    # runtime image
 Containerfile.generator          # snapshot-generator image
 conclear.toml                    # image, runtime and test declarations
-generator/                       # snapshot generator
+generator/                       # snapshot generator, Python, offline only
 scripts/                         # runtime verification and startup
 schema/                          # public JSON Schema contracts
 examples/                        # deployment and input examples
