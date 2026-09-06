@@ -864,7 +864,7 @@ test_image_contents() {
     test -s /usr/local/share/openldap-declarative/package-versions.txt || exit 1
     test -s /usr/local/share/openldap-declarative/LICENSE.txt || exit 1
     test -s /usr/share/doc/slapd/copyright || exit 1
-    test ! -e /DESIGN.md || exit 1
+    test ! -e /ARCHITECTURE.md || exit 1
     test ! -e /TEMP-Notes || exit 1
     test -s /usr/lib/ldap/back_mdb.so || exit 1
     test -s /usr/lib/ldap/argon2.so || exit 1

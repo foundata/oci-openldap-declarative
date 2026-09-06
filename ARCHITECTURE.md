@@ -1,6 +1,7 @@
 # Decentralized directory services for application authentication
 
-Status: implementation integrated; qualification and operational rollout tracked separately
+Status: implementation integrated; qualification and operational rollout tracked
+separately
 
 This document describes a directory architecture for internal applications. It
 also records the assumptions that make the design defensible, the risks it does
@@ -8,6 +9,64 @@ not remove, and the alternatives considered. The repository now implements the
 runtime and snapshot generator described here. Appendix A separates that tested
 baseline from the deployment and operational work that still has to happen
 before a production rollout.
+
+
+## Table of contents<a id="toc"></a>
+
+- [Summary](#summary)
+- [1. Problem and intent](#1-problem-and-intent)
+- [2. Scope and non-goals](#2-scope-and-non-goals)
+- [3. Security assumptions](#3-security-assumptions)
+- [4. Architecture](#4-architecture)
+  - [4.1 Authoritative data](#41-authoritative-data)
+  - [4.2 Service-specific snapshots](#42-service-specific-snapshots)
+  - [4.3 Snapshot delivery and image separation](#43-snapshot-delivery-and-image-separation)
+  - [4.4 Stable identifiers](#44-stable-identifiers)
+  - [4.5 Local directory startup](#45-local-directory-startup)
+  - [4.6 Freshness and the deadman switch](#46-freshness-and-the-deadman-switch)
+  - [4.7 Correlated expiry across the fleet](#47-correlated-expiry-across-the-fleet)
+  - [4.8 Application connection](#48-application-connection)
+  - [4.9 Configuration and secret input contract](#49-configuration-and-secret-input-contract)
+- [5. Passwords and credential exposure](#5-passwords-and-credential-exposure)
+- [6. Revocation and update behavior](#6-revocation-and-update-behavior)
+  - [6.1 Employee offboarding](#61-employee-offboarding)
+  - [6.2 Password changes and compromised credentials](#62-password-changes-and-compromised-credentials)
+  - [6.3 Group and service authorization changes](#63-group-and-service-authorization-changes)
+  - [6.4 Failed rebuilds and rollbacks](#64-failed-rebuilds-and-rollbacks)
+- [7. OpenLDAP sidecar implementation](#7-openldap-sidecar-implementation)
+  - [7.1 Base image](#71-base-image)
+  - [7.2 Container controls](#72-container-controls)
+  - [7.3 LDAP policy](#73-ldap-policy)
+- [8. Optional OpenID Connect with Dex](#8-optional-openid-connect-with-dex)
+- [9. Availability and failure scenarios](#9-availability-and-failure-scenarios)
+- [10. Monitoring and audit](#10-monitoring-and-audit)
+- [11. Backup and recovery](#11-backup-and-recovery)
+- [12. Alternatives considered](#12-alternatives-considered)
+  - [12.1 Central highly available LDAP](#121-central-highly-available-ldap)
+  - [12.2 OpenLDAP replication or LDAP proxies](#122-openldap-replication-or-ldap-proxies)
+  - [12.3 389 Directory Server](#123-389-directory-server)
+  - [12.4 FreeIPA](#124-freeipa)
+  - [12.5 Keycloak and Authentik](#125-keycloak-and-authentik)
+  - [12.6 LLDAP and Kanidm](#126-lldap-and-kanidm)
+  - [12.7 Central identity provider and directory authority](#127-central-identity-provider-and-directory-authority)
+  - [12.8 SCIM provisioning](#128-scim-provisioning)
+  - [12.9 Application-local users managed by automation](#129-application-local-users-managed-by-automation)
+  - [12.10 Bitnami OpenLDAP image](#1210-bitnami-openldap-image)
+- [13. Why OpenLDAP remains the current choice](#13-why-openldap-remains-the-current-choice)
+- [14. Operational cost](#14-operational-cost)
+- [15. Implementation phases](#15-implementation-phases)
+  - [Phase 1: freeze the runtime contract and test harness](#phase-1-freeze-the-runtime-contract-and-test-harness)
+  - [Phase 2: replace the image and startup path](#phase-2-replace-the-image-and-startup-path)
+  - [Phase 3: harden and release the runtime image](#phase-3-harden-and-release-the-runtime-image)
+  - [Phase 4: build generation and deployment](#phase-4-build-generation-and-deployment)
+  - [Phase 5: qualify one application and operations](#phase-5-qualify-one-application-and-operations)
+  - [Phase 6: evaluate OIDC separately](#phase-6-evaluate-oidc-separately)
+- [16. Acceptance criteria](#16-acceptance-criteria)
+- [17. Decisions still required](#17-decisions-still-required)
+- [18. Conclusion](#18-conclusion)
+- [Appendix A: implementation status and remaining work](#appendix-a-implementation-status-and-remaining-work)
+- [References](#references)
+
 
 ## Summary
 
@@ -58,15 +117,16 @@ only the deployment push needs one, and only while it runs.
 
 The intended properties, roughly in order of importance:
 
-* An application VM needs no VPN, tunnel or exposed central endpoint to
+- An application VM needs no VPN, tunnel or exposed central endpoint to
   authenticate users. An internet-facing VM whose service has two users
   carries exactly those two accounts and nothing else.
-* A service sees only the directory records it needs.
-* A failure or compromise is contained to one application VM as far as practical.
-* Directory state can be reviewed, generated and reproduced from source data.
-* Legacy LDAP applications get a standard protocol without acquiring a central
+- A service sees only the directory records it needs.
+- A failure or compromise is contained to one application VM as far as
+  practical.
+- Directory state can be reviewed, generated and reproduced from source data.
+- Legacy LDAP applications get a standard protocol without acquiring a central
   runtime dependency.
-* As a secondary benefit, authentication continues during short outages of the
+- As a secondary benefit, authentication continues during short outages of the
   deployment system.
 
 The design trades immediate consistency for those properties. Revocation is
@@ -80,14 +140,14 @@ company's general-purpose identity management system.
 
 The design does not provide:
 
-* interactive LDAP administration on application hosts;
-* writable or persistent directory data on those hosts;
-* LDAP replication between sidecars;
-* a user self-service portal;
-* immediate global session termination;
-* OAuth 2.0, OpenID Connect or SCIM through OpenLDAP itself;
-* protection after an attacker gains control of the application VM;
-* a substitute for application authorization checks.
+- interactive LDAP administration on application hosts;
+- writable or persistent directory data on those hosts;
+- LDAP replication between sidecars;
+- a user self-service portal;
+- immediate global session termination;
+- OAuth 2.0, OpenID Connect or SCIM through OpenLDAP itself;
+- protection after an attacker gains control of the application VM;
+- a substitute for application authorization checks.
 
 Applications may cache users, groups or sessions. Stopping LDAP does not
 necessarily terminate an application session. Offboarding tests must therefore
@@ -159,28 +219,29 @@ authorization. Every user receives an immutable source identifier when created.
 Usernames, email addresses and DNs can change; the source identifier cannot.
 
 Credential material should be stored separately from ordinary identity metadata,
-using the organization's secret storage and access controls. A generated snapshot
-joins the two sources for the users authorized for that service. Password hashes
-are sensitive credentials even though they are not plaintext passwords.
+using the organization's secret storage and access controls. A generated
+snapshot joins the two sources for the users authorized for that service.
+Password hashes are sensitive credentials even though they are not plaintext
+passwords.
 
 The source model should distinguish at least:
 
-* active and disabled accounts;
-* immutable identity ID;
-* current username and display attributes;
-* service authorization;
-* service-specific administrative groups;
-* credential revision;
-* account expiry, where applicable.
+- active and disabled accounts;
+- immutable identity ID;
+- current username and display attributes;
+- service authorization;
+- service-specific administrative groups;
+- credential revision;
+- account expiry, where applicable.
 
 A disabled user should normally be absent from every generated service snapshot.
-Keeping a disabled entry in LDAP is safe only if all bind and search paths enforce
-the disabled state. Removing the entry is simpler and easier to test.
+Keeping a disabled entry in LDAP is safe only if all bind and search paths
+enforce the disabled state. Removing the entry is simpler and easier to test.
 
-The generator must use an LDAP-aware library for DN construction, filter escaping
-and LDIF serialization. User-controlled values must not be inserted into LDIF or
-LDAP filters through raw string templates. Applications have the same obligation
-when they build LDAP search filters.
+The generator must use an LDAP-aware library for DN construction, filter
+escaping and LDIF serialization. User-controlled values must not be inserted
+into LDIF or LDAP filters through raw string templates. Applications have the
+same obligation when they build LDAP search filters.
 
 The generator must also materialize group membership on both sides of the
 relation. The memberof overlay maintains `memberOf` only for write operations
@@ -218,15 +279,15 @@ accepted by another. The format version permits controlled schema evolution.
 
 A simple detached-signature scheme is sufficient for this trust model of one
 publisher and many verifiers. A spike prototyped the bundle with minisign and a
-public verification key mounted independently from the image. The verifier correctly rejected
-a modified manifest, a wrong public key, a modified LDIF under an unchanged
-signed manifest, and a validly signed but expired manifest. Minisign itself
-adds about 50 KiB to the image plus about 431 KiB for libsodium. A full X.509
-PKI would add certificate expiry and revocation machinery without improving
-this trust model. Minisign covers only the snapshot artifacts; container images
-are signed and verified with Cosign as the container image build guide
-requires. The two mechanisms serve different artifact classes and different
-verifiers, not the same purpose twice.
+public verification key mounted independently from the image. The verifier
+correctly rejected a modified manifest, a wrong public key, a modified LDIF
+under an unchanged signed manifest, and a validly signed but expired manifest.
+Minisign itself adds about 50 KiB to the image plus about 431 KiB for libsodium.
+A full X.509 PKI would add certificate expiry and revocation machinery without
+improving this trust model. Minisign covers only the snapshot artifacts;
+container images are signed and verified with Cosign as the container image
+build guide requires. The two mechanisms serve different artifact classes and
+different verifiers, not the same purpose twice.
 
 The runtime accepts either one public key file or a directory of public keys.
 That permits an overlap during rotation: install both verifiers, move generation
@@ -236,11 +297,11 @@ old verifier.
 The revision should increase monotonically. A host records the highest accepted
 revision outside the disposable LDAP database and rejects an older revision
 unless an operator invokes a documented recovery procedure. Expiry alone does
-not prevent replay of an older snapshot that is still within its validity period.
-This revision record is deliberately persistent host state, unlike the
+not prevent replay of an older snapshot that is still within its validity
+period. This revision record is deliberately persistent host state, unlike the
 disposable database. Its location, ownership and behavior across VM restores
-belong to the deployment design. It is a best-effort control; the short
-snapshot lifetime remains the primary protection against replay.
+belong to the deployment design. It is a best-effort control; the short snapshot
+lifetime remains the primary protection against replay.
 
 The deployment process writes a new snapshot to a staging location and invokes
 the image's non-listening `preflight-snapshot.sh` with that candidate, the
@@ -265,10 +326,10 @@ contains the server, schemas and initialization logic. It contains no employees,
 password hashes or application credentials.
 
 Baking a service snapshot into an OCI image would make deployment superficially
-simple, but it would copy password hashes into registry storage, build caches and
-immutable image layers. Registry readers might then gain access to credentials
-for services they do not operate. Removing a compromised hash from every retained
-layer is also difficult.
+simple, but it would copy password hashes into registry storage, build caches
+and immutable image layers. Registry readers might then gain access to
+credentials for services they do not operate. Removing a compromised hash from
+every retained layer is also difficult.
 
 Ansible should deliver the encrypted snapshot directly to the target VM with
 restricted ownership. A tightly scoped preparation step makes the verified
@@ -304,7 +365,8 @@ two independent databases from the same snapshot and compare all UUIDs.
 Stable global IDs make a later migration to a central LDAP service possible
 without changing the identifier seen by applications. They also permit
 correlation of a user across two compromised snapshots. This is accepted because
-the UUID is an identifier, not a secret, and migration safety is more useful here.
+the UUID is an identifier, not a secret, and migration safety is more useful
+here.
 
 ### 4.5 Local directory startup
 
@@ -333,9 +395,10 @@ credential file, not an environment variable or command line.
 
 ### 4.6 Freshness and the deadman switch
 
-The local service checks `expires_at` before startup and while running. It refuses
-to start an expired snapshot and shuts down when the active snapshot expires.
-An external health check reports both the running state and the snapshot revision.
+The local service checks `expires_at` before startup and while running. It
+refuses to start an expired snapshot and shuts down when the active snapshot
+expires. An external health check reports both the running state and the
+snapshot revision.
 
 Runtime expiry needs an enforcing process, because slapd has no concept of it.
 The container therefore runs a minimal watchdog as its final process. The
@@ -362,18 +425,20 @@ snapshot lifetime is 12 hours, an account removed immediately after generation
 may still authenticate on a host for almost 12 hours. Deployment should normally
 reduce that delay to minutes, but the security guarantee remains 12 hours.
 
-The expiry belongs to the snapshot, not the container image or container creation
-time. Recreating a container around old data must not reset the freshness timer.
+The expiry belongs to the snapshot, not the container image or container
+creation time. Recreating a container around old data must not reset the
+freshness timer.
 
 Reachability of the Ansible or Semaphore server is not a good shutdown signal on
 its own. A control-server restart or network fault could otherwise stop every
-directory at once. Signed snapshot expiry expresses the actual security property:
-how old the authorization data is. Control-plane reachability is still useful as
-an alert.
+directory at once. Signed snapshot expiry expresses the actual security
+property: how old the authorization data is. Control-plane reachability is still
+useful as an alert.
 
 An emergency override may be necessary during a prolonged control-plane failure.
-It should require an explicit, local action, have its own short expiry and produce
-an audit event. A permanent `IGNORE_EXPIRY=true` setting would defeat the design.
+It should require an explicit, local action, have its own short expiry and
+produce an audit event. A permanent `IGNORE_EXPIRY=true` setting would defeat
+the design.
 
 ### 4.7 Correlated expiry across the fleet
 
@@ -416,24 +481,25 @@ in place a single careless `--publish` is enough to expose the directory. The
 image should pin the listener addresses rather than rely on deployment
 discipline alone.
 
-Plain LDAP can be accepted for this connection when all of these conditions hold:
+Plain LDAP can be accepted for this connection when all of these conditions
+hold:
 
-* the listener is unavailable outside the host-local boundary;
-* no unrelated container joins the network;
-* both containers drop packet-capture and raw-network capabilities;
-* the deployment fixes the endpoint to the intended local service;
-* host compromise is already considered total compromise of the service;
-* no infrastructure component silently routes the traffic outside the host.
+- the listener is unavailable outside the host-local boundary;
+- no unrelated container joins the network;
+- both containers drop packet-capture and raw-network capabilities;
+- the deployment fixes the endpoint to the intended local service;
+- host compromise is already considered total compromise of the service;
+- no infrastructure component silently routes the traffic outside the host.
 
 TLS remains available for applications or deployments that cannot satisfy those
 conditions. The choice is per deployment, not a claim that plaintext LDAP is
 generally safe.
 
-When TLS is enabled, clients validate the certificate against a private or public
-CA and verify the expected service name. Production configurations must not use
-`insecureSkipVerify` or an equivalent option. Certificate issuance, renewal and
-expiry monitoring belong in the Ansible deployment. A private local CA is useful
-only if its trust material and signing key are handled separately.
+When TLS is enabled, clients validate the certificate against a private or
+public CA and verify the expected service name. Production configurations must
+not use `insecureSkipVerify` or an equivalent option. Certificate issuance,
+renewal and expiry monitoring belong in the Ansible deployment. A private local
+CA is useful only if its trust material and signing key are handled separately.
 
 Debian 13's slapd links against OpenSSL 3, not GnuTLS as earlier drafts
 assumed. A spike confirmed the repository's TLS configuration on that stack:
@@ -451,14 +517,15 @@ The signed snapshot is authoritative for directory identity and contents. Its
 manifest defines the service ID, base DN, revision, validity period and file
 digests. The deployment supplies the expected service ID independently so that a
 valid snapshot cannot be moved to another service. Runtime settings may select
-listener and logging behavior, but they must not silently redefine fields covered
-by the signed manifest.
+listener and logging behavior, but they must not silently redefine fields
+covered by the signed manifest.
 
 The former proof of concept derived the base DN from `LDAP_DOMAIN`. That
-interface is deprecated. During migration, a supplied `LDAP_DOMAIN` or `LDAP_BASE_DN` must
-match the signed manifest. A contradiction is an error; the container must not
-choose one source and ignore the other. The production interface should remove
-these duplicate inputs once existing deployments have moved to snapshots.
+interface is deprecated. During migration, a supplied `LDAP_DOMAIN` or
+`LDAP_BASE_DN` must match the signed manifest. A contradiction is an error; the
+container must not choose one source and ignore the other. The production
+interface should remove these duplicate inputs once existing deployments have
+moved to snapshots.
 
 Secrets use the familiar `<NAME>_FILE` convention. If a recovery root password
 is retained, for example, the preferred input is `LDAP_ADMIN_PASSWORD_FILE` and
@@ -466,8 +533,8 @@ the file is mounted through Podman or systemd credentials. Direct secret values
 in environment variables are a temporary compatibility interface and should
 produce a deprecation warning. Setting both forms is an error rather than a
 precedence rule because accepting ambiguous credential sources makes deployment
-mistakes difficult to detect. Secret values must not appear in process arguments,
-logs, health output or generated metadata.
+mistakes difficult to detect. Secret values must not appear in process
+arguments, logs, health output or generated metadata.
 
 Validation has two parts. The configuration phase collects independent input
 errors and reports them together, so an operator can fix a deployment in one
@@ -477,11 +544,11 @@ errors, invalid configuration, rejected snapshots, failed imports and expiry.
 
 Unsafe behavior must never be the default. The production image should not offer
 a permanent switch that accepts unsigned snapshots, empty passwords or ignored
-expiry. Tests can use signed fixtures. If an exceptional bypass is ever required,
-it needs a narrowly named unsafe option, a conspicuous log and health state, and
-an independent deadline. The emergency expiry override in section 4.6 is a
-separate audited host artifact, not an environment variable that can remain set
-by accident.
+expiry. Tests can use signed fixtures. If an exceptional bypass is ever
+required, it needs a narrowly named unsafe option, a conspicuous log and health
+state, and an independent deadline. The emergency expiry override in section 4.6
+is a separate audited host artifact, not an environment variable that can remain
+set by accident.
 
 ## 5. Passwords and credential exposure
 
@@ -508,17 +575,17 @@ recommendation.
 
 The implementation should:
 
-* use Argon2id through the Argon2 module shipped in Debian's `slapd` package;
-* use a unique random salt for every password hash;
-* benchmark parameters on the smallest target VM;
-* choose enough memory and iterations to make offline guessing expensive;
-* limit concurrent binds so expensive verification cannot exhaust the VM;
-* prevent LDAP searches from returning `userPassword` to any account;
-* keep the generated database on tmpfs where operationally practical;
-* store snapshot files with an account and SELinux label unavailable to the
+- use Argon2id through the Argon2 module shipped in Debian's `slapd` package;
+- use a unique random salt for every password hash;
+- benchmark parameters on the smallest target VM;
+- choose enough memory and iterations to make offline guessing expensive;
+- limit concurrent binds so expensive verification cannot exhaust the VM;
+- prevent LDAP searches from returning `userPassword` to any account;
+- keep the generated database on tmpfs where operationally practical;
+- store snapshot files with an account and SELinux label unavailable to the
   application container;
-* encrypt snapshot artifacts in transit and at rest outside the container;
-* remove the verified LDIF plaintext immediately after successful import and on
+- encrypt snapshot artifacts in transit and at rest outside the container;
+- remove the verified LDIF plaintext immediately after successful import and on
   every initialization failure or shutdown path.
 
 Argon2 parameters need measurement. A spike benchmarked Debian 13's Argon2
@@ -559,21 +626,21 @@ resulting correlation and breach risk documented.
 
 ### 6.1 Employee offboarding
 
-Offboarding changes the central account state to disabled. The generator excludes
-the user from every snapshot, Ansible deploys the new revisions, and each local
-directory restarts from the new data.
+Offboarding changes the central account state to disabled. The generator
+excludes the user from every snapshot, Ansible deploys the new revisions, and
+each local directory restarts from the new data.
 
 Several delays remain:
 
-* A failed deployment leaves the old password usable until snapshot expiry.
-* A host that is powered off may return with an old snapshot and must reject it.
-* An application may retain an authenticated session after LDAP stops.
-* An OIDC token remains valid until its expiry unless the application performs an
-  online revocation check.
+- A failed deployment leaves the old password usable until snapshot expiry.
+- A host that is powered off may return with an old snapshot and must reject it.
+- An application may retain an authenticated session after LDAP stops.
+- An OIDC token remains valid until its expiry unless the application performs
+  an online revocation check.
 
-The deadman switch bounds LDAP login staleness. It does not terminate application
-sessions. Each application needs a tested offboarding procedure that covers its
-session store and any local user cache.
+The deadman switch bounds LDAP login staleness. It does not terminate
+application sessions. Each application needs a tested offboarding procedure that
+covers its session store and any local user cache.
 
 ### 6.2 Password changes and compromised credentials
 
@@ -584,7 +651,8 @@ show the deployed revision per host so this state is visible.
 
 Credential compromise should trigger an urgent deployment rather than waiting
 for the ordinary schedule. The maximum guaranteed exposure still equals the old
-snapshot's remaining lifetime unless the affected VMs can be reached and stopped.
+snapshot's remaining lifetime unless the affected VMs can be reached and
+stopped.
 
 ### 6.3 Group and service authorization changes
 
@@ -655,21 +723,21 @@ not provide a comparably direct first-party `slapd` package path.
 
 The production container should run with:
 
-* a fixed non-root UID and GID;
-* root-owned, non-writable executable scripts, with runtime ownership limited to
+- a fixed non-root UID and GID;
+- root-owned, non-writable executable scripts, with runtime ownership limited to
   explicitly mutable paths;
-* all Linux capabilities dropped;
-* `no-new-privileges`;
-* a read-only root filesystem;
-* tmpfs for `/var/lib/ldap`, generated `slapd.d` data and `/run`;
-* read-only snapshot and certificate inputs;
-* SELinux labels appropriate for private container data;
-* memory, PID and CPU limits, and an explicit `nofile` limit;
-* explicit listener addresses instead of slapd's every-interface default;
-* no host port publication by default;
-* a minimal watchdog as the final process, which starts slapd, forwards
+- all Linux capabilities dropped;
+- `no-new-privileges`;
+- a read-only root filesystem;
+- tmpfs for `/var/lib/ldap`, generated `slapd.d` data and `/run`;
+- read-only snapshot and certificate inputs;
+- SELinux labels appropriate for private container data;
+- memory, PID and CPU limits, and an explicit `nofile` limit;
+- explicit listener addresses instead of slapd's every-interface default;
+- no host port publication by default;
+- a minimal watchdog as the final process, which starts slapd, forwards
   signals and enforces snapshot expiry (section 4.6);
-* a health check that includes snapshot revision and expiry.
+- a health check that includes snapshot revision and expiry.
 
 The `nofile` limit is not cosmetic. slapd sizes its connection table from the
 available file descriptors, and a spike measured an otherwise idle slapd at
@@ -690,13 +758,13 @@ mount types, read-only flags and SELinux relabeling.
 
 ### 7.3 LDAP policy
 
-Anonymous access to `userPassword` is limited to the LDAP `auth` privilege needed
-for password verification. Anonymous searches and attribute reads are denied, and
-an empty-password unauthenticated bind grants no access. Within one service-local
-snapshot, any authenticated user, including an application bind account, can
-enumerate other entries and read only the approved non-password attributes.
-Password verifiers, unlisted metadata and `cn=config` remain denied. Tightening
-this intentional boundary requires a separate product-owner decision.
+Anonymous access to `userPassword` is limited to the LDAP `auth` privilege
+needed for password verification. Anonymous searches and attribute reads are
+denied, and an empty-password unauthenticated bind grants no access. Within one
+service-local snapshot, any authenticated user, including an application bind
+account, can enumerate other entries and read only the approved non-password
+attributes. Password verifiers, unlisted metadata and `cn=config` remain denied.
+Tightening this intentional boundary requires a separate product-owner decision.
 
 The server should set conservative size and time limits, indexed filters for
 expected application queries, connection limits, and a maximum MDB size. Logging
@@ -706,8 +774,8 @@ or excessive personal data.
 The generator controls coarse service entitlement by deciding whether a user is
 present at all. LDAP groups express roles that the application understands. The
 application remains responsible for enforcing those roles, validating filter
-inputs and limiting expensive searches. A directory entry or group claim is data;
-it does not enforce authorization after the application has read it.
+inputs and limiting expensive searches. A directory entry or group claim is
+data; it does not enforce authorization after the application has read it.
 
 Password changes through LDAP are disabled in the local instance. The central
 credential workflow owns them. Runtime writes either fail or disappear at the
@@ -736,10 +804,10 @@ Dex must not be installed in the OpenLDAP image. It has an independent release
 cycle, health model and security boundary. Its upstream distroless image already
 uses a static Debian 13 base and runs as a non-root user.
 
-A local measurement of Dex 2.45.1 distroless on AMD64 found about 35 MB idle RSS,
-negligible idle CPU, a 45 MB compressed image and a 155 MB unpacked image. A
-128 MB memory allocation is a reasonable starting point for a low-traffic pilot,
-with a higher hard limit until login-load tests establish real peaks.
+A local measurement of Dex 2.45.1 distroless on AMD64 found about 35 MB idle
+RSS, negligible idle CPU, a 45 MB compressed image and a 155 MB unpacked image.
+A 128 MB memory allocation is a reasonable starting point for a low-traffic
+pilot, with a higher hard limit until login-load tests establish real peaks.
 
 Dex requires persistent storage for signing keys, refresh tokens, authorization
 codes and replay prevention. Its documentation says SQLite is not appropriate
@@ -767,20 +835,20 @@ checkbox.
 
 ## 9. Availability and failure scenarios
 
-| Scenario | Expected behavior | Remaining risk |
-| --- | --- | --- |
-| Ansible unavailable briefly | Existing valid snapshots continue to serve | Changes wait for deployment |
-| Ansible unavailable past expiry | Local LDAP shuts down and refuses restart | New logins fail; existing application sessions may remain |
-| Malformed LDIF | New database is rejected before TCP listening | Previous snapshot eventually expires |
-| Partial file transfer | Digest verification fails | Service remains on previous revision |
-| Employee disabled | New snapshots omit the user | Old snapshots allow login until replaced or expired |
-| Password compromised | Urgent revision is deployed | Unreachable hosts accept the old password until expiry |
-| VM restored from old backup | Expiry and revision checks reject old data | Incorrect host time or rolled-back revision metadata can interfere |
+|             Scenario              |                      Expected behavior                       | Remaining risk |
+| --------------------------------- | ------------------------------------------------------------ | -------------- |
+| Ansible unavailable briefly       | Existing valid snapshots continue to serve                   | Changes wait for deployment |
+| Ansible unavailable past expiry   | Local LDAP shuts down and refuses restart                    | New logins fail; existing application sessions may remain |
+| Malformed LDIF                    | New database is rejected before TCP listening                | Previous snapshot eventually expires |
+| Partial file transfer             | Digest verification fails                                    | Service remains on previous revision |
+| Employee disabled                 | New snapshots omit the user                                  | Old snapshots allow login until replaced or expired |
+| Password compromised              | Urgent revision is deployed                                  | Unreachable hosts accept the old password until expiry |
+| VM restored from old backup       | Expiry and revision checks reject old data                   | Incorrect host time or rolled-back revision metadata can interfere |
 | Application container compromised | Attacker can attempt LDAP binds and query allowed attributes | Container escape or host compromise exposes local hashes |
-| Local LDAP compromised | Hashes for that service are exposed | Strong hashing slows but does not prevent cracking |
-| Control plane compromised | Malicious signed snapshots can reach every service | This is a fleet-wide compromise |
-| Dex state lost | OIDC sessions and signing continuity are disrupted | Users must log in again; application behavior varies |
-| Local resource exhaustion | Container limits contain the process | Authentication for that application becomes unavailable |
+| Local LDAP compromised            | Hashes for that service are exposed                          | Strong hashing slows but does not prevent cracking |
+| Control plane compromised         | Malicious signed snapshots can reach every service           | This is a fleet-wide compromise |
+| Dex state lost                    | OIDC sessions and signing continuity are disrupted           | Users must log in again; application behavior varies |
+| Local resource exhaustion         | Container limits contain the process                         | Authentication for that application becomes unavailable |
 
 The safest default during uncertainty is denial of new authentication. The
 application must also be checked for fail-open behavior, cached credentials and
@@ -790,15 +858,15 @@ local fallback accounts.
 
 Each service should report:
 
-* image digest;
-* active snapshot revision and generation time;
-* time remaining until expiry;
-* last successful deployment and import;
-* container health and restart count;
-* bind success and failure rates;
-* search latency, size-limit events and connection-limit events;
-* memory, CPU and file usage;
-* Dex token and storage errors when Dex is present.
+- image digest;
+- active snapshot revision and generation time;
+- time remaining until expiry;
+- last successful deployment and import;
+- container health and restart count;
+- bind success and failure rates;
+- search latency, size-limit events and connection-limit events;
+- memory, CPU and file usage;
+- Dex token and storage errors when Dex is present.
 
 The control plane compares the expected revision with every host's reported
 revision. Alerting on "deployment completed" is insufficient because a play may
@@ -812,31 +880,31 @@ it is an alert, not a shutdown signal. The Quadlet health action and a separate
 rootless systemd timer example both stop the container after a hard health
 failure. Fleet collection and alert routing are not implemented here.
 
-Git history and code review provide the audit trail for identity and authorization
-changes. Secret access, snapshot signing and emergency expiry overrides need
-separate audit records. LDAP logs should identify the service account and operation
-without logging credentials or full result sets.
+Git history and code review provide the audit trail for identity and
+authorization changes. Secret access, snapshot signing and emergency expiry
+overrides need separate audit records. LDAP logs should identify the service
+account and operation without logging credentials or full result sets.
 
 ## 11. Backup and recovery
 
 The recovery set consists of:
 
-* authoritative user, group and service-authorization data;
-* immutable source IDs and the UUID namespace;
-* encrypted credential material;
-* snapshot-signing keys and their recovery procedure;
-* generator and deployment code;
-* pinned image references and build provenance;
-* Dex state for services that use Dex.
+- authoritative user, group and service-authorization data;
+- immutable source IDs and the UUID namespace;
+- encrypted credential material;
+- snapshot-signing keys and their recovery procedure;
+- generator and deployment code;
+- pinned image references and build provenance;
+- Dex state for services that use Dex.
 
 Local OpenLDAP MDB files are not part of the backup set. A restore test should
-build a clean VM, deploy the image and snapshot, and confirm that users retain the
-same UUIDs and application mappings.
+build a clean VM, deploy the image and snapshot, and confirm that users retain
+the same UUIDs and application mappings.
 
-Signing-key recovery deserves special care. Losing the key prevents new snapshots;
-an undetected stolen key lets an attacker create valid ones. Key rotation needs an
-overlap period in which hosts trust the old and new public keys, followed by an
-explicit removal of the old key.
+Signing-key recovery deserves special care. Losing the key prevents new
+snapshots; an undetected stolen key lets an attacker create valid ones. Key
+rotation needs an overlap period in which hosts trust the old and new public
+keys, followed by an explicit removal of the old key.
 
 Dex backup policy depends on the accepted storage design. Restoring old refresh
 tokens or signing state can have security consequences, so recovery should favor
@@ -847,9 +915,10 @@ forced reauthentication over restoring stale sessions.
 ### 12.1 Central highly available LDAP
 
 A central LDAP cluster is easier to understand and can apply account and group
-changes immediately to new binds and searches. Replication, monitoring and backup
-are concentrated in one place. Proper ACLs can prevent an application from reading
-unrelated users even though the complete directory exists centrally.
+changes immediately to new binds and searches. Replication, monitoring and
+backup are concentrated in one place. Proper ACLs can prevent an application
+from reading unrelated users even though the complete directory exists
+centrally.
 
 It also creates a network and operational dependency for every application. The
 cluster needs careful HA design, and a central administrative compromise has a
@@ -885,14 +954,15 @@ future central directory.
 It is heavier for a sidecar that imports a few static files and performs binds.
 An exploratory local test of the official container used roughly 99 MB at idle,
 compared with the expected tens of megabytes for a slim OpenLDAP instance. Its
-features provide little benefit when replication and runtime writes are excluded.
+features provide little benefit when replication and runtime writes are
+excluded.
 
 ### 12.4 FreeIPA
 
 FreeIPA combines directory, Kerberos, certificate, host and policy management.
 That integration is useful for managing Linux hosts and a company realm. It is
-far beyond the needs of one application sidecar and expects central services such
-as DNS and Kerberos to be designed as a whole.
+far beyond the needs of one application sidecar and expects central services
+such as DNS and Kerberos to be designed as a whole.
 
 FreeIPA may still be appropriate as a future authoritative identity system. It
 would replace the central YAML model rather than merely replace the local LDAP
@@ -923,15 +993,16 @@ would be a broader identity-platform decision.
 ### 12.7 Central identity provider and directory authority
 
 A central identity provider can read users from LDAP or become the authoritative
-user directory itself. Using LDAP as its backend eases migration and keeps legacy
-applications on a familiar protocol, but it leaves two systems and their schemas
-to operate. Making the identity provider authoritative removes that duplication
-for modern applications, while legacy LDAP access then needs a supported gateway,
-sync process or separate directory.
+user directory itself. Using LDAP as its backend eases migration and keeps
+legacy applications on a familiar protocol, but it leaves two systems and their
+schemas to operate. Making the identity provider authoritative removes that
+duplication for modern applications, while legacy LDAP access then needs a
+supported gateway, sync process or separate directory.
 
 Either model can improve centralized revocation, MFA and login auditing. It also
-places new logins on a central path. This is a plausible destination if operating
-many local OIDC issuers proves more expensive than their isolation is worth.
+places new logins on a central path. This is a plausible destination if
+operating many local OIDC issuers proves more expensive than their isolation is
+worth.
 
 ### 12.8 SCIM provisioning
 
@@ -940,16 +1011,16 @@ runtime path and works well for applications with mature SCIM support. It does
 not itself authenticate users, and deprovisioning still depends on successful
 delivery to each application. Support and behavior vary by product.
 
-SCIM is a useful later complement to a central OIDC provider. It is not a general
-replacement for legacy LDAP applications.
+SCIM is a useful later complement to a central OIDC provider. It is not a
+general replacement for legacy LDAP applications.
 
 ### 12.9 Application-local users managed by automation
 
 Automation could create native users in each application. This maximizes local
 availability and avoids an LDAP sidecar, but every application has a different
-API, password model, group model and deletion behavior. Auditing and testing grow
-with every integration. It is reasonable for a small number of applications that
-have reliable administration APIs and poor LDAP support.
+API, password model, group model and deletion behavior. Auditing and testing
+grow with every integration. It is reasonable for a small number of applications
+that have reliable administration APIs and poor LDAP support.
 
 ### 12.10 Bitnami OpenLDAP image
 
@@ -959,20 +1030,20 @@ comparison. It runs without root on ports 1389 and 1636, accepts secrets through
 1024, and supports offline bootstrap scripts. These conventions are mature and
 worth adopting where they fit this design.
 
-Its directory model does not fit. Bitnami treats `/bitnami/openldap` as persistent
-state and bootstraps a mutable general-purpose directory on first use. This
-project rebuilds a disposable database from a signed snapshot on every start and
-must reject partial, stale or contradictory input. Bitnami's silent override
-rules are therefore replaced here with explicit validation errors where two
-sources claim to define the same value.
+Its directory model does not fit. Bitnami treats `/bitnami/openldap` as
+persistent state and bootstraps a mutable general-purpose directory on first
+use. This project rebuilds a disposable database from a signed snapshot on every
+start and must reject partial, stale or contradictory input. Bitnami's silent
+override rules are therefore replaced here with explicit validation errors where
+two sources claim to define the same value.
 
 The supply-chain boundary also differs. In 2025 Bitnami moved its historical
 Debian image catalog to the unsupported Legacy registry. Its current OpenLDAP
-offering is a commercial Bitnami Secure Image based on Photon OS. Depending on it
-would exchange the simple Debian package path for a vendor catalog whose access,
-base distribution and release policy have already changed. Building from Debian's
-first-party packages, recording the package set and mirroring signed image digests
-keeps those decisions under company control.
+offering is a commercial Bitnami Secure Image based on Photon OS. Depending on
+it would exchange the simple Debian package path for a vendor catalog whose
+access, base distribution and release policy have already changed. Building from
+Debian's first-party packages, recording the package set and mirroring signed
+image digests keeps those decisions under company control.
 
 ## 13. Why OpenLDAP remains the current choice
 
@@ -981,17 +1052,17 @@ standards-based searches and verify passwords with low resource use.
 
 It remains a reasonable choice under these constraints:
 
-* the directory is read-only at runtime;
-* replication and interactive administration are out of scope;
-* schema use is conservative and tested against real applications;
-* startup is rebuilt to be transactional and fail closed;
-* the image follows Debian security updates;
-* UUIDs and password schemes are controlled by the generator;
-* integration tests cover every image release.
+- the directory is read-only at runtime;
+- replication and interactive administration are out of scope;
+- schema use is conservative and tested against real applications;
+- startup is rebuilt to be transactional and fail closed;
+- the image follows Debian security updates;
+- UUIDs and password schemes are controlled by the generator;
+- integration tests cover every image release.
 
-If those constraints expand to central writes, complex replication, host identity
-or large-scale policy management, OpenLDAP should be compared again with 389
-Directory Server, FreeIPA and a dedicated identity provider.
+If those constraints expand to central writes, complex replication, host
+identity or large-scale policy management, OpenLDAP should be compared again
+with 389 Directory Server, FreeIPA and a dedicated identity provider.
 
 ## 14. Operational cost
 
@@ -1043,25 +1114,27 @@ remaining operational work; source documentation does not freeze scanner counts.
 
 1. Rebuild the `Containerfile` from Debian 13 slim with only `slapd`,
    `ldap-utils`, CA certificates, OpenSSL, minisign, `jq` and proven runtime
-   utilities. Remove build tools, sudo, editors, troubleshooting packages and OCI
-   `VOLUME` declarations.
+   utilities. Remove build tools, sudo, editors, troubleshooting packages and
+   OCI `VOLUME` declarations.
 2. Split startup into small validation, snapshot verification, database build,
    readiness and watchdog functions. Static validation reports all independent
    errors; cryptographic verification and import stop at the first failure.
 3. Follow the company shell scripting style guide. Prefer POSIX `sh`, `printf`,
-   `set -u`, explicit status checks and a bottom-level `main()`. Use Bash only for
-   a documented feature that materially simplifies the watchdog. Run `shfmt`,
-   ShellCheck and `checkbashisms` in CI as appropriate.
+   `set -u`, explicit status checks and a bottom-level `main()`. Use Bash only
+   for a documented feature that materially simplifies the watchdog. Run
+   `shfmt`, ShellCheck and `checkbashisms` in CI as appropriate.
 4. Resolve `_FILE` inputs without printing their values. Reject ambiguous secret
    sources and contradictions between compatibility variables and the manifest.
 5. Verify signature, service identity, revision, deadlines and every file digest
-   before creating the database. The release image has no unsigned-snapshot mode.
-6. Construct `cn=config` and MDB offline, load Argon2 and required schemas, import
-   static `member` and `memberOf`, and run structural and semantic checks. If an
-   operation cannot be performed offline, start slapd on `ldapi:///` only, wait
-   for readiness, use SASL EXTERNAL, and stop it before enabling TCP.
-7. Start slapd under the tested signal-forwarding expiry watchdog. Normal signals
-   exit cleanly; hard expiry stops slapd and returns 78.
+   before creating the database. The release image has no unsigned-snapshot
+   mode.
+6. Construct `cn=config` and MDB offline, load Argon2 and required schemas,
+   import static `member` and `memberOf`, and run structural and semantic
+   checks. If an operation cannot be performed offline, start slapd on
+   `ldapi:///` only, wait for readiness, use SASL EXTERNAL, and stop it before
+   enabling TCP.
+7. Start slapd under the tested signal-forwarding expiry watchdog. Normal
+   signals exit cleanly; hard expiry stops slapd and returns 78.
 8. Replace the current health command with a check that verifies the expected
    revision and hard deadline. A successful LDAP command with no expected entry
    is not healthy.
@@ -1075,8 +1148,9 @@ remaining operational work; source documentation does not freeze scanner counts.
 3. Bind only the configured local address and publish no port by default. Test
    both the plain host-local LDAP profile and the certificate-validated TLS
    profile.
-4. Enforce read-only ACLs, separate bind credentials, search size and time limits,
-   indexed application filters, bind concurrency limits and Argon2id parameters.
+4. Enforce read-only ACLs, separate bind credentials, search size and time
+   limits, indexed application filters, bind concurrency limits and Argon2id
+   parameters.
 5. Pin the Debian base by digest and use ConClear for isolated builds, package
    evidence, SBOMs, scans, provenance, signing, verification and promotion.
    Every proposed pin change must pass the full compatibility suite.
@@ -1086,14 +1160,14 @@ remaining operational work; source documentation does not freeze scanner counts.
 1. Define and validate the central user, group, credential and service YAML.
    Structured parsing, DN construction, filter escaping and LDIF serialization
    belong in an LDAP-aware generator, not shell templates.
-2. Generate service-specific entries, deterministic UUIDv5 identifiers, reciprocal
-   static memberships and Argon2id hashes with unique salts.
-3. Produce and sign one complete manifest per service. Keep signing and decryption
-   keys outside the image and document rotation with overlapping verification
-   keys.
-4. Build an Ansible role that stages, verifies and atomically activates snapshots;
-   records the highest accepted revision; installs the host expiry backstop; and
-   reports the active revision to the control plane.
+2. Generate service-specific entries, deterministic UUIDv5 identifiers,
+   reciprocal static memberships and Argon2id hashes with unique salts.
+3. Produce and sign one complete manifest per service. Keep signing and
+   decryption keys outside the image and document rotation with overlapping
+   verification keys.
+4. Build an Ansible role that stages, verifies and atomically activates
+   snapshots; records the highest accepted revision; installs the host expiry
+   backstop; and reports the active revision to the control plane.
 5. Select service TTL policy and the implemented bounded expiry offsets, and
    define the audited emergency override procedure.
 
@@ -1108,77 +1182,79 @@ deployment code.
 
 1. Pilot one low-risk LDAP application on a dedicated VM.
 2. Test normal login, wrong passwords, group removal, offboarding, password
-   rotation, deployment interruption, stale snapshots, VM rollback, clock faults,
-   resource exhaustion and application session behavior.
+   rotation, deployment interruption, stale snapshots, VM rollback, clock
+   faults, resource exhaustion and application session behavior.
 3. Exercise clean-host recovery, signing-key rotation, image rollback and the
    emergency expiry override. Confirm that rollback cannot revive an expired
    authorization snapshot.
-4. Establish dashboards and alerts for image digest, snapshot revision, deadlines,
-   failed binds, search limits, memory, restart count and control-plane drift.
+4. Establish dashboards and alerts for image digest, snapshot revision,
+   deadlines, failed binds, search limits, memory, restart count and
+   control-plane drift.
 5. Record the measured operating cost and approve service-specific password,
    expiry and session policies before adding more applications.
 
 ### Phase 6: evaluate OIDC separately
 
-Run a per-application Dex pilot with a real OIDC client. Test storage loss, token
-expiry, group refresh, offboarding and signing-key rotation. Compare its operating
-cost with a central HA identity provider before choosing a fleet-wide pattern.
+Run a per-application Dex pilot with a real OIDC client. Test storage loss,
+token expiry, group refresh, offboarding and signing-key rotation. Compare its
+operating cost with a central HA identity provider before choosing a fleet-wide
+pattern.
 
 ## 16. Acceptance criteria
 
 The architecture is ready for production use only when the following statements
 are demonstrated by automated tests or an operational exercise:
 
-* Two clean imports generate the same UUIDs and application-visible identity.
-* Invalid, incomplete, expired or wrongly signed input never reaches a TCP
+- Two clean imports generate the same UUIDs and application-visible identity.
+- Invalid, incomplete, expired or wrongly signed input never reaches a TCP
   listener.
-* A disabled user cannot bind after the new snapshot is active.
-* A stale instance stops at the configured deadline.
-* The application denies new access when LDAP is unavailable.
-* The application does not retain removed authorization longer than its documented
-  cache or session policy.
-* Application bind accounts cannot read password hashes or unrelated attributes.
-* The application container cannot read LDAP inputs or the generated database.
-* Restore from authoritative data works on a clean VM.
-* Image updates pass the complete LDAP compatibility suite.
-* Monitoring identifies every host running an unexpected or stale revision.
-* The container stops promptly and cleanly on SIGTERM, and snapshot expiry
+- A disabled user cannot bind after the new snapshot is active.
+- A stale instance stops at the configured deadline.
+- The application denies new access when LDAP is unavailable.
+- The application does not retain removed authorization longer than its
+  documented cache or session policy.
+- Application bind accounts cannot read password hashes or unrelated attributes.
+- The application container cannot read LDAP inputs or the generated database.
+- Restore from authoritative data works on a clean VM.
+- Image updates pass the complete LDAP compatibility suite.
+- Monitoring identifies every host running an unexpected or stale revision.
+- The container stops promptly and cleanly on SIGTERM, and snapshot expiry
   produces the documented distinct exit code.
-* Every tampering case (modified manifest, modified data file, wrong key,
+- Every tampering case (modified manifest, modified data file, wrong key,
   expired or replayed snapshot) demonstrably fails before a listener opens.
-* Deployment definitions set explicit resource limits, including `nofile`.
-* File-based secrets work without exposing their values in the environment,
+- Deployment definitions set explicit resource limits, including `nofile`.
+- File-based secrets work without exposing their values in the environment,
   arguments, logs or health output; ambiguous secret sources are rejected.
-* Contradictory service IDs, base DNs or compatibility settings are reported
+- Contradictory service IDs, base DNs or compatibility settings are reported
   before import and cause a non-zero exit.
-* The production image cannot start from an unsigned snapshot or permanently
+- The production image cannot start from an unsigned snapshot or permanently
   disable expiry through an environment variable.
-* Any initialization listener is LDAPI-only, accepts SASL EXTERNAL locally and is
-  gone before the application TCP listener starts.
-* The image release has a package manifest, SBOM, signature, immutable registry
+- Any initialization listener is LDAPI-only, accepts SASL EXTERNAL locally and
+  is gone before the application TCP listener starts.
+- The image release has a package manifest, SBOM, signature, immutable registry
   digest and a passing vulnerability policy.
 
 ## 17. Decisions still required
 
 The following values need explicit owner approval before production deployment:
 
-* maximum snapshot lifetime, per-service offset assignments and the offboarding
+- maximum snapshot lifetime, per-service offset assignments and the offboarding
   service-level objective (section 4.7);
-* custody and rotation of the snapshot signing key (the mechanism itself, a
+- custody and rotation of the snapshot signing key (the mechanism itself, a
   minisign-style detached signature, was validated in a spike);
-* custody and per-host provisioning of the snapshot decryption key;
-* password enrollment policy, including generated or breach-screened passwords
+- custody and per-host provisioning of the snapshot decryption key;
+- password enrollment policy, including generated or breach-screened passwords
   and per-service passwords for internet-facing deployments;
-* Argon2 parameters and the bind concurrency limit;
-* vulnerability decisions and any evidenced, owned, expiring ConClear
+- Argon2 parameters and the bind concurrency limit;
+- vulnerability decisions and any evidenced, owned, expiring ConClear
   exceptions for applicable findings;
-* whether to tighten the documented authenticated-user enumeration ACL;
-* production revision-state location and exceptional rollback procedure;
-* application session invalidation procedures;
-* emergency expiry override policy;
-* protected ConClear release profile, Quay controls, signing-key custody and
+- whether to tighten the documented authenticated-user enumeration ACL;
+- production revision-state location and exceptional rollback procedure;
+- application session invalidation procedures;
+- emergency expiry override policy;
+- protected ConClear release profile, Quay controls, signing-key custody and
   deployment admission trust-root provisioning;
-* Dex topology and storage, if OIDC is added.
+- Dex topology and storage, if OIDC is added.
 
 ## 18. Conclusion
 
@@ -1198,72 +1274,73 @@ smaller worst case. Strong hashing, per-service passwords on exposed hosts,
 signed expiring snapshots, deterministic UUIDs, transactional startup and
 container isolation reduce the remaining risks but cannot erase them.
 
-OpenLDAP on Debian 13 slim is a suitable implementation while the directory stays
-small, immutable and local. Per-application Dex can extend the same isolation idea
-to OIDC, but its state and token behavior require a separate decision. A central
-Dex or full identity provider remains available as a later hybrid path, with the
-understanding that it introduces a central login dependency.
+OpenLDAP on Debian 13 slim is a suitable implementation while the directory
+stays small, immutable and local. Per-application Dex can extend the same
+isolation idea to OIDC, but its state and token behavior require a separate
+decision. A central Dex or full identity provider remains available as a later
+hybrid path, with the understanding that it introduces a central login
+dependency.
 
 ## Appendix A: implementation status and remaining work
 
 The repository implements and tests the following baseline:
 
-* fixed UID/GID 1001 identities, root-owned immutable and read-only input paths,
+- fixed UID/GID 1001 identities, root-owned immutable and read-only input paths,
   and ownership limited to the declared runtime, state and generator-output
   paths;
-* signed manifests whose JSON Schema, generator output and small fail-closed
+- signed manifests whose JSON Schema, generator output and small fail-closed
   runtime verifier are tested for agreement;
-* bounded expiry offsets that only shorten the common maximum TTLs and derive
+- bounded expiry offsets that only shorten the common maximum TTLs and derive
   both deadlines from one generation time;
-* non-listening staged revision preflight plus runtime replay defense that binds
+- non-listening staged revision preflight plus runtime replay defense that binds
   revision to manifest digest and migrates legacy revision-only state;
-* offline OpenLDAP import without the unused NIS schema, followed by immediate
+- offline OpenLDAP import without the unused NIS schema, followed by immediate
   verified-LDIF plaintext deletion;
-* documented service-local authenticated enumeration with password,
+- documented service-local authenticated enumeration with password,
   administrative and unlisted attribute denial;
-* exact-layout rootless Podman tests for tampering, replay, expiry, watchdog,
+- exact-layout rootless Podman tests for tampering, replay, expiry, watchdog,
   TLS, ACL, resource, rotation, offboarding and cross-image compatibility;
-* ConClear configuration for the independent runtime and generator images,
+- ConClear configuration for the independent runtime and generator images,
   including same-revision dependency layouts, runtime controls and current
   `linux/amd64` qualification;
-* default-deny build context, verified all-or-nothing digest updates, a Quadlet
+- default-deny build context, verified all-or-nothing digest updates, a Quadlet
   example, host expiry backstop and default-reject deployment admission
   template.
 
 The repository does not complete the operational system. These external items
 remain:
 
-* Build the organization-specific Ansible role that stages snapshots, invokes
+- Build the organization-specific Ansible role that stages snapshots, invokes
   the implemented preflight, switches the active path atomically, restarts the
   Quadlet and reports the active revision.
-* Provision snapshot encryption and decryption-key delivery; signatures do not
+- Provision snapshot encryption and decryption-key delivery; signatures do not
   encrypt the credential-bearing LDIF.
-* Connect status to fleet monitoring and run clean-host recovery, application
+- Connect status to fleet monitoring and run clean-host recovery, application
   offboarding, VM rollback, clock-fault and session-cache exercises.
-* Select maximum TTLs and per-service offsets, and define an audited emergency
+- Select maximum TTLs and per-service offsets, and define an audited emergency
   expiry procedure without adding a runtime bypass.
-* Provision the protected ConClear production profile, approved builder and
+- Provision the protected ConClear production profile, approved builder and
   signing identities, Quay credentials and repository controls, key custody and
   deployment trust root. Local qualification is not a signed release.
-* Review current ConClear vulnerability evidence and approve any exception only
+- Review current ConClear vulnerability evidence and approve any exception only
   with its required owner, rationale, reachability, controls and expiry. Current
-  scanner counts belong in retained evidence, not this design document.
-* Decide whether the documented authenticated-user enumeration ACL should be
+  scanner counts belong in retained evidence, not this architecture document.
+- Decide whether the documented authenticated-user enumeration ACL should be
   tightened, and approve password, Argon2, bind and session policies for each
   production application.
-* Evaluate Dex separately if an application needs OIDC. No Dex runtime or token
+- Evaluate Dex separately if an application needs OIDC. No Dex runtime or token
   lifecycle is part of this repository.
 
 ## References
 
-* [OpenLDAP 2.6 Administrator's Guide](https://www.openldap.org/doc/admin26/)
-* [Debian 13 release information](https://www.debian.org/releases/trixie/)
-* [Debian slapd package contents](https://packages.debian.org/trixie/amd64/slapd/filelist)
-* [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
-* [Minisign](https://jedisct1.github.io/minisign/)
-* [Dex documentation](https://dexidp.io/docs/)
-* [Dex LDAP connector](https://dexidp.io/docs/connectors/ldap/)
-* [Dex storage](https://dexidp.io/docs/configuration/storage/)
-* [Dex token configuration](https://dexidp.io/docs/configuration/tokens/)
-* [Bitnami OpenLDAP container documentation](https://github.com/bitnami/containers/blob/main/bitnami/openldap/README.md)
-* [Bitnami catalog changes announced for 2025](https://github.com/bitnami/containers/issues/83267)
+- [OpenLDAP 2.6 Administrator's Guide](https://www.openldap.org/doc/admin26/)
+- [Debian 13 release information](https://www.debian.org/releases/trixie/)
+- [Debian slapd package contents](https://packages.debian.org/trixie/amd64/slapd/filelist)
+- [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
+- [Minisign](https://jedisct1.github.io/minisign/)
+- [Dex documentation](https://dexidp.io/docs/)
+- [Dex LDAP connector](https://dexidp.io/docs/connectors/ldap/)
+- [Dex storage](https://dexidp.io/docs/configuration/storage/)
+- [Dex token configuration](https://dexidp.io/docs/configuration/tokens/)
+- [Bitnami OpenLDAP container documentation](https://github.com/bitnami/containers/blob/main/bitnami/openldap/README.md)
+- [Bitnami catalog changes announced for 2025](https://github.com/bitnami/containers/issues/83267)
