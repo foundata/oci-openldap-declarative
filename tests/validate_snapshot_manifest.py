@@ -27,8 +27,12 @@ def validate_manifest(schema_path: Path, manifest_path: Path) -> None:
     paths = [item["path"] for item in manifest["files"]]
     if len(paths) != len(set(paths)):
         raise ValueError("manifest file paths must be unique")
-    generated_at = datetime.fromisoformat(manifest["generated_at"].replace("Z", "+00:00"))
-    soft_expires_at = datetime.fromisoformat(manifest["soft_expires_at"].replace("Z", "+00:00"))
+    generated_at = datetime.fromisoformat(
+        manifest["generated_at"].replace("Z", "+00:00")
+    )
+    soft_expires_at = datetime.fromisoformat(
+        manifest["soft_expires_at"].replace("Z", "+00:00")
+    )
     expires_at = datetime.fromisoformat(manifest["expires_at"].replace("Z", "+00:00"))
     if not generated_at <= soft_expires_at < expires_at:
         raise ValueError("manifest deadlines are not ordered")

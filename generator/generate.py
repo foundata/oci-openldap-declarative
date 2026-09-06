@@ -142,20 +142,32 @@ def text_value(value: Any, *, context: str, maximum: int = 1024) -> str:
 def string_list(value: Any, *, context: str) -> tuple[str, ...]:
     if not isinstance(value, list):
         error(f"{context} must be a list")
-    result = tuple(text_value(item, context=f"{context} item", maximum=128) for item in value)
+    result = tuple(
+        text_value(item, context=f"{context} item", maximum=128) for item in value
+    )
     if len(result) != len(set(result)):
         error(f"{context} must not contain duplicate values")
     return result
 
 
 def positive_integer(value: Any, *, context: str, maximum: int = 2**31 - 1) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > maximum:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        or value > maximum
+    ):
         error(f"{context} must be an integer from 1 through {maximum}")
     return value
 
 
 def nonnegative_integer(value: Any, *, context: str, maximum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > maximum:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > maximum
+    ):
         error(f"{context} must be an integer from 0 through {maximum}")
     return value
 
@@ -233,7 +245,9 @@ def parse_directory(path: Path) -> Directory:
     if root["format_version"] != 1:
         error("directory YAML format_version must be 1")
     try:
-        namespace = uuid.UUID(text_value(root["uuid_namespace"], context="uuid_namespace"))
+        namespace = uuid.UUID(
+            text_value(root["uuid_namespace"], context="uuid_namespace")
+        )
     except ValueError as exc:
         error(f"uuid_namespace is invalid: {exc}")
     organization = text_value(root["organization"], context="organization", maximum=256)
@@ -267,7 +281,9 @@ def parse_directory(path: Path) -> Directory:
             common_name=text_value(
                 item["common_name"], context=f"{context}.common_name", maximum=256
             ),
-            surname=text_value(item["surname"], context=f"{context}.surname", maximum=256),
+            surname=text_value(
+                item["surname"], context=f"{context}.surname", maximum=256
+            ),
             mail=mail,
             active=item["active"],
         )
@@ -286,16 +302,24 @@ def parse_directory(path: Path) -> Directory:
             context=context,
         )
         source_id = validate_source_id(item["id"], context=f"{context}.id")
-        common_name = validate_uid(item["common_name"], context=f"{context}.common_name")
+        common_name = validate_uid(
+            item["common_name"], context=f"{context}.common_name"
+        )
         members = string_list(item["members"], context=f"{context}.members")
         if source_id in groups:
             error(f"duplicate group id: {source_id}")
         if common_name.casefold() in group_names:
-            error(f"duplicate group common_name under case-insensitive matching: {common_name}")
+            error(
+                f"duplicate group common_name under case-insensitive matching: {common_name}"
+            )
         unknown_members = set(members) - set(users)
         if unknown_members:
-            error(f"{context} references unknown users: {', '.join(sorted(unknown_members))}")
-        groups[source_id] = Group(source_id=source_id, common_name=common_name, members=members)
+            error(
+                f"{context} references unknown users: {', '.join(sorted(unknown_members))}"
+            )
+        groups[source_id] = Group(
+            source_id=source_id, common_name=common_name, members=members
+        )
         group_names.add(common_name.casefold())
 
     if not isinstance(root["services"], list):
@@ -326,9 +350,13 @@ def parse_directory(path: Path) -> Directory:
         unknown_groups = set(selected_groups) - set(groups)
         unknown_users = set(selected_users) - set(users)
         if unknown_groups:
-            error(f"{context} references unknown groups: {', '.join(sorted(unknown_groups))}")
+            error(
+                f"{context} references unknown groups: {', '.join(sorted(unknown_groups))}"
+            )
         if unknown_users:
-            error(f"{context} references unknown users: {', '.join(sorted(unknown_users))}")
+            error(
+                f"{context} references unknown users: {', '.join(sorted(unknown_users))}"
+            )
         bind_item = strict_keys(
             item["bind_account"],
             required={"id", "common_name"},
@@ -336,7 +364,9 @@ def parse_directory(path: Path) -> Directory:
             context=f"{context}.bind_account",
         )
         bind_account = BindAccount(
-            source_id=validate_source_id(bind_item["id"], context=f"{context}.bind_account.id"),
+            source_id=validate_source_id(
+                bind_item["id"], context=f"{context}.bind_account.id"
+            ),
             common_name=validate_uid(
                 bind_item["common_name"], context=f"{context}.bind_account.common_name"
             ),
@@ -345,8 +375,12 @@ def parse_directory(path: Path) -> Directory:
             error(f"duplicate service bind-account id: {bind_account.source_id}")
         if service_id in services:
             error(f"duplicate service id: {service_id}")
-        soft_ttl = positive_integer(item["soft_ttl_seconds"], context=f"{context}.soft_ttl_seconds")
-        hard_ttl = positive_integer(item["hard_ttl_seconds"], context=f"{context}.hard_ttl_seconds")
+        soft_ttl = positive_integer(
+            item["soft_ttl_seconds"], context=f"{context}.soft_ttl_seconds"
+        )
+        hard_ttl = positive_integer(
+            item["hard_ttl_seconds"], context=f"{context}.hard_ttl_seconds"
+        )
         expiry_offset = nonnegative_integer(
             item["expiry_offset_seconds"],
             context=f"{context}.expiry_offset_seconds",
@@ -360,7 +394,9 @@ def parse_directory(path: Path) -> Directory:
             service_id=service_id,
             base_dn=validate_base_dn(item["base_dn"], context=f"{context}.base_dn"),
             revision=positive_integer(
-                item["revision"], context=f"{context}.revision", maximum=9_007_199_254_740_991
+                item["revision"],
+                context=f"{context}.revision",
+                maximum=9_007_199_254_740_991,
             ),
             soft_ttl_seconds=soft_ttl,
             hard_ttl_seconds=hard_ttl,
@@ -410,15 +446,19 @@ def parse_credentials(path: Path) -> Credentials:
         default_password = None
         if "password_file" in item:
             default_password = credential_path(
-                item["password_file"], context=f"credentials.users.{source_id}.password_file"
+                item["password_file"],
+                context=f"credentials.users.{source_id}.password_file",
             )
         service_passwords: dict[str, str] = {}
         if "service_password_files" in item:
             if not isinstance(item["service_password_files"], dict):
-                error(f"credentials.users.{source_id}.service_password_files must be a mapping")
+                error(
+                    f"credentials.users.{source_id}.service_password_files must be a mapping"
+                )
             for service_id, password_file in item["service_password_files"].items():
                 validated_service_id = validate_service_id(
-                    service_id, context=f"credentials.users.{source_id}.service_password_files key"
+                    service_id,
+                    context=f"credentials.users.{source_id}.service_password_files key",
                 )
                 service_passwords[validated_service_id] = credential_path(
                     password_file,
@@ -427,7 +467,9 @@ def parse_credentials(path: Path) -> Credentials:
                     ),
                 )
         if default_password is None and not service_passwords:
-            error(f"credentials.users.{source_id} must define at least one password source")
+            error(
+                f"credentials.users.{source_id} must define at least one password source"
+            )
         users[source_id] = {
             "password_file": default_password,
             "service_password_files": service_passwords,
@@ -437,7 +479,9 @@ def parse_credentials(path: Path) -> Credentials:
         error("credentials services must be a mapping keyed by service id")
     services: dict[str, str] = {}
     for service_id, raw_credential in root["services"].items():
-        validated_service_id = validate_service_id(service_id, context="credentials service id")
+        validated_service_id = validate_service_id(
+            service_id, context="credentials service id"
+        )
         item = strict_keys(
             raw_credential,
             required={"bind_password_file"},
@@ -451,15 +495,23 @@ def parse_credentials(path: Path) -> Credentials:
     return Credentials(users=users, services=services)
 
 
-def validate_credential_references(directory: Directory, credentials: Credentials) -> None:
+def validate_credential_references(
+    directory: Directory, credentials: Credentials
+) -> None:
     unknown_users = set(credentials.users) - set(directory.users)
     unknown_services = set(credentials.services) - set(directory.services)
     if unknown_users:
-        error(f"credentials reference unknown users: {', '.join(sorted(unknown_users))}")
+        error(
+            f"credentials reference unknown users: {', '.join(sorted(unknown_users))}"
+        )
     if unknown_services:
-        error(f"credentials reference unknown services: {', '.join(sorted(unknown_services))}")
+        error(
+            f"credentials reference unknown services: {', '.join(sorted(unknown_services))}"
+        )
     for user_id, item in credentials.users.items():
-        unknown_overrides = set(item["service_password_files"]) - set(directory.services)
+        unknown_overrides = set(item["service_password_files"]) - set(
+            directory.services
+        )
         if unknown_overrides:
             error(
                 f"credentials for {user_id} reference unknown services: "
@@ -507,7 +559,9 @@ def user_password_file(credentials: Credentials, user_id: str, service_id: str) 
     if service_id in item["service_password_files"]:
         return cast(str, item["service_password_files"][service_id])
     if item["password_file"] is None:
-        error(f"no default or {service_id}-specific credential is defined for user {user_id}")
+        error(
+            f"no default or {service_id}-specific credential is defined for user {user_id}"
+        )
     return cast(str, item["password_file"])
 
 
@@ -517,7 +571,8 @@ def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
 
 def byte_attributes(attributes: dict[str, list[str]]) -> dict[str, list[bytes]]:
     return {
-        name: [value.encode("utf-8") for value in values] for name, values in attributes.items()
+        name: [value.encode("utf-8") for value in values]
+        for name, values in attributes.items()
     }
 
 
@@ -554,7 +609,9 @@ def write_service_ldif(
     people_dn = f"ou=people,{service.base_dn}"
     groups_dn = f"ou=groups,{service.base_dn}"
     services_dn = f"ou=services,{service.base_dn}"
-    bind_dn = f"cn={ldap.dn.escape_dn_chars(service.bind_account.common_name)},{services_dn}"
+    bind_dn = (
+        f"cn={ldap.dn.escape_dn_chars(service.bind_account.common_name)},{services_dn}"
+    )
     memberships: dict[str, list[str]] = {user_id: [] for user_id in selected}
     group_member_dns: dict[str, list[str]] = {}
 
@@ -578,7 +635,9 @@ def write_service_ldif(
                 "objectClass": ["top", "dcObject", "organization"],
                 "dc": [ldap.dn.str2dn(service.base_dn)[0][0][1]],
                 "o": [directory.organization],
-                "entryUUID": [stable_uuid(directory.namespace, "service-base", service.service_id)],
+                "entryUUID": [
+                    stable_uuid(directory.namespace, "service-base", service.service_id)
+                ],
             },
         )
         for ou_name, ou_dn in (
@@ -602,7 +661,9 @@ def write_service_ldif(
                 },
             )
 
-        for user_id in sorted(selected, key=lambda item: directory.users[item].uid.casefold()):
+        for user_id in sorted(
+            selected, key=lambda item: directory.users[item].uid.casefold()
+        ):
             user = directory.users[user_id]
             password = read_password(
                 user_password_file(credentials, user_id, service.service_id),
@@ -620,7 +681,11 @@ def write_service_ldif(
                 attributes["mail"] = [user.mail]
             if memberships[user_id]:
                 attributes["memberOf"] = sorted(memberships[user_id], key=str.casefold)
-            write_entry(writer, f"uid={ldap.dn.escape_dn_chars(user.uid)},{people_dn}", attributes)
+            write_entry(
+                writer,
+                f"uid={ldap.dn.escape_dn_chars(user.uid)},{people_dn}",
+                attributes,
+            )
 
         if service.service_id not in credentials.services:
             error(f"no bind credential is defined for service {service.service_id}")
@@ -635,7 +700,11 @@ def write_service_ldif(
                 "objectClass": ["top", "organizationalRole", "simpleSecurityObject"],
                 "cn": [service.bind_account.common_name],
                 "entryUUID": [
-                    stable_uuid(directory.namespace, "service-bind", service.bind_account.source_id)
+                    stable_uuid(
+                        directory.namespace,
+                        "service-bind",
+                        service.bind_account.source_id,
+                    )
                 ],
                 "userPassword": [hash_password(bind_password)],
             },
@@ -651,14 +720,18 @@ def write_service_ldif(
                 {
                     "objectClass": ["top", "groupOfNames"],
                     "cn": [group.common_name],
-                    "entryUUID": [stable_uuid(directory.namespace, "group", group.source_id)],
+                    "entryUUID": [
+                        stable_uuid(directory.namespace, "group", group.source_id)
+                    ],
                     "member": sorted(group_member_dns[group_id], key=str.casefold),
                 },
             )
 
 
 def iso_timestamp(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
 
 def parse_generated_at(value: str | None) -> datetime:
@@ -688,7 +761,9 @@ def validate_signing_key(path: Path) -> None:
         error("signing key is not readable")
 
 
-def sign_manifest(manifest_path: Path, signing_key: Path, service_id: str, revision: int) -> None:
+def sign_manifest(
+    manifest_path: Path, signing_key: Path, service_id: str, revision: int
+) -> None:
     signature_path = manifest_path.with_name("manifest.json.minisig")
     command = [
         "minisign",
@@ -705,13 +780,19 @@ def sign_manifest(manifest_path: Path, signing_key: Path, service_id: str, revis
     ]
     try:
         result = subprocess.run(
-            command, stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except OSError as exc:
         error(f"cannot execute minisign: {exc}")
     if result.returncode != 0:
         detail = (
-            result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit status {result.returncode}"
         )
         error(f"minisign could not sign the manifest: {detail}")
     os.chmod(signature_path, 0o600)
@@ -738,11 +819,15 @@ def generate_service(
         "generated_at": iso_timestamp(generated_at),
         "soft_expires_at": iso_timestamp(
             generated_at
-            + timedelta(seconds=service.soft_ttl_seconds - service.expiry_offset_seconds)
+            + timedelta(
+                seconds=service.soft_ttl_seconds - service.expiry_offset_seconds
+            )
         ),
         "expires_at": iso_timestamp(
             generated_at
-            + timedelta(seconds=service.hard_ttl_seconds - service.expiry_offset_seconds)
+            + timedelta(
+                seconds=service.hard_ttl_seconds - service.expiry_offset_seconds
+            )
         ),
         "uuid_namespace": str(directory.namespace),
         "files": [{"path": ldif_path.name, "sha256": digest}],
@@ -763,13 +848,21 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--credentials", required=True, type=Path, help="credential file reference YAML"
     )
-    parser.add_argument("--signing-key", required=True, type=Path, help="minisign secret key")
-    parser.add_argument("--output", required=True, type=Path, help="new output directory")
     parser.add_argument(
-        "--service", action="append", default=[], help="generate only this service; repeatable"
+        "--signing-key", required=True, type=Path, help="minisign secret key"
     )
     parser.add_argument(
-        "--generated-at", help="fixed RFC 3339 UTC generation time, primarily for testing"
+        "--output", required=True, type=Path, help="new output directory"
+    )
+    parser.add_argument(
+        "--service",
+        action="append",
+        default=[],
+        help="generate only this service; repeatable",
+    )
+    parser.add_argument(
+        "--generated-at",
+        help="fixed RFC 3339 UTC generation time, primarily for testing",
     )
     return parser.parse_args()
 

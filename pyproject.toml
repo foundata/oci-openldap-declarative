@@ -21,11 +21,11 @@ addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
 
 [tool.ruff]
-line-length = 100
+line-length = 88
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["B", "E", "F", "I", "RUF", "SIM", "UP"]
+select = ["B", "E4", "E7", "E9", "F", "I", "RUF", "SIM", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
