@@ -19,39 +19,37 @@ live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Prerequisites<a id="prerequisites"></a>
 
-- **Python 3.12 or later** and **[uv](https://docs.astral.sh/uv/)** for Python tests. The development group includes `python-ldap`, which builds from source on Python versions without a wheel and then needs the OpenLDAP and Python headers (`openldap-devel` and `python3-devel` on Fedora; `libldap-dev`, `libsasl2-dev` and `python3-dev` on Debian).
-- **Git**, **jq**, **shfmt**, **ShellCheck**, **checkbashisms** and **Hadolint** for repository checks.
+- **Python 3.12 or later** and **[uv](https://docs.astral.sh/uv/)** for Python
+  tests. The development group includes `python-ldap`, which builds from source
+  on Python versions without a wheel and then needs the OpenLDAP and Python
+  headers (`openldap-devel` and `python3-devel` on Fedora; `libldap-dev`,
+  `libsasl2-dev` and `python3-dev` on Debian).
+- **Git**, **jq**, **shfmt**, **ShellCheck**, **checkbashisms** and **Hadolint**
+  for repository checks.
 - **Rootless Buildah and Podman** for container tests.
-- **ConClear** from the organization's protected artifact handoff for pin checks, qualification and releases.
+- **[ConClear](https://foundata.com/en/projects/conclear/)**, only for pin
+  checks, qualification and releases; none of the checks above need it. Install
+  it as a tool with uv:
+
+  ```sh
+  uv tool install conclear
+  conclear version
+  ```
 
 
 ## Getting started<a id="getting-started"></a>
 
-1. Clone the repository using HTTPS or SSH and install the locked test dependencies:
+Clone the repository and install the locked test dependencies:
 
-   ```sh
-   git clone git@github.com:foundata/oci-openldap-declarative.git
-   cd oci-openldap-declarative
-   uv sync --frozen
-   ```
+```sh
+git clone git@github.com:foundata/oci-openldap-declarative.git
+cd oci-openldap-declarative
+uv sync --frozen
+```
 
-2. Install the reviewed, identity-bearing ConClear wheel in a revision-specific environment:
-
-   ```sh
-   : "${CONCLEAR_WHEEL:?set the reviewed wheel path}"
-   : "${CONCLEAR_WHEEL_SHA256:?set the reviewed wheel SHA-256}"
-   : "${CONCLEAR_REVISION:?set the reviewed ConClear source revision}"
-   printf '%s  %s\n' "$CONCLEAR_WHEEL_SHA256" "$CONCLEAR_WHEEL" |
-     sha256sum --check
-   conclear_venv="${XDG_DATA_HOME:-$HOME/.local/share}/conclear/$CONCLEAR_REVISION"
-   uv venv "$conclear_venv"
-   uv pip install --python "$conclear_venv/bin/python" "$CONCLEAR_WHEEL"
-   PATH="$conclear_venv/bin:$PATH"
-   export PATH
-   conclear version --format json
-   ```
-
-   Compare the reported version, full source revision and embedded guide revision with the handoff's `artifacts.json`. A `development-source-tree` build is not valid for qualification or release.
+This is enough to run `hack/check.sh` and the unit suite; see
+[Testing](#testing). ConClear is not required until you touch pins,
+qualification or a release.
 
 
 ## Project structure<a id="project-structure"></a>
@@ -88,26 +86,35 @@ hack/check.sh                    # direct repository check
 
 ## Development standards<a id="development-standards"></a>
 
-- Follow the foundata shell and Python style guides.
-- Keep runtime and generator behavior fail closed. Do not add release skips, mutable-tag fallbacks or trust overrides.
-- Keep application tests bound to ConClear-provided exact layouts and digests. Only explicit developer modes may build images.
-- Keep credentials, snapshot keys, release profiles and retained test resources outside the checkout.
-- Use scoped commits in the form `<scope>: <lowercase imperative description>`.
+- Follow the foundata
+  [shell](https://github.com/foundata/guidelines/blob/master/shell-scripting-style-guide.md)
+  and
+  [Python](https://github.com/foundata/guidelines/blob/master/python-style-guide.md)
+  style guides.
+- Keep runtime and generator behavior fail closed. Do not add release skips,
+  mutable-tag fallbacks or trust overrides.
+- Keep application tests bound to
+  [ConClear](https://foundata.com/en/projects/conclear/)-provided exact layouts
+  and digests. Only explicit developer modes may build images.
+- Keep credentials, snapshot keys, release profiles and retained test resources
+  outside the checkout.
+- [Use scoped commits](https://github.com/foundata/guidelines/blob/master/git-commits.md)
+  in the form `<scope>: <lowercase imperative description>`.
 
 
 ## Testing<a id="testing"></a>
 
-Run repository-specific checks, then ConClear's generic checks for both images:
+`hack/check.sh` runs the direct repository check: shell, Containerfiles, and
+Python formatting/lint/type checks, plus the unit tests below `tests/unit`.
+None of this needs ConClear.
 
 ```sh
 sh hack/check.sh
-for image in runtime generator; do
-  conclear check --image "$image"
-  conclear pins check --image "$image"
-done
 ```
 
-The direct check runs only the unit tests below `tests/unit`. The container suites below `tests/integration` need rootless Podman and an image source selected with `--mode`. For an explicit non-release container test, build developer images into an isolated store:
+The container suites below `tests/integration` need rootless Podman and an image
+source selected with `--mode`. For an explicit non-release container test, build
+developer images into an isolated store:
 
 ```sh
 test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-test.XXXXXX")
@@ -115,12 +122,28 @@ uv run --frozen pytest tests/integration --mode=developer-build --run-dir "$test
 rm -rf "$test_run"
 ```
 
-Without `--run-dir` the suite uses a pytest temporary directory. Set `KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then reports its resource manifest and the inspection command instead of resetting the isolated store.
+Without `--run-dir` the suite uses a pytest temporary directory. Set
+`KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then
+reports its resource manifest and the inspection command instead of resetting
+the isolated store.
+
+Before committing a change that touches a Containerfile, `conclear.toml`, or
+the runtime/generator contract, also run ConClear's generic checks for both
+images (see [Prerequisites](#prerequisites) for installing it):
+
+```sh
+for image in runtime generator; do
+  conclear check --image "$image"
+  conclear pins check --image "$image"
+done
+```
 
 
 ## Pin updates<a id="pin-updates"></a>
 
-ConClear can update the Debian digest locally without Renovate, a branch or a pull request. Proposal generation does not edit the checkout; application verifies every occurrence and updates all files atomically.
+[ConClear](https://foundata.com/en/projects/conclear/) can update the Debian
+digest locally. Proposal generation does not edit the checkout; application
+verifies every occurrence and updates all files atomically.
 
 ```sh
 proposal_dir=$(mktemp -d "${TMPDIR:-/tmp}/openldap-pins.XXXXXX")
@@ -135,12 +158,15 @@ done
 rm -rf "$proposal_dir"
 ```
 
-Review the complete diff before committing. An external updater remains optional, but must preserve the same proposal, review and qualification boundary.
+Review the complete diff before committing. An external updater remains
+optional, but must preserve the same proposal, review and qualification
+boundary.
 
 
 ## Qualification and releases<a id="qualification-and-releases"></a>
 
-Qualification uses an isolated checkout, so commit the reviewed changes first. Qualify both images from the same revision and version:
+Qualification uses an isolated checkout, so commit the reviewed changes first.
+Qualify both images from the same revision and version:
 
 ```sh
 revision=$(git rev-parse HEAD)
@@ -153,11 +179,22 @@ for platform in linux/amd64 linux/arm64; do
 done
 ```
 
-A signed release additionally requires the external protected ConClear profile, Quay credentials and approved signing authority. CI invokes the same ConClear CLI and does not reimplement it. Follow the ConClear [quick start](https://github.com/foundata/conclear/blob/master/docs/quickstart.md) for release, resume, cleanup and rescan operations.
+A signed release additionally requires the external protected ConClear profile,
+Quay credentials and approved signing authority, plus the exact ConClear version
+approved for that release (`uv tool install conclear==<version>`) rather than
+whatever is newest. CI invokes the same ConClear CLI and does not reimplement
+it. Follow the ConClear
+[quick start](https://github.com/foundata/conclear/blob/master/docs/quickstart.md)
+for release, resume, cleanup and rescan operations.
 
 
 ## Troubleshooting<a id="troubleshooting"></a>
 
-- **ConClear reports `development-source-tree`:** install the retained wheel that passed ConClear's clean-checkout distribution gate.
-- **The Git origin uses SSH:** leave it unchanged. `conclear.toml` records the credential-free canonical HTTPS repository identity; ConClear canonicalizes an equivalent HTTPS or SSH remote before comparing it and writing evidence.
-- **A container test fails:** inspect only the resources named in its run manifest. Do not remove unrelated Podman or Buildah state.
+- **ConClear reports `development-source-tree`:** you are running ConClear from
+  a source checkout. Install it as a tool instead (`uv tool install conclear`),
+  or the exact reviewed version for a release.
+- **The Git origin uses SSH:** leave it unchanged. `conclear.toml` records the
+  credential-free canonical HTTPS repository identity; ConClear canonicalizes an
+  equivalent HTTPS or SSH remote before comparing it and writing evidence.
+- **A container test fails:** inspect only the resources named in its run
+  manifest. Do not remove unrelated Podman or Buildah state.
