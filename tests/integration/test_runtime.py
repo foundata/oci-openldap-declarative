@@ -620,7 +620,7 @@ def test_image_contents_match_the_production_boundary(
         "/usr/lib/ldap/memberof.so",
     ):
         assert host.file(path).size > 0, path
-    for path in ("/DESIGN.md", "/TEMP-Notes"):
+    for path in ("/ARCHITECTURE.md", "/TEMP-Notes"):
         assert not host.file(path).exists, path
     for path in ("/snapshot", "/tls", "/run/credentials"):
         directory = host.file(path)
