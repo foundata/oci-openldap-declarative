@@ -63,9 +63,9 @@ and import a snapshot. It carries no compiler, no interpreter, and no Python,
 which keeps the attack surface small on the host where it actually accepts
 network connections.
 
-Generating a snapshot from declarative YAML instead needs Python, PyYAML, and
-`python-ldap`. Those dependencies live in `Containerfile.generator`, a
-separate image that never runs next to an application and is never part of
+Generating a signed snapshot's LDIF from declarative YAML instead needs Python,
+PyYAML, and `python-ldap`. Those dependencies live in `Containerfile.generator`,
+a separate image that never runs next to an application and is never part of
 the release the runtime depends on. Generation happens offline, ahead of
 deployment; its only output is a signed, self-contained snapshot that the
 runtime image treats as untrusted input to verify, not as code to execute.
@@ -75,7 +75,7 @@ application's credentials.
 
 ```text
 Containerfile                    # runtime image
-Containerfile.generator          # snapshot-generator image
+Containerfile.generator          # LDIF snapshot-generator image
 conclear.toml                    # image, runtime and test declarations
 generator/                       # snapshot generator, Python, offline only
 scripts/                         # runtime verification and startup
