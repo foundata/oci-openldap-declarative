@@ -1,32 +1,20 @@
 # OpenLDAP Declarative
 
-**Disposable, read-only OpenLDAP sidecars built from a signed, expiring
-snapshot, so applications authenticate locally without a network path to a
-central directory.**
+**Disposable, read-only OpenLDAP built from a signed, expiring snapshot
+applications can authenticate against. Users, groups and memberships are
+declared once in YAML and turned into that signed snapshot.**
 
-Users, groups, and their memberships are declared once in YAML. A central
-generator turns that declaration into deterministic LDAP identifiers and a
-signed, expiring snapshot for one application, which is then deployed next to
-it. The runtime container verifies and imports the snapshot offline before it
-opens an LDAP listener.
+A typical use case: an internet-facing internal tool gets LDAP login without a
+VPN back to a central directory. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for
+the full design, its security assumptions and the alternatives it rejects.
 
-The local database is disposable. LDAP writes are not an administration
-interface, and restarting the container reconstructs the directory from the
-snapshot. The only persistent runtime state is the highest accepted snapshot
-revision, used to reject rollbacks.
-
-This model is intended for a modest number of isolated services where avoiding
-a central authentication network path is worth bounded propagation delay and
-the operational cost of distributing credentials. It is not a general-purpose,
-mutable, replicated directory service. See [`ARCHITECTURE.md`](ARCHITECTURE.md)
-for the full design, its security assumptions, and the alternatives it rejects.
 
 ## Table of contents<a id="toc"></a>
 
-- [Security boundary](#security-boundary)
-- [Images](#images)
-- [Generate snapshots](#generate-snapshots)
-- [Run with rootless Podman](#run-with-rootless-podman)
+- [Features](#features)
+- [Usage](#usage)
+  - [Generate a snapshot](#usage-generate-snapshot)
+  - [Run with rootless Podman](#usage-rootless-podman)
 - [Runtime inputs](#runtime-inputs)
 - [Snapshot lifecycle](#snapshot-lifecycle)
 - [TLS](#tls)
@@ -36,59 +24,31 @@ for the full design, its security assumptions, and the alternatives it rejects.
 - [Licensing, copyright](#licensing-copyright)
 - [Author information](#author-information)
 
-## Security boundary<a id="security-boundary"></a>
 
-Each snapshot contains password verifiers for its authorized users. A stolen
-snapshot permits offline password guessing. The generator therefore produces
-Argon2id verifiers with at least `m=19456,t=2,p=1`; the runtime rejects weaker
-or malformed values. Strong generated or breach-screened passwords remain a
-deployment requirement. For internet-facing services, use a different user
-password per service so a cracked verifier is not useful elsewhere.
+## Features<a id="features"></a>
 
-A signature proves origin and integrity; it does not encrypt the snapshot.
-Protect snapshot files, signing keys, plaintext credential inputs, generated
-LDIF, and the runtime volume as credentials. Deliver snapshots through an
-encrypted channel and use host ownership plus SELinux labels to keep them away
-from the application container.
+- **Declarative source of truth:** users, groups and memberships are defined
+  once in YAML; a generator turns that declaration into deterministic LDAP
+  identifiers and a signed, expiring snapshot for one application.
+- **Disposable, read-only runtime:** the local database is rebuilt from the
+  snapshot on every restart; LDAP writes are not an administration
+  interface.
+- **Minimal runtime attack surface:** the runtime image ships only OpenLDAP,
+  Argon2 and LDAP clients, no compiler or interpreter. The Python/LDAP
+  tooling that generates snapshots lives in a separate image that never
+  reaches an application host; see [`ARCHITECTURE.md`](ARCHITECTURE.md) for
+  that split.
+- **Signed and bounded:** every snapshot is minisign-signed and carries a
+  hard expiry. A malformed or unsigned snapshot never starts a listener, and
+  revocation is bounded by that expiry rather than immediate.
+- **Rootless by default:** ships as a Quadlet example with dropped
+  capabilities, a read-only root filesystem and no published port unless a
+  deployment explicitly needs one.
 
-Hard expiry bounds stale authorization. It does not provide immediate
-offboarding: a removed user can still bind to a host that retains an older valid
-snapshot until that snapshot is replaced or expires.
 
-## Images<a id="images"></a>
+## Usage<a id="usage"></a>
 
-The runtime image is built from a digest-pinned Debian 13 slim base and contains
-OpenLDAP, the Debian Argon2 module, LDAP clients, OpenSSL, `jq`, and `minisign`.
-It runs as UID/GID 1001 and contains no compiler, editor, `sudo`, or network
-diagnostic suite. The image retains only the `back_mdb`, `argon2`, and `memberof`
-loadable OpenLDAP modules. `memberof` supplies the attribute schema for static
-membership data; the mutable memberof overlay is not configured.
-
-The generator is a separate image. It adds Debian-packaged Python, PyYAML,
-`python-ldap`, and Argon2. It never becomes part of the application-side runtime.
-
-[`conclear.toml`](conclear.toml) declares the runtime and generator as independent
-release images in their actual Quay repositories. ConClear supplies the controlled
-`IMAGE_CREATED`, `IMAGE_REVISION`, and `IMAGE_VERSION` build arguments, builds an
-isolated committed revision, validates its labels, imports the exact OCI layouts,
-and runs the repository hooks against those layouts. The runtime hook receives the
-generator layout built from the same revision and platform for compatibility
-testing. Neither hook builds an image or selects a mutable tag.
-
-The default-deny [`.containerignore`](.containerignore) allowlist excludes local
-snapshots, credentials, release evidence, Git metadata, tests and untracked
-working files from both contexts. `conclear check` validates its effective
-semantics. Repository tests lock its narrow project-specific contents and the
-required `COPY` inputs.
-
-Each image records its exact Debian package set at
-`/usr/local/share/openldap-declarative/package-versions.txt` and preserves package
-copyright notices plus the repository license. The package inventory supports an
-SBOM; it is not a substitute for one.
-
-Maintainer commands are documented in [`DEVELOPMENT.md`](DEVELOPMENT.md).
-
-## Generate snapshots<a id="generate-snapshots"></a>
+### Generate a snapshot<a id="usage-generate-snapshot"></a>
 
 The generator accepts two strict YAML documents:
 
@@ -98,9 +58,9 @@ The generator accepts two strict YAML documents:
   [`examples/generator/credentials.yaml.example`](examples/generator/credentials.yaml.example).
 
 Credential values are never accepted inside YAML or on the command line. Each
-referenced file must be a regular, non-symlink file readable only by its owner and
-must contain exactly one non-empty UTF-8 line. A per-service password overrides a
-user's default password for that service.
+referenced file must be a regular, non-symlink file readable only by its owner
+and must contain exactly one non-empty UTF-8 line. A per-service password
+overrides a user's default password for that service.
 
 The published schemas are:
 
@@ -145,9 +105,9 @@ podman run --rm \
   --userns=keep-id \
   --user "$(id -u):$(id -g)" \
   --network none \
-  --volume "$PWD/examples/generator:/input:ro,Z" \
-  --volume "$PWD/private:/run/credentials:ro,Z" \
-  --volume "$PWD/output:/output:Z" \
+  --volume "${PWD}/examples/generator:/input:ro,Z" \
+  --volume "${PWD}/private:/run/credentials:ro,Z" \
+  --volume "${PWD}/output:/output:Z" \
   localhost/openldap-declarative-generator:latest \
   --directory /input/directory.yaml \
   --credentials /run/credentials/credentials.yaml \
@@ -165,17 +125,20 @@ manifest.json
 manifest.json.minisig
 ```
 
-For every active authorized user, the generator emits a stable UUIDv5 derived
+For every active authorized user, the generator emits a stable
+[UUID](https://en.wikipedia.org/wiki/Universally_unique_identifier)v5 derived
 from the immutable source ID. The same user therefore has the same `entryUUID`
 in every service and after every rebuild. Disabled users are omitted. Static
 `member` and `memberOf` values are emitted together because OpenLDAP overlays do
 not run during offline import.
 
-## Run with rootless Podman<a id="run-with-rootless-podman"></a>
+
+### Run with rootless Podman<a id="usage-rootless-podman"></a>
 
 The recommended deployment is a rootless Quadlet user service. Start with the
 four files in [`examples/quadlet`](examples/quadlet), replace the image digest,
-service ID, paths, and resource limits, and install them through Ansible below:
+service ID, paths, and resource limits, and install them e.g. through Ansible
+below:
 
 ```text
 ~/.config/containers/systemd/
@@ -192,16 +155,17 @@ volume, and a persistent revision-state volume. It uses:
 - Podman health monitoring with kill-on-failure as a watchdog backstop;
 - no network recovery administrator password.
 
-The resource values match the qualified runtime profile. The generator is a
-bounded one-shot with the same 256 MiB and one-CPU limits, but only 64 PIDs,
-`nofile=512`, a 180-second execution timeout and `/output` writable. It has no
-listener, health command, shutdown grace period or runtime/state volumes.
+These resource values match the profile the runtime was tested against. The
+generator is a bounded one-shot with the same 256 MiB and one-CPU limits, but
+only 64 PIDs, `nofile=512`, a 180-second execution timeout and `/output`
+writable. It has no listener, health command, shutdown grace period or
+runtime/state volumes.
 
 [`examples/policy/containers-policy.json`](examples/policy/containers-policy.json)
 is a deployment admission template: it rejects by default and trusts only the
 two release repositories through an externally provisioned public key. A
 deployment owner must install the real trust root and enforce the policy. The
-example contains no production key and is not ConClear build policy.
+example contains no production key.
 
 The application container joins `openldap-example.network` and connects to
 `ldap://ldap:1389`. The LDAP listener must use `LDAP_LISTEN_HOST=0.0.0.0` inside
@@ -211,39 +175,40 @@ must connect; when publishing is necessary, bind it explicitly to
 
 Plain LDAP is acceptable only when the network path is confined to localhost or
 a host-local private container network, untrusted containers cannot join it, and
-host compromise is already considered equivalent to application compromise.
-Use LDAPS for any traffic that leaves that boundary and for clients, such as Dex,
+host compromise is already considered equivalent to application compromise. Use
+LDAPS for any traffic that leaves that boundary and for clients, such as Dex,
 whose LDAP connector requires or is moving toward encrypted transport.
+
 
 ## Runtime inputs<a id="runtime-inputs"></a>
 
 The signed manifest is authoritative for the service ID, base DN, revision,
-validity period, UUID namespace, file order, and file digests. Runtime inputs may
-not silently redefine signed values.
+validity period, UUID namespace, file order, and file digests. Runtime inputs
+may not silently redefine signed values.
 
-| Input | Default | Contract |
-| --- | --- | --- |
-| `LDAP_EXPECTED_SERVICE_ID` | none | Required; must equal the signed service ID. |
-| `LDAP_TRANSPORT` | `ldap` | `ldap`, `ldaps`, or `both`. |
-| `LDAP_LISTEN_HOST` | `127.0.0.1` | `127.0.0.1` or `0.0.0.0`. |
-| `LDAP_PORT` | `1389` | Unprivileged LDAP port. |
-| `LDAP_LDAPS_PORT` | `1636` | Unprivileged LDAPS port; must differ from `LDAP_PORT` for `both`. |
-| `LDAP_LOG_LEVEL` | `256` | Numeric slapd log mask. |
-| `LDAP_TLS_CERT_FILE` | `/tls/cert.pem` | Required for `ldaps` or `both`. |
-| `LDAP_TLS_KEY_FILE` | `/tls/cert.key` | Required for `ldaps` or `both`. |
-| `LDAP_TLS_CA_FILE` | `/tls/ca.pem` | Optional server trust bundle. |
-| `LDAP_SNAPSHOT_DIR` | `/snapshot` | Directory holding `manifest.json`, `manifest.json.minisig`, and the listed LDIF files. |
-| `LDAP_REVISION_STATE_FILE` | `/state/highest-revision` | Highest accepted revision; keep its volume across container replacement. |
+|              Input              |                Default                 | Contract |
+| ------------------------------- | -------------------------------------- | -------- |
+| `LDAP_EXPECTED_SERVICE_ID`      | none                                   | Required; must equal the signed service ID. |
+| `LDAP_TRANSPORT`                | `ldap`                                 | `ldap`, `ldaps`, or `both`. |
+| `LDAP_LISTEN_HOST`              | `127.0.0.1`                            | `127.0.0.1` or `0.0.0.0`. |
+| `LDAP_PORT`                     | `1389`                                 | Unprivileged LDAP port. |
+| `LDAP_LDAPS_PORT`               | `1636`                                 | Unprivileged LDAPS port; must differ from `LDAP_PORT` for `both`. |
+| `LDAP_LOG_LEVEL`                | `256`                                  | Numeric slapd log mask. |
+| `LDAP_TLS_CERT_FILE`            | `/tls/cert.pem`                        | Required for `ldaps` or `both`. |
+| `LDAP_TLS_KEY_FILE`             | `/tls/cert.key`                        | Required for `ldaps` or `both`. |
+| `LDAP_TLS_CA_FILE`              | `/tls/ca.pem`                          | Optional server trust bundle. |
+| `LDAP_SNAPSHOT_DIR`             | `/snapshot`                            | Directory holding `manifest.json`, `manifest.json.minisig`, and the listed LDIF files. |
+| `LDAP_REVISION_STATE_FILE`      | `/state/highest-revision`              | Highest accepted revision; keep its volume across container replacement. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_FILE` | `/run/credentials/snapshot-public-key` | One minisign verification key. |
-| `LDAP_SNAPSHOT_PUBLIC_KEY_DIR` | none | Directory of `*.pub` verification keys for rotation; mutually exclusive with the file input. |
-| `LDAP_ADMIN_PASSWORD_FILE` | none | Optional recovery root password file. Avoid in normal operation. |
-| `LDAP_ADMIN_PASSWORD` | none | Deprecated direct secret; rejected when the file form is also set. |
-| `LDAP_BASE_DN` | none | Compatibility input; if set, must equal the manifest. |
-| `LDAP_DOMAIN` | none | Deprecated compatibility input; derived DN must equal the manifest. |
+| `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`  | none                                   | Directory of `*.pub` verification keys for rotation; mutually exclusive with the file input. |
+| `LDAP_ADMIN_PASSWORD_FILE`      | none                                   | Optional recovery root password file. Avoid in normal operation. |
+| `LDAP_ADMIN_PASSWORD`           | none                                   | Deprecated direct secret; rejected when the file form is also set. |
+| `LDAP_BASE_DN`                  | none                                   | Compatibility input; if set, must equal the manifest. |
+| `LDAP_DOMAIN`                   | none                                   | Deprecated compatibility input; derived DN must equal the manifest. |
 
-The public verification key defaults to
-`/run/credentials/snapshot-public-key`, the snapshot to `/snapshot`, runtime data
-to `/run/openldap`, and revision state to `/state/highest-revision`.
+The public verification key defaults to `/run/credentials/snapshot-public-key`,
+the snapshot to `/snapshot`, runtime data to `/run/openldap`, and revision state
+to `/state/highest-revision`.
 
 For signing-key rotation, deploy a directory containing both old and new public
 keys, restart while the old snapshot is still valid, switch generation to the
@@ -284,8 +249,9 @@ revision-only state that the runtime will migrate after successful import. Exit
 `65` rejects rollback or same-revision/different-content; `66` rejects malformed
 state or inputs; `70` reports an internal failure; and `78` reports expiry. The
 preflight verifies signature, service ID, timestamps and file digests before the
-revision pair. It never mutates the state file or active snapshot. The deployment
-role remains responsible for the subsequent atomic path switch and restart.
+revision pair. It never mutates the state file or active snapshot. The
+deployment role remains responsible for the subsequent atomic path switch and
+restart.
 
 The container copies the signed manifest and LDIF into private runtime storage,
 verifies those copied bytes, constructs `cn=config` and MDB offline, validates
@@ -321,9 +287,9 @@ For an independent systemd timer, install
 `~/.config/systemd/user`. Adjust the container name, reload the user manager,
 and enable the timer through the deployment automation. The helper runs only as
 the rootless service account. It verifies the host-side snapshot signature,
-service identity, and expiry in a separate capability-free container created from
-the running service's immutable image ID. It then checks service health and stops
-the service if either independent check fails.
+service identity, and expiry in a separate capability-free container created
+from the running service's immutable image ID. It then checks service health and
+stops the service if either independent check fails.
 
 Revision state must survive container replacement. Losing it weakens replay
 protection until a newer snapshot is accepted. Expiry remains the final bound.
@@ -333,15 +299,16 @@ start.
 Within one service snapshot, every authenticated user may search the documented
 non-password attributes of other entries. Anonymous search, password verifiers,
 unlisted metadata and `cn=config` remain denied. Tightening this enumeration
-boundary would be a product-policy change and requires a separate owner decision.
+boundary would be a product-policy change and requires a separate owner
+decision.
 
 ## TLS<a id="tls"></a>
 
 For LDAPS, mount a certificate and private key readable by the mapped container
-UID and set `LDAP_TRANSPORT=ldaps` or `both`. The runtime requires TLS 1.2 or 1.3
-and configures a restricted OpenSSL cipher list. Clients must validate the server
-name and CA; mounting a certificate without configuring client validation does
-not provide authenticated transport.
+UID and set `LDAP_TRANSPORT=ldaps` or `both`. The runtime requires TLS 1.2 or
+1.3 and configures a restricted OpenSSL cipher list. Clients must validate the
+server name and CA; mounting a certificate without configuring client validation
+does not provide authenticated transport.
 
 Certificate issuance, renewal, deployment, hostname selection, and expiry
 monitoring remain deployment responsibilities. Restart the container after
@@ -387,9 +354,9 @@ exact-image qualification.
   authorized application VM.
 - Snapshot generation and signing become a fleet-wide control-plane trust
   boundary.
-- The runtime provides LDAP and LDAPS, not OAuth 2.0 or OpenID Connect. A central
-  IdP such as Dex may use these directories as connectors, but its availability
-  and session revocation behavior are separate concerns.
+- The runtime provides LDAP and LDAPS, not OAuth 2.0 or OpenID Connect. A
+  central IdP such as Dex may use these directories as connectors, but its
+  availability and session revocation behavior are separate concerns.
 - Runtime LDAP writes are intentionally unavailable. Password enrollment and
   directory administration remain central workflows.
 - OpenLDAP replication, online schema changes, multi-master operation, and large
@@ -402,15 +369,22 @@ provider rather than extending this snapshot model indefinitely.
 ## Licensing, copyright<a id="licensing-copyright"></a>
 
 <!--REUSE-IgnoreStart-->
-Copyright (c) 2025 foundata GmbH (https://foundata.com)
+<!-- rumdl-disable-next-line MD034 --><!-- should match SPDX-PackageSupplier -->
+Copyright (c) 2025-2026, foundata GmbH (https://foundata.com)
 
-Repository code and configuration are licensed under the GNU General Public
-License v3.0 or later (SPDX-License-Identifier: `GPL-3.0-or-later`). See
-[`LICENSES/GPL-3.0-or-later.txt`](LICENSES/GPL-3.0-or-later.txt).
+This project is licensed under the GNU General Public License v3.0 or later
+(SPDX-License-Identifier: `GPL-3.0-or-later`), see
+[`LICENSES/GPL-3.0-or-later.txt`](LICENSES/GPL-3.0-or-later.txt) for the full
+text.
 
-[`REUSE.toml`](REUSE.toml) provides machine-readable licensing information. Use
-`reuse spdx` to generate an SPDX software bill of materials for repository
-contents.
+The [`REUSE.toml`](REUSE.toml) file provides detailed licensing and copyright
+information in a human- and machine-readable format. This includes parts that
+may be subject to different licensing or usage terms, such as third-party
+components. The repository conforms to the
+[REUSE specification](https://reuse.software/spec/). You can use
+[`reuse spdx`](https://reuse.readthedocs.io/en/latest/readme.html#cli) to create
+a
+[SPDX software bill of materials (SBOM)](https://en.wikipedia.org/wiki/Software_Package_Data_Exchange).
 <!--REUSE-IgnoreEnd-->
 
 The built images contain Debian packages governed by their respective licenses.
@@ -420,4 +394,4 @@ SBOMs that describe the actual image contents.
 ## Author information<a id="author-information"></a>
 
 This project was created and is maintained by
-[foundata GmbH](https://foundata.com).
+[foundata](https://foundata.com).
