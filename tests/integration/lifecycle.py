@@ -56,5 +56,6 @@ def assert_build_artifacts_absent(podman: Podman, image: str, volume: str) -> No
         "&& test ! -e /inspect/root-password "
         '&& ! find /inspect -maxdepth 1 \\( -name "config.*" -o -name "directory.*" '
         '-o -name "group-memberships.*" -o -name "user-memberships.*" '
+        '-o -name "normalized-memberships.*" '
         '-o -name "password-values.*" \\) | grep -q .',
     )

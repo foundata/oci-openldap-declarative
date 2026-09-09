@@ -4,6 +4,10 @@
 
 set -u
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 2
+# shellcheck source=scripts/common.sh
+. "${script_dir}/common.sh"
+
 readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
 readonly active_manifest_file="${runtime_dir}/active-manifest.json"
 
@@ -11,15 +15,6 @@ read_manifest_field() {
   field_name=${1}
   jq -er --arg field_name "${field_name}" '.[$field_name] | strings | select(length > 0)' \
     "${active_manifest_file}"
-}
-
-ldap_is_available() {
-  base_dn=${1}
-
-  ldapsearch -LLL -Q -Y EXTERNAL \
-    -H "${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}" \
-    -b "${base_dn}" -s base '(objectClass=*)' dn 2>/dev/null \
-    | grep -F -q "dn: ${base_dn}"
 }
 
 write_status() {

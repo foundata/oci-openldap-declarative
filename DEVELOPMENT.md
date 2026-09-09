@@ -57,9 +57,9 @@ qualification or a release.
 The repository builds two independent images from one pipeline, split by
 `Containerfile`. The runtime image contains only what a listening LDAP service
 needs: OpenLDAP, the Argon2 module, LDAP clients, and the scripts that verify
-and import a snapshot. It carries no compiler, no interpreter, and no Python,
-which keeps the attack surface small on the host where it actually accepts
-network connections.
+and import a snapshot. It retains the distribution shell and utilities,
+including jq, minisign and OpenSSL, but carries no compiler or Python generator
+stack. This keeps generation dependencies off the host accepting LDAP connections.
 
 Generating a signed snapshot's LDIF from declarative YAML instead needs Python,
 PyYAML, and `python-ldap`. Those dependencies live in `Containerfile.generator`,
@@ -124,8 +124,11 @@ rm -rf "$test_run"
 
 Without `--run-dir` the suite uses a pytest temporary directory. Set
 `KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then
-reports its resource manifest and the inspection command instead of resetting
-the isolated store.
+reports its JSONL resource manifest and the inspection command instead of
+cleaning up. Storage, libpod runtime directories and file locks are private to
+the run; helpers and Testinfra inherit that configuration. Cleanup checks the
+journal and ownership labels before removing exact containers and volumes,
+then removes the run-owned store. It never runs `podman system reset`.
 
 Before committing a change that touches a Containerfile, `conclear.toml`, or
 the runtime/generator contract, also run ConClear's generic checks for both

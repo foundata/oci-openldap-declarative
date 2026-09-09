@@ -78,20 +78,21 @@ def store(
                 pytest.fail("--run-dir must name an existing directory")
     isolated = Store(base.resolve(), SUITE_NAMES[mode])
     isolated.create()
-    previous = os.environ.get("CONTAINERS_STORAGE_CONF")
-    os.environ["CONTAINERS_STORAGE_CONF"] = str(isolated.storage_conf)
-    yield isolated
-    if previous is None:
-        del os.environ["CONTAINERS_STORAGE_CONF"]
-    else:
-        os.environ["CONTAINERS_STORAGE_CONF"] = previous
-    if os.environ.get("KEEP_TEST_RESOURCES", "false") == "true":
-        reporter = request.config.pluginmanager.get_plugin("terminalreporter")
-        if reporter is not None:
-            reporter.write_line(f"Retained resource manifest: {isolated.manifest}")
-            reporter.write_line(f"Inspect with: {isolated.inspect_command()}")
-        return
-    isolated.finish(Podman(isolated).binary)
+    with pytest.MonkeyPatch.context() as environment:
+        for key, value in isolated.environment().items():
+            environment.setenv(key, value)
+        try:
+            yield isolated
+        finally:
+            if os.environ.get("KEEP_TEST_RESOURCES", "false") == "true":
+                reporter = request.config.pluginmanager.get_plugin("terminalreporter")
+                if reporter is not None:
+                    reporter.write_line(
+                        f"Retained resource manifest: {isolated.manifest}"
+                    )
+                    reporter.write_line(f"Inspect with: {isolated.inspect_command()}")
+            else:
+                isolated.finish(Podman(isolated).binary)
 
 
 @pytest.fixture(scope="session")

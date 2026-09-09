@@ -33,8 +33,9 @@ the full design, its security assumptions and the alternatives it rejects.
 - **Disposable, read-only runtime:** the local database is rebuilt from the
   snapshot on every restart; LDAP writes are not an administration
   interface.
-- **Minimal runtime attack surface:** the runtime image ships only OpenLDAP,
-  Argon2 and LDAP clients, no compiler or interpreter. The Python/LDAP
+- **Minimal runtime attack surface:** the runtime image contains OpenLDAP,
+  Argon2, LDAP clients and distribution utilities, including the shell, jq,
+  minisign and OpenSSL. It has no compiler or Python generator stack. The
   tooling that generates snapshots lives in a separate image that never
   reaches an application host; see [`ARCHITECTURE.md`](ARCHITECTURE.md) for
   that split.
@@ -49,6 +50,21 @@ the full design, its security assumptions and the alternatives it rejects.
 ## Usage<a id="usage"></a>
 
 ### Generate a snapshot<a id="usage-generate-snapshot"></a>
+
+For local development, run these commands from the repository root with
+rootless Podman to build the two image names used below. These mutable local
+tags are not release references; deployments must use qualified image digests.
+
+```sh
+created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+revision=$(git rev-parse HEAD)
+podman build --format oci --pull=always --file Containerfile \
+  --build-arg "IMAGE_CREATED=$created" --build-arg "IMAGE_REVISION=$revision" \
+  --build-arg IMAGE_VERSION=dev --tag localhost/openldap-declarative:latest .
+podman build --format oci --pull=always --file Containerfile.generator \
+  --build-arg "IMAGE_CREATED=$created" --build-arg "IMAGE_REVISION=$revision" \
+  --build-arg IMAGE_VERSION=dev --tag localhost/openldap-declarative-generator:latest .
+```
 
 The generator accepts two strict YAML documents:
 
@@ -80,23 +96,28 @@ deadlines, so staggering can only expire a service earlier and always preserves
 `soft_expires_at < expires_at`. All services generated in one invocation use the
 same controlled `generated_at` value.
 
-Create and protect a minisign key pair. `-W` creates an unencrypted automation
+Create and protect a minisign key pair outside the checkout using the generator
+image. `-W` creates an unencrypted automation
 key, so the secret key must be held by a dedicated signing worker or secret
 store, never committed or copied to application hosts:
 
 ```sh
 umask 077
-mkdir -p ./private
-minisign -G -W \
-  -s ./private/snapshot.key \
-  -p ./private/snapshot.pub
+workspace=$(mktemp -d "${TMPDIR:-/tmp}/openldap-example.XXXXXX")
+install -d -m 0700 "$workspace/private" "$workspace/output" "$workspace/input"
+install -m 0600 examples/generator/directory.yaml "$workspace/input/directory.yaml"
+podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
+  --network none --volume "$workspace/private:/run/credentials:Z" \
+  --entrypoint minisign localhost/openldap-declarative-generator:latest \
+  -G -W -s /run/credentials/snapshot.key -p /run/credentials/snapshot.pub
 install -m 0600 examples/generator/credentials.yaml.example \
-  ./private/credentials.yaml
+  "$workspace/private/credentials.yaml"
 ```
 
-Create the password files referenced by `credentials.yaml` in `./private` and
+Create the password files referenced by `credentials.yaml` in `$workspace/private` and
 keep every file at mode `0600`. The example names are placeholders, not default
-credentials.
+credentials. Paths beginning with `/run/credentials/` refer to these files inside
+the container. Keep using the same shell so `$workspace` remains set.
 
 Then generate a new output directory:
 
@@ -105,9 +126,9 @@ podman run --rm \
   --userns=keep-id \
   --user "$(id -u):$(id -g)" \
   --network none \
-  --volume "${PWD}/examples/generator:/input:ro,Z" \
-  --volume "${PWD}/private:/run/credentials:ro,Z" \
-  --volume "${PWD}/output:/output:Z" \
+  --volume "$workspace/input:/input:ro,Z" \
+  --volume "$workspace/private:/run/credentials:ro,Z" \
+  --volume "$workspace/output:/output:Z" \
   localhost/openldap-declarative-generator:latest \
   --directory /input/directory.yaml \
   --credentials /run/credentials/credentials.yaml \
@@ -115,7 +136,9 @@ podman run --rm \
   --output /output/revision-1
 ```
 
-The output path must not exist. The generator constructs all requested services
+The host parent `$workspace/output` must exist before mounting it; only its
+child `revision-1` (the container's `/output/revision-1`) must not exist.
+The generator constructs all requested services
 in a private staging directory and renames the completed directory atomically.
 Each service directory contains:
 

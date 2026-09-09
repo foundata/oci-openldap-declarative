@@ -37,6 +37,14 @@ die() {
   exit "${exit_code}"
 }
 
+ldap_is_available() {
+  # A successful base-scope lookup proves DN equivalence, regardless of LDIF spelling.
+  ldap_base_result=$(ldapsearch -LLL -Q -Y EXTERNAL \
+    -H "${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}" \
+    -b "${1}" -s base '(objectClass=*)' dn 2>/dev/null) || return 1
+  printf '%s\n' "${ldap_base_result}" | grep -E -q '^dn::? '
+}
+
 remove_verified_snapshot() {
   cleanup_runtime_dir=${1}
   cleanup_snapshot_dir=${cleanup_runtime_dir}/verified-snapshot

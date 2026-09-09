@@ -14,7 +14,7 @@ validate_snapshot_revision() {
   snapshot_manifest_digest=$(sha256sum "${revision_manifest_file}" | cut -d ' ' -f 1) || return "${EXIT_INTERNAL}"
   revision_disposition=new
 
-  if [ ! -e "${revision_state_path}" ]; then
+  if [ ! -e "${revision_state_path}" ] && [ ! -L "${revision_state_path}" ]; then
     return 0
   fi
   if [ ! -f "${revision_state_path}" ] || [ -L "${revision_state_path}" ] || [ ! -r "${revision_state_path}" ]; then
@@ -22,23 +22,19 @@ validate_snapshot_revision() {
     return "${EXIT_INPUT}"
   fi
 
+  # Bound the entire record before shell arithmetic; retain revision-only legacy state.
+  state_size=$(wc -c <"${revision_state_path}") || return "${EXIT_INPUT}"
+  if [ "${state_size}" -gt 82 ] || ! jq -eRs '
+    test("\\A[1-9][0-9]{0,15}( [0-9a-f]{64})?\\n?\\z")
+    and ((split(" ")[0] | tonumber) <= 9007199254740991)
+  ' "${revision_state_path}" >/dev/null 2>&1; then
+    log_error 'Revision state must contain one revision in 1..9007199254740991 and an optional SHA-256 digest'
+    return "${EXIT_INPUT}"
+  fi
   highest_revision=''
   highest_manifest_digest=''
-  unexpected_state_field=''
-  # read reports end of file for a final line without a newline; the value
-  # checks below decide whether the state is usable.
-  IFS=' ' read -r highest_revision highest_manifest_digest unexpected_state_field \
-    <"${revision_state_path}" || true
-  if ! printf '%s\n' "${highest_revision}" | grep -E -q '^[0-9]+$'; then
-    log_error 'Revision state does not contain a non-negative integer'
-    return "${EXIT_INPUT}"
-  fi
-  if [ -n "${unexpected_state_field}" ] \
-    || { [ -n "${highest_manifest_digest}" ] \
-      && ! printf '%s\n' "${highest_manifest_digest}" | grep -E -q '^[0-9a-f]{64}$'; }; then
-    log_error 'Revision state has an invalid manifest digest'
-    return "${EXIT_INPUT}"
-  fi
+  # read returns nonzero for a valid final line without a newline.
+  IFS=' ' read -r highest_revision highest_manifest_digest <"${revision_state_path}" || true
   if [ "${snapshot_revision}" -lt "${highest_revision}" ]; then
     log_error "Snapshot revision ${snapshot_revision} is older than accepted revision ${highest_revision}"
     return "${EXIT_SNAPSHOT}"

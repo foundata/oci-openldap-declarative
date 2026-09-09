@@ -21,12 +21,13 @@ config_file=''
 directory_dump=''
 group_memberships=''
 user_memberships=''
+normalized_memberships=''
 password_values=''
 
 remove_build_artifacts() {
   for build_artifact in \
     "${root_password_input}" "${config_file}" "${directory_dump}" \
-    "${group_memberships}" "${user_memberships}" "${password_values}"; do
+    "${group_memberships}" "${user_memberships}" "${normalized_memberships}" "${password_values}"; do
     if [ -n "${build_artifact}" ] && [ -e "${build_artifact}" ]; then
       unlink "${build_artifact}" || return "${EXIT_INTERNAL}"
     fi
@@ -297,6 +298,7 @@ verify_built_database() {
   directory_dump=$(mktemp "${runtime_dir}/directory.XXXXXX") || return "${EXIT_INTERNAL}"
   group_memberships=$(mktemp "${runtime_dir}/group-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
   user_memberships=$(mktemp "${runtime_dir}/user-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
+  normalized_memberships=$(mktemp "${runtime_dir}/normalized-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
   password_values=$(mktemp "${runtime_dir}/password-values.XXXXXX") || return "${EXIT_INTERNAL}"
 
   if ! slaptest -F "${config_dir}" -u; then
@@ -309,7 +311,8 @@ verify_built_database() {
     return "${EXIT_INTERNAL}"
   fi
 
-  if ! grep -F -q "dn: ${base_dn}" "${directory_dump}"; then
+  pretty_base_dn=$(slapdn -F "${config_dir}" -P "${base_dn}") || return "${EXIT_SNAPSHOT}"
+  if ! grep -F -x -q "dn: ${pretty_base_dn}" "${directory_dump}"; then
     log_error 'Generated directory does not contain the manifest base DN'
     return "${EXIT_SNAPSHOT}"
   fi
@@ -360,12 +363,22 @@ verify_built_database() {
 
   awk '
     /^dn: / { dn = substr($0, 5) }
-    /^member: / { print substr($0, 9) "\t" dn }
-  ' "${directory_dump}" | sort >"${group_memberships}" || return "${EXIT_INTERNAL}"
+    /^member: / { print substr($0, 9) "\n" dn }
+  ' "${directory_dump}" >"${group_memberships}" || return "${EXIT_INTERNAL}"
   awk '
     /^dn: / { dn = substr($0, 5) }
-    /^memberOf: / { print dn "\t" substr($0, 11) }
-  ' "${directory_dump}" | sort >"${user_memberships}" || return "${EXIT_INTERNAL}"
+    /^memberOf: / { print dn "\n" substr($0, 11) }
+  ' "${directory_dump}" >"${user_memberships}" || return "${EXIT_INTERNAL}"
+
+  # Normalize both DNs of each relationship using OpenLDAP's schema-aware rules.
+  for memberships in "${group_memberships}" "${user_memberships}"; do
+    if [ -s "${memberships}" ]; then
+      xargs -r -d '\n' slapdn -F "${config_dir}" -N -- \
+        <"${memberships}" >"${normalized_memberships}" || return "${EXIT_SNAPSHOT}"
+      awk 'NR % 2 { member = $0; next } { print member "\t" $0 }' \
+        "${normalized_memberships}" | sort >"${memberships}" || return "${EXIT_INTERNAL}"
+    fi
+  done
 
   if ! cmp -s "${group_memberships}" "${user_memberships}"; then
     log_error 'member and memberOf attributes must describe the same relationships'

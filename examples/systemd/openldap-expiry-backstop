@@ -18,17 +18,6 @@ main() {
   public_key_file=${3}
   expected_service_id=${4}
 
-  if [ ! -d "${snapshot_directory}" ] || [ -L "${snapshot_directory}" ] \
-    || [ ! -r "${snapshot_directory}" ] || [ ! -x "${snapshot_directory}" ]; then
-    printf 'Snapshot path is not a readable directory: %s\n' "${snapshot_directory}" >&2
-    return 66
-  fi
-  if [ ! -f "${public_key_file}" ] || [ -L "${public_key_file}" ] \
-    || [ ! -r "${public_key_file}" ]; then
-    printf 'Public key is not a readable regular file: %s\n' "${public_key_file}" >&2
-    return 66
-  fi
-
   if ! "${podman_binary}" container exists "${container_name}"; then
     printf 'Container does not exist: %s\n' "${container_name}" >&2
     return 1
@@ -39,6 +28,21 @@ main() {
   if [ "${container_running}" != true ]; then
     printf 'Container is not running: %s\n' "${container_name}" >&2
     return 1
+  fi
+
+  if [ ! -d "${snapshot_directory}" ] || [ -L "${snapshot_directory}" ] \
+    || [ ! -r "${snapshot_directory}" ] || [ ! -x "${snapshot_directory}" ]; then
+    printf 'Snapshot path is not a readable directory: %s; stopping %s\n' \
+      "${snapshot_directory}" "${container_name}" >&2
+    "${podman_binary}" stop --time 10 "${container_name}" >/dev/null || return 1
+    return 66
+  fi
+  if [ ! -f "${public_key_file}" ] || [ -L "${public_key_file}" ] \
+    || [ ! -r "${public_key_file}" ]; then
+    printf 'Public key is not a readable regular file: %s; stopping %s\n' \
+      "${public_key_file}" "${container_name}" >&2
+    "${podman_binary}" stop --time 10 "${container_name}" >/dev/null || return 1
+    return 66
   fi
 
   image_id=$("${podman_binary}" container inspect \

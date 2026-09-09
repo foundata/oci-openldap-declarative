@@ -4,6 +4,10 @@
 
 set -u
 
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+# shellcheck source=scripts/common.sh
+. "${script_dir}/common.sh"
+
 readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
 readonly active_manifest_file="${runtime_dir}/active-manifest.json"
 
@@ -24,9 +28,7 @@ main() {
     return 1
   fi
 
-  if ! ldapsearch -LLL -Q -Y EXTERNAL -H "${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}" \
-    -b "${base_dn}" -s base '(objectClass=*)' dn 2>/dev/null \
-    | grep -F -q "dn: ${base_dn}"; then
+  if ! ldap_is_available "${base_dn}"; then
     printf 'Expected base DN is not readable for snapshot revision %s\n' "${revision}" >&2
     return 1
   fi

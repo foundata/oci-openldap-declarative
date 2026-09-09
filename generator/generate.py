@@ -29,6 +29,10 @@ from yaml.events import AliasEvent
 SERVICE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
 UID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+UUID_NAMESPACE_PATTERN = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}"
+    r"-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
+)
 MAX_YAML_BYTES = 1024 * 1024
 ARGON_MEMORY_COST = 19_456
 ARGON_TIME_COST = 2
@@ -244,12 +248,12 @@ def parse_directory(path: Path) -> Directory:
     )
     if root["format_version"] != 1:
         error("directory YAML format_version must be 1")
-    try:
-        namespace = uuid.UUID(
-            text_value(root["uuid_namespace"], context="uuid_namespace")
+    namespace_text = text_value(root["uuid_namespace"], context="uuid_namespace")
+    if not UUID_NAMESPACE_PATTERN.fullmatch(namespace_text):
+        error(
+            "uuid_namespace must be a hyphenated RFC-variant UUID of version 1 through 5"
         )
-    except ValueError as exc:
-        error(f"uuid_namespace is invalid: {exc}")
+    namespace = uuid.UUID(namespace_text)
     organization = text_value(root["organization"], context="organization", maximum=256)
 
     if not isinstance(root["users"], list):

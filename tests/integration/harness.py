@@ -7,6 +7,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ COMMAND_TIMEOUT = 300
 BUILD_TIMEOUT = 1800
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 OWNER_MARKER = ".openldap-test-owner"
+OWNER_LABEL = "org.openldap-declarative.test-run"
 
 
 def utc_now() -> datetime:
@@ -53,17 +55,21 @@ class Store:
     workspace: Path = field(init=False)
     root: Path = field(init=False)
     runroot: Path = field(init=False)
+    tmpdir: Path = field(init=False)
     storage_conf: Path = field(init=False)
+    containers_conf: Path = field(init=False)
 
     def __post_init__(self) -> None:
         key_input = f"{self.base}/{self.suite}".encode()
         self.run_key = hashlib.sha256(key_input).hexdigest()[:12]
         self.prefix = f"openldap-{self.suite}-{self.run_key}"
-        self.manifest = self.base / f"{self.suite}-resources.md"
+        self.manifest = self.base / f"{self.suite}-resources.jsonl"
         self.workspace = self.base / f"{self.suite}-workspace"
         self.root = self.base / f"{self.suite}-podman-root"
         self.runroot = self.base / f"{self.suite}-podman-runroot"
+        self.tmpdir = self.base / f"{self.suite}-podman-tmp"
         self.storage_conf = self.base / f"{self.suite}-storage.conf"
+        self.containers_conf = self.base / f"{self.suite}-containers.conf"
 
     def create(self) -> None:
         planned = (
@@ -71,18 +77,15 @@ class Store:
             self.workspace,
             self.root,
             self.runroot,
+            self.tmpdir,
             self.storage_conf,
+            self.containers_conf,
         )
         for path in planned:
             if path.exists() or path.is_symlink():
                 pytest.fail(f"refusing to reuse test path: {path}")
         os.umask(0o077)
-        self.manifest.write_text(
-            "# OpenLDAP integration resource manifest\n\n"
-            f"Run key: {self.run_key}\n\n"
-            "Timestamp | Kind | Identifier\n--- | --- | ---\n",
-            encoding="utf-8",
-        )
+        self.record("run", self.run_key)
         self.record("directory", str(self.workspace))
         self.workspace.mkdir(mode=0o700)
         (self.workspace / OWNER_MARKER).write_text(
@@ -90,17 +93,32 @@ class Store:
         )
         self.record("podman-storage", str(self.root))
         self.record("podman-runroot", str(self.runroot))
-        for path in (self.root, self.runroot):
+        self.record("podman-tmpdir", str(self.tmpdir))
+        for path in (self.root, self.runroot, self.tmpdir):
             path.mkdir(mode=0o700)
             (path / OWNER_MARKER).write_text(f"{self.run_key}\n", encoding="utf-8")
         self._label_storage()
         self.storage_conf.write_text(
             "[storage]\n"
             'driver = "overlay"\n'
-            f'graphroot = "{self.root}"\n'
-            f'runroot = "{self.runroot}"\n',
+            f"graphroot = {json.dumps(str(self.root))}\n"
+            f"runroot = {json.dumps(str(self.runroot))}\n",
             encoding="utf-8",
         )
+        self.containers_conf.write_text(
+            "[engine]\n"
+            f"tmp_dir = {json.dumps(str(self.tmpdir))}\n"
+            f"static_dir = {json.dumps(str(self.root / 'libpod'))}\n"
+            f"volume_path = {json.dumps(str(self.root / 'volumes'))}\n"
+            'lock_type = "file"\n',
+            encoding="utf-8",
+        )
+
+    def environment(self) -> dict[str, str]:
+        return {
+            "CONTAINERS_STORAGE_CONF": str(self.storage_conf),
+            "CONTAINERS_CONF_OVERRIDE": str(self.containers_conf),
+        }
 
     def _label_storage(self) -> None:
         if not selinux_enforcing():
@@ -125,43 +143,98 @@ class Store:
 
     def record(self, kind: str, identifier: str) -> None:
         with self.manifest.open("a", encoding="utf-8") as stream:
-            stream.write(f"{iso_timestamp(utc_now())} | {kind} | {identifier}\n")
+            stream.write(
+                json.dumps(
+                    {
+                        "timestamp": iso_timestamp(utc_now()),
+                        "kind": kind,
+                        "identifier": identifier,
+                    }
+                )
+                + "\n"
+            )
 
     def owned(self, path: Path) -> bool:
         marker = path / OWNER_MARKER
-        if not path.is_dir() or path.is_symlink():
+        if path.is_symlink():
+            return False
+        if not path.exists():
             return True
+        if not path.is_dir():
+            return False
         if not marker.is_file() or marker.is_symlink():
             return False
         return marker.read_text(encoding="utf-8").strip() == self.run_key
 
     def inspect_command(self) -> str:
-        return f"podman --root {self.root} --runroot {self.runroot} ps --all"
+        return shlex.join(
+            [
+                "env",
+                *(f"{key}={value}" for key, value in self.environment().items()),
+                "podman",
+                "ps",
+                "--all",
+            ]
+        )
 
     def finish(self, podman_binary: str) -> None:
-        for path in (self.workspace, self.root, self.runroot):
+        paths = (self.workspace, self.root, self.runroot, self.tmpdir)
+        for path in paths:
             if not self.owned(path):
                 pytest.fail(
                     f"refusing to remove path without the run ownership marker: {path}"
                 )
-        subprocess.run(
-            [
-                podman_binary,
-                "--root",
-                str(self.root),
-                "--runroot",
-                str(self.runroot),
-                "system",
-                "reset",
-                "--force",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=COMMAND_TIMEOUT,
+        podman = Podman(self)
+        podman.binary = podman_binary
+        records = [json.loads(line) for line in self.manifest.read_text().splitlines()]
+        containers = {
+            record["identifier"] for record in records if record["kind"] == "container"
+        }
+        volumes = {
+            record["identifier"] for record in records if record["kind"] == "volume"
+        }
+        container_ids = json.loads(podman.output("ps", "--all", "--format", "json"))
+        volume_records = json.loads(podman.output("volume", "ls", "--format", "json"))
+        # Validate every resource before deleting any; names alone do not prove ownership.
+        for container in container_ids:
+            info = json.loads(podman.output("inspect", container["Id"]))[0]
+            if (
+                info["Name"] not in containers
+                or (info["Config"].get("Labels") or {}).get(OWNER_LABEL) != self.run_key
+            ):
+                pytest.fail(f"refusing to remove unowned container: {info['Name']}")
+        for volume in volume_records:
+            if (
+                volume["Name"] not in volumes
+                or (volume.get("Labels") or {}).get(OWNER_LABEL) != self.run_key
+            ):
+                pytest.fail(f"refusing to remove unowned volume: {volume['Name']}")
+        for container in container_ids:
+            podman.run("rm", "--force", "--", container["Id"])
+        for volume in volume_records:
+            podman.run("volume", "rm", "--", volume["Name"])
+        # Podman bind-mounts the overlay directory in this namespace. Unmount only
+        # that owned path before deleting files belonging to mapped container UIDs.
+        podman.run(
+            "unshare",
+            "sh",
+            "-eu",
+            "-c",
+            'if mountpoint -q "$1/overlay"; then umount "$1/overlay"; fi\n'
+            'rm -rf -- "$@"',
+            "cleanup",
+            str(self.root),
+            str(self.workspace),
+            str(self.runroot),
+            str(self.tmpdir),
         )
-        for path in (self.workspace, self.root, self.runroot):
-            shutil.rmtree(path, ignore_errors=True)
+        # Storage shutdown can recreate host-owned lock files after unshare exits.
+        for path in paths:
+            if path.exists():
+                shutil.rmtree(path)
         self.storage_conf.unlink(missing_ok=True)
+        self.containers_conf.unlink(missing_ok=True)
+        self.record("cleanup", "complete")
 
 
 class Podman:
@@ -181,6 +254,11 @@ class Podman:
         timeout: int = COMMAND_TIMEOUT,
         stdin: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        label = f"{OWNER_LABEL}={self.store.run_key}"
+        if arguments[0] in {"run", "create"}:
+            arguments = (arguments[0], "--label", label, *arguments[1:])
+        elif arguments[:2] == ("volume", "create"):
+            arguments = (*arguments[:2], "--label", label, *arguments[2:])
         command = [
             self.binary,
             "--root",
@@ -196,6 +274,7 @@ class Podman:
             text=True,
             check=False,
             timeout=timeout,
+            env={**os.environ, **self.store.environment()},
         )
         if check and completed.returncode != 0:
             pytest.fail(

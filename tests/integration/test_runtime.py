@@ -16,7 +16,14 @@ import pytest
 import testinfra
 
 from tests.integration.conftest import PROJECT, Images
-from tests.integration.harness import Podman, Store, iso_timestamp, sha256_file, utc_now
+from tests.integration.harness import (
+    OWNER_LABEL,
+    Podman,
+    Store,
+    iso_timestamp,
+    sha256_file,
+    utc_now,
+)
 from tests.integration.lifecycle import (
     LDAP_URI,
     LDAPI_URI,
@@ -26,6 +33,7 @@ from tests.integration.lifecycle import (
     wait_until_healthy,
     wait_until_initializing,
 )
+from tests.namespace_cases import NAMESPACE_CASES
 
 pytestmark = pytest.mark.integration
 
@@ -341,24 +349,34 @@ class Runtime:
         document: dict[str, object] = json.loads(completed.stdout)
         return completed.returncode, document
 
-    def run_backstop(self, container: Container, snapshot: Path) -> None:
+    def run_backstop(
+        self,
+        container: Container,
+        snapshot: Path,
+        *,
+        public_key: Path | None = None,
+        expected_status: int = 0,
+    ) -> None:
         environment = {
             **os.environ,
             "PODMAN": str(self.workspace.path / "podman-backstop"),
         }
-        subprocess.run(
+        completed = subprocess.run(
             [
                 str(BACKSTOP),
                 container.name,
                 str(snapshot),
-                str(self.workspace.path / "public/snapshot.pub"),
+                str(public_key or self.workspace.path / "public/snapshot.pub"),
                 "test-service",
             ],
             env=environment,
-            check=True,
+            check=False,
             capture_output=True,
             text=True,
             timeout=180,
+        )
+        assert completed.returncode == expected_status, (
+            completed.stdout + completed.stderr
         )
 
     def assert_valid(self, container: Container) -> None:
@@ -567,7 +585,8 @@ def workspace(podman: Podman, store: Store, images: Images) -> RuntimeWorkspace:
         "#!/usr/bin/env sh\n"
         'if [ "${1:-}" = run ]; then\n'
         "  shift\n"
-        f'  exec "{podman.binary}" run --name "{backstop_container}" "$@"\n'
+        f'  exec "{podman.binary}" run --name "{backstop_container}" '
+        f'--label "{OWNER_LABEL}={store.run_key}" "$@"\n'
         "fi\n"
         f'exec "{podman.binary}" "$@"\n',
         encoding="utf-8",
@@ -676,6 +695,65 @@ def test_valid_snapshot_serves_and_stops_cleanly(
     assert runtime.stop(key_directory) == 0
 
 
+@pytest.mark.parametrize("missing", ["snapshot", "public-key"])
+def test_backstop_stops_when_trust_input_disappears(
+    runtime: Runtime, workspace: RuntimeWorkspace, missing: str
+) -> None:
+    container = runtime.create(f"backstop-missing-{missing}", "valid")
+    runtime.start_healthy(container)
+    runtime.run_backstop(
+        container,
+        workspace.path / ("absent-snapshot" if missing == "snapshot" else "valid"),
+        public_key=workspace.path / "absent-key" if missing == "public-key" else None,
+        expected_status=66,
+    )
+    assert runtime.podman.inspect(container.name, "{{.State.Running}}") == "false"
+
+
+@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
+def test_runtime_namespace_verification_matches_the_public_contract(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    namespace: str,
+    valid: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    snapshot = workspace.copy_snapshot(
+        "valid", f"namespace-{request.node.callspec.indices['namespace']}"
+    )
+    manifest = snapshot / "manifest.json"
+    document = json.loads(manifest.read_text())
+    document["uuid_namespace"] = namespace.lower()
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    workspace.sign_manifest(snapshot)
+    completed = runtime.podman.run_container(
+        "--rm",
+        "--network",
+        "none",
+        "--read-only",
+        "--userns=keep-id:uid=1001,gid=1001",
+        "--user",
+        "1001:1001",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "--tmpfs",
+        "/run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=1777",
+        "--env",
+        "LDAP_EXPECTED_SERVICE_ID=test-service",
+        "--volume",
+        f"{snapshot}:/snapshot:ro,Z",
+        "--volume",
+        f"{workspace.path}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z",
+        "--entrypoint",
+        f"{LIB}/verify-snapshot.sh",
+        runtime.image,
+        check=False,
+    )
+    assert completed.returncode == (0 if valid else 65), (
+        completed.stdout + completed.stderr
+    )
+
+
 @pytest.mark.parametrize("password_file", ["lf-password", "crlf-password"])
 def test_recovery_password_files_bind_the_root_dn(
     runtime: Runtime, password_file: str
@@ -741,9 +819,7 @@ def test_revision_state_rejects_replay_and_conflicts(
         pytest.param("1 {digest}", True, 0, "(exact-replay)", id="exact"),
         pytest.param("1", True, 0, "(legacy-state-migration)", id="legacy"),
         pytest.param("1 {digest}", False, 0, "(exact-replay)", id="unterminated"),
-        pytest.param(
-            "", False, 66, "does not contain a non-negative integer", id="empty"
-        ),
+        pytest.param("", False, 66, "must contain one revision", id="empty"),
         pytest.param(
             "2 {digest}", True, 65, "is older than accepted revision 2", id="lower"
         ),
@@ -751,7 +827,7 @@ def test_revision_state_rejects_replay_and_conflicts(
             "not-a-revision",
             True,
             66,
-            "does not contain a non-negative integer",
+            "must contain one revision",
             id="malformed",
         ),
         pytest.param(
@@ -761,12 +837,45 @@ def test_revision_state_rejects_replay_and_conflicts(
             "was already accepted with different content",
             id="conflict",
         ),
+        pytest.param("9" * 40, True, 66, "must contain one revision", id="overflow"),
+        pytest.param(
+            "9007199254740992", True, 66, "must contain one revision", id="out-of-range"
+        ),
+        pytest.param("0", True, 66, "must contain one revision", id="zero"),
+        pytest.param("01", True, 66, "must contain one revision", id="leading-zero"),
+        pytest.param(
+            "9007199254740991",
+            True,
+            65,
+            "is older than accepted revision",
+            id="maximum",
+        ),
+        pytest.param(
+            "1 {digest}\n2 {digest}",
+            True,
+            66,
+            "must contain one revision",
+            id="extra-record",
+        ),
+        pytest.param(
+            "1\n\n", False, 66, "must contain one revision", id="extra-newline"
+        ),
+        pytest.param(
+            "1 trailing", True, 66, "must contain one revision", id="bad-digest"
+        ),
+        pytest.param(
+            Path("missing"),
+            True,
+            66,
+            "not a readable regular file",
+            id="dangling-symlink",
+        ),
     ],
 )
 def test_preflight_validates_staged_revisions_without_mutating_state(
     runtime: Runtime,
     workspace: RuntimeWorkspace,
-    state_content: str | None,
+    state_content: str | Path | None,
     terminated: bool,
     status: int,
     message: str,
@@ -779,13 +888,14 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
     runtime_dir = workspace.path / f"preflight-runtime-{case_name}"
     runtime_dir.mkdir(mode=0o700)
     state_path = state_dir / "highest-revision"
-    if state_content is not None:
+    before: str | None = None
+    if isinstance(state_content, Path):
+        state_path.symlink_to(state_content)
+    elif state_content is not None:
         content = state_content.format(digest=digest) + ("\n" if terminated else "")
         state_path.write_text(content, encoding="utf-8")
         state_path.chmod(0o644)
-        before: str | None = sha256_file(state_path)
-    else:
-        before = None
+        before = sha256_file(state_path)
 
     completed = runtime.podman.run_container(
         "--rm",
@@ -818,7 +928,9 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
     output = completed.stdout + completed.stderr
     assert completed.returncode == status, output
     assert message in output, output
-    if before is None:
+    if isinstance(state_content, Path):
+        assert state_path.is_symlink() and state_path.readlink() == state_content
+    elif before is None:
         assert not state_path.exists()
     else:
         assert sha256_file(state_path) == before

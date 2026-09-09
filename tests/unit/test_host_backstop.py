@@ -145,3 +145,43 @@ def test_missing_container_is_reported(backstop: Backstop) -> None:
 
     assert result.returncode == 1
     assert result.calls == ["container exists test-directory"]
+
+
+@pytest.mark.parametrize("target", ["snapshot", "public_key"])
+@pytest.mark.parametrize("condition", ["missing", "symlink", "unreadable"])
+def test_invalid_trust_paths_stop_a_running_container(
+    backstop: Backstop, target: str, condition: str
+) -> None:
+    path: Path = getattr(backstop, target)
+    if condition == "unreadable":
+        if os.geteuid() == 0:
+            pytest.skip("root can read permission-restricted inputs")
+        path.chmod(0)
+    else:
+        moved = path.with_name(f"{path.name}-original")
+        path.rename(moved)
+        if condition == "symlink":
+            path.symlink_to(moved)
+    try:
+        result = backstop.run(
+            exists=True, running=True, snapshot_valid=True, healthy=True
+        )
+        assert result.returncode == 66
+        assert result.calls[-1] == STOP_CALL
+        assert HEALTH_CALL not in result.calls
+        assert not any(call.startswith("run ") for call in result.calls)
+    finally:
+        if condition == "unreadable":
+            path.chmod(0o700 if path.is_dir() else 0o600)
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_missing_trust_input_does_not_stop_an_inactive_target(
+    backstop: Backstop, exists: bool
+) -> None:
+    backstop.public_key.unlink()
+    result = backstop.run(
+        exists=exists, running=False, snapshot_valid=False, healthy=False
+    )
+    assert result.returncode == 1
+    assert STOP_CALL not in result.calls

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,10 +12,12 @@ from pathlib import Path
 
 import pytest
 import testinfra
+import yaml
 
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
 from tests.integration.lifecycle import LDAP_URI, wait_until_healthy
+from tests.namespace_cases import NAMESPACE_CASES
 from tests.validate_snapshot_manifest import validate_manifest
 
 pytestmark = pytest.mark.integration
@@ -94,14 +97,17 @@ class Generator:
         self, output_name: str, *arguments: str
     ) -> subprocess.CompletedProcess[str]:
         return self.run(
-            f"{EXAMPLES}:/input:ro,Z", "/input/directory.yaml", output_name, *arguments
+            f"{self.path / 'examples'}:/input:ro,Z",
+            "/input/directory.yaml",
+            output_name,
+            *arguments,
         )
 
     def generate_fixture(
         self, fixture: str, output_name: str
     ) -> subprocess.CompletedProcess[str]:
         return self.run(
-            f"{FIXTURES}:/input:ro,Z",
+            f"{self.path / 'fixtures'}:/input:ro,Z",
             f"/input/{fixture}",
             output_name,
             "--service",
@@ -125,6 +131,8 @@ def generator(podman: Podman, store: Store, images: Images) -> Generator:
     path = store.workspace / "generator"
     path.mkdir()
     prepared = Generator(podman, image, path)
+    shutil.copytree(EXAMPLES, path / "examples")
+    shutil.copytree(FIXTURES, path / "fixtures")
     prepared.credentials.mkdir()
     prepared.output.mkdir()
     (prepared.credentials / "credentials.yaml").write_bytes(
@@ -433,6 +441,55 @@ class RuntimeService:
         return self.podman.exec_output(
             self.name, "awk", "{ print $1 }", "/state/highest-revision"
         ).strip()
+
+
+@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
+def test_generator_namespace_validation_precedes_signing(
+    generator: Generator, namespace: str, valid: bool, request: pytest.FixtureRequest
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["uuid_namespace"] = namespace
+    name = f"namespace-{request.node.callspec.indices['namespace']}"
+    result = generator.generate_variant(name, yaml.safe_dump(document))
+    assert result.returncode == (0 if valid else 2), result.stdout + result.stderr
+    if valid:
+        manifest = generator.output / name / "example-app/manifest.json"
+        validate_manifest(SCHEMA, manifest)
+        assert json.loads(manifest.read_text())["uuid_namespace"] == namespace.lower()
+    else:
+        assert "uuid_namespace" in result.stderr
+        assert not (generator.output / name).exists()
+
+
+@pytest.mark.parametrize(
+    "base_dn",
+    [
+        "DC=example-app,dc=services,dc=example,dc=org",
+        "DC=Example-App, DC=Services,DC=Example,DC=Org",
+        r"dc=example\2dapp,dc=services,dc=example,dc=org",
+    ],
+)
+def test_accepted_base_dns_start_authenticate_and_report_healthy(
+    podman: Podman,
+    store: Store,
+    images: Images,
+    generator: Generator,
+    base_dn: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    image = images.require_runtime()
+    name = f"base-dn-{request.node.callspec.indices['base_dn']}"
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["services"][0]["base_dn"] = base_dn
+    result = generator.generate_variant(name, yaml.safe_dump(document))
+    assert result.returncode == 0, result.stderr
+    service = RuntimeService(podman, image, generator, f"{store.prefix}-{name}")
+    service.start(generator.output / name / "example-app")
+    assert service.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
+    status = podman.exec(service.name, "/usr/local/lib/openldap-declarative/status.sh")
+    assert json.loads(status.stdout)["ldap"] == "available"
+    assert json.loads(status.stdout)["state"] == "healthy"
+    podman.stop(service.name)
 
 
 @pytest.fixture(scope="module")

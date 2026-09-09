@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import uuid
@@ -11,7 +12,11 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import yaml
 from argon2 import PasswordHasher
+from jsonschema import Draft202012Validator
+
+from tests.namespace_cases import NAMESPACE_CASES
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples/generator"
@@ -49,6 +54,29 @@ def test_base_dn_is_canonicalized(generate: ModuleType) -> None:
     )
 
     assert dn == "DC=example-app,dc=services,dc=example,dc=org"
+
+
+@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
+def test_namespace_parser_and_public_schemas_agree(
+    generate: ModuleType, tmp_path: Path, namespace: str, valid: bool
+) -> None:
+    directory = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    directory["uuid_namespace"] = namespace
+    source = tmp_path / "directory.yaml"
+    source.write_text(yaml.safe_dump(directory), encoding="utf-8")
+    if valid:
+        assert str(generate.parse_directory(source).namespace) == namespace.lower()
+    else:
+        with pytest.raises(generate.ConfigurationError, match="uuid_namespace"):
+            generate.parse_directory(source)
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    assert Draft202012Validator(schema).is_valid(directory) is valid
+    schema = json.loads((ROOT / "schema/snapshot-manifest-v1.schema.json").read_text())
+    manifest = json.loads(
+        (ROOT / "tests/fixtures/snapshot-manifest-valid.json").read_text()
+    )
+    manifest["uuid_namespace"] = namespace.lower()
+    assert Draft202012Validator(schema).is_valid(manifest) is valid
 
 
 @pytest.mark.parametrize(
