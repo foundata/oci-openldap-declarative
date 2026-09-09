@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from argon2 import PasswordHasher
 from jsonschema import Draft202012Validator
 
 from tests.namespace_cases import NAMESPACE_CASES
+from tests.password_hash_cases import HASH_CASES, VALID_HASH
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples/generator"
@@ -219,6 +221,42 @@ def test_password_hashes_use_the_documented_argon2id_parameters(
 @pytest.fixture(scope="module")
 def seeded_hash(generate: ModuleType) -> str:
     return str(generate.hash_password("TEST-ONLY-seeded-password"))
+
+
+@pytest.mark.parametrize(("verifier", "valid"), HASH_CASES)
+def test_generator_and_runtime_password_hash_contract(
+    generate: ModuleType, tmp_path: Path, verifier: str, valid: bool
+) -> None:
+    if valid:
+        assert (
+            generate.validate_password_hash(verifier, context="credential") == verifier
+        )
+    else:
+        with pytest.raises(generate.ConfigurationError) as raised:
+            generate.validate_password_hash(verifier, context="credential")
+        assert not verifier or verifier not in str(raised.value)
+
+    # Each LDIF value is one record; the importer separately rejects embedded LF/NUL.
+    if "\n" in verifier or "\x00" in verifier:
+        return
+    values = tmp_path / "hashes"
+    values.write_text(VALID_HASH + "\n" + verifier + "\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            "sh",
+            "-c",
+            '. "$1"; validate_password_hashes "$2"',
+            "hash-validation",
+            str(ROOT / "scripts/common.sh"),
+            str(values),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == (0 if valid else 1), result.stdout + result.stderr
+    assert not result.stdout and not result.stderr
 
 
 @pytest.mark.parametrize("kind", ["hash", "hash-file", "plaintext-file"])

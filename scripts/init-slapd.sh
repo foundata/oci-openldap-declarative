@@ -332,31 +332,37 @@ verify_built_database() {
 
   while IFS= read -r password_line; do
     case "${password_line}" in
+      'userPassword:')
+        log_error 'Every userPassword must use a valid Argon2id verifier'
+        return "${EXIT_SNAPSHOT}"
+        ;;
       'userPassword: '*)
         printf '%s\n' "${password_line#userPassword: }" >>"${password_values}" || return "${EXIT_INTERNAL}"
         ;;
       'userPassword:: '*)
         encoded_password=${password_line#userPassword:: }
         decoded_password=$(printf '%s' "${encoded_password}" | base64 --decode) || return "${EXIT_SNAPSHOT}"
+        # Preserve record boundaries and reject bytes lost by shell substitution.
+        case "${decoded_password}" in
+          *[!A-Za-z0-9+/{}\$=,]*)
+            log_error 'Every userPassword must use a valid Argon2id verifier'
+            return "${EXIT_SNAPSHOT}"
+            ;;
+          *) ;;
+        esac
+        reencoded_password=$(printf '%s' "${decoded_password}" | base64 --wrap=0) || return "${EXIT_INTERNAL}"
+        if [ "${reencoded_password}" != "${encoded_password}" ]; then
+          log_error 'Every userPassword must use a valid Argon2id verifier'
+          return "${EXIT_SNAPSHOT}"
+        fi
         printf '%s\n' "${decoded_password}" >>"${password_values}" || return "${EXIT_INTERNAL}"
         ;;
       *) ;;
     esac
   done <"${directory_dump}"
 
-  # Dollar signs in the next expression are literal Argon2 separators.
-  # shellcheck disable=SC2016
-  if grep -E -v -q '^\{ARGON2\}\$argon2id\$v=19\$m=[0-9]+,t=[0-9]+,p=[0-9]+\$[^$]+\$[^$]+$' \
-    "${password_values}"; then
+  if ! validate_password_hashes "${password_values}"; then
     log_error 'Every userPassword must use a valid Argon2id verifier'
-    return "${EXIT_SNAPSHOT}"
-  fi
-
-  # Dollar signs in the next expression are literal Argon2 separators.
-  # shellcheck disable=SC2016
-  if ! sed -n 's/^{ARGON2}\$argon2id\$v=19\$m=\([0-9][0-9]*\),t=\([0-9][0-9]*\),p=\([0-9][0-9]*\)\$.*/\1 \2 \3/p' \
-    "${password_values}" | awk '$1 < 19456 || $2 < 2 || $3 < 1 { invalid = 1 } END { exit invalid }'; then
-    log_error 'Every Argon2id verifier must use at least m=19456,t=2,p=1'
     return "${EXIT_SNAPSHOT}"
   fi
 

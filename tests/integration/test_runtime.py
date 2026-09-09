@@ -10,10 +10,12 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
+from io import BytesIO, StringIO
 from pathlib import Path
 
 import pytest
 import testinfra
+from ldif import LDIFRecordList, LDIFWriter
 
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import (
@@ -34,6 +36,7 @@ from tests.integration.lifecycle import (
     wait_until_initializing,
 )
 from tests.namespace_cases import NAMESPACE_CASES
+from tests.password_hash_cases import HASH_CASES
 
 pytestmark = pytest.mark.integration
 
@@ -243,6 +246,7 @@ class Runtime:
         transport: str = "ldap",
         key_mode: str = "file",
         extra_environment: str = "LDAP_TLS_CA_FILE=/tls/ca.pem",
+        extra_arguments: tuple[str, ...] = (),
     ) -> Container:
         workspace = self.workspace.path
         name = f"{self.prefix}-{test_name}"
@@ -301,6 +305,7 @@ class Runtime:
             f"{workspace}/admin:/run/credentials/admin:ro,Z",
             "--volume",
             f"{workspace}/tls:/tls:ro,Z",
+            *extra_arguments,
             self.image,
         )
         return Container(name, runtime_volume, state)
@@ -380,7 +385,12 @@ class Runtime:
         )
 
     def preflight(
-        self, snapshot: Path, state_dir: Path, runtime_dir: Path
+        self,
+        snapshot: Path,
+        state_dir: Path,
+        runtime_dir: Path,
+        *,
+        extra_arguments: tuple[str, ...] = (),
     ) -> subprocess.CompletedProcess[str]:
         return self.podman.run_container(
             "--rm",
@@ -408,6 +418,7 @@ class Runtime:
             f"{state_dir}:/existing-state:ro,Z",
             "--entrypoint",
             f"{LIB}/preflight-snapshot.sh",
+            *extra_arguments,
             self.image,
             "/candidate",
             "/keys/snapshot.pub",
@@ -1090,6 +1101,163 @@ def test_preflight_imports_candidates_without_touching_active_runtime(
             == accepted
         )
     assert runtime.stop(active) == 0
+
+
+@pytest.mark.parametrize(("verifier", "valid"), HASH_CASES)
+def test_signed_password_hash_contract(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    verifier: str,
+    valid: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    name = f"hash-{request.node.callspec.id}"
+    candidate = workspace.create_snapshot(name, 2, 30 * MINUTES, 60 * MINUTES)
+
+    def edit(content: str) -> str:
+        parser = LDIFRecordList(BytesIO(content.encode()))
+        parser.parse()
+        output = StringIO()
+        writer = LDIFWriter(output, cols=1000)
+        for dn, attributes in parser.all_records:
+            if dn == TEST_USER_DN:
+                attributes["userPassword"] = [verifier.encode()]
+            writer.unparse(dn, attributes)
+        return output.getvalue()
+
+    workspace.modify_ldif(candidate, edit)
+    state_dir = workspace.path / f"{name}-state"
+    state_dir.mkdir(mode=0o700)
+    state = state_dir / "highest-revision"
+    state.write_text("1\n", encoding="utf-8")
+    runtime_dir = workspace.path / f"{name}-runtime"
+    runtime_dir.mkdir(mode=0o700)
+    result = runtime.preflight(candidate, state_dir, runtime_dir)
+    output = result.stdout + result.stderr
+    assert result.returncode == (0 if valid else 65), output
+    assert state.read_text() == "1\n"
+    assert not list(runtime_dir.iterdir())
+    assert not verifier or verifier not in output
+
+    container = runtime.create(name, name)
+    if valid:
+        runtime.start_healthy(container)
+        # The corpus validates format, including high costs; never hash with it.
+        assert runtime.whoami(container, APP_DN, "test-bind-password").returncode == 0
+        assert runtime.stop(container) == 0
+    else:
+        runtime.expect_exit(container, 65, "valid Argon2id verifier")
+        logs = runtime.podman.logs(container.name)
+        assert "Starting slapd" not in logs
+        assert not verifier or verifier not in logs
+        runtime.podman.run_container(
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "sh",
+            "--volume",
+            f"{container.state_volume}:/state:ro",
+            workspace.image,
+            "-c",
+            "test ! -e /state/highest-revision",
+        )
+
+
+@pytest.mark.parametrize("operation", ["startup", "preflight"])
+@pytest.mark.parametrize("offset", [0, 1])
+def test_expiry_at_initialization_completion_preserves_revision(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    operation: str,
+    offset: int,
+) -> None:
+    name = f"post-import-expiry-{operation}-{offset}"
+    candidate = workspace.create_snapshot(name, 2, 30 * MINUTES, 60 * MINUTES)
+    hooks = workspace.path / f"{name}-hooks"
+    hooks.mkdir(mode=0o755)
+    workspace.image_tool(
+        "cp", f"{LIB}/init-slapd.sh", f"/work/{hooks.name}/real-init.sh"
+    )
+    initializer = hooks / "init-slapd.sh"
+    initializer.write_text(
+        "#!/usr/bin/env sh\nset -eu\n"
+        f'"{LIB}/real-init.sh"\n'
+        f"jq -r '(.expires_at | fromdateiso8601) + {offset}' "
+        '"${LDAP_RUNTIME_DIR}/verified-manifest.json" >"${LDAP_RUNTIME_DIR}/test-now"\n'
+        "printf 'TEST: initialization completed; advancing the test clock\\n'\n",
+        encoding="utf-8",
+    )
+    clock = hooks / "date"
+    clock.write_text(
+        "#!/usr/bin/env sh\n"
+        'if [ "$*" = "-u +%s" ] && [ -f "${LDAP_RUNTIME_DIR}/test-now" ]; then\n'
+        '  exec cat "${LDAP_RUNTIME_DIR}/test-now"\n'
+        "fi\n"
+        'exec /usr/bin/date "$@"\n',
+        encoding="utf-8",
+    )
+    initializer.chmod(0o755)
+    clock.chmod(0o755)
+    arguments = (
+        "--volume",
+        f"{hooks}/real-init.sh:{LIB}/real-init.sh:ro,z",
+        "--volume",
+        f"{initializer}:{LIB}/init-slapd.sh:ro,z",
+        "--volume",
+        f"{clock}:/usr/local/bin/date:ro,z",
+    )
+    old = runtime.create(f"{name}-old", "valid")
+    runtime.start_healthy(old)
+    accepted = runtime.podman.exec_output(old.name, "cat", "/state/highest-revision")
+    assert runtime.stop(old) == 0
+
+    if operation == "startup":
+        container = runtime.create(
+            name,
+            name,
+            state_volume=old.state_volume,
+            extra_arguments=arguments,
+        )
+        runtime.expect_exit(container, 78, "Snapshot has expired")
+        output = runtime.podman.logs(container.name)
+        result = runtime.podman.run_container(
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "sh",
+            "--volume",
+            f"{container.state_volume}:/state:ro",
+            "--volume",
+            f"{container.runtime_volume}:/runtime:ro",
+            workspace.image,
+            "-c",
+            "test ! -e /runtime/active-manifest.json "
+            "&& test ! -e /runtime/slapd.pid && cat /state/highest-revision",
+        )
+        assert result.stdout == accepted
+    else:
+        state_dir = workspace.path / f"{name}-state"
+        state_dir.mkdir(mode=0o700)
+        state = state_dir / "highest-revision"
+        state.write_text(accepted, encoding="utf-8")
+        runtime_dir = workspace.path / f"{name}-runtime"
+        runtime_dir.mkdir(mode=0o700)
+        result = runtime.preflight(
+            candidate,
+            state_dir,
+            runtime_dir,
+            extra_arguments=arguments,
+        )
+        output = result.stdout + result.stderr
+        assert result.returncode == 78, output
+        assert "Snapshot has expired" in output
+        assert state.read_text() == accepted
+        assert not list(runtime_dir.iterdir())
+
+    assert "TEST: initialization completed" in output
+    assert "Starting slapd" not in output
 
 
 @dataclass(frozen=True)

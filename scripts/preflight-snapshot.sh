@@ -53,12 +53,7 @@ main() {
   "${script_dir}/verify-snapshot.sh" || return $?
   validate_snapshot_revision "${preflight_workspace}/verified-manifest.json" "${revision_state_file}" || return $?
   "${script_dir}/init-slapd.sh" || return $?
-  expires_epoch=$(jq -r '.expires_at | fromdateiso8601' "${preflight_workspace}/verified-manifest.json") || return "${EXIT_INTERNAL}"
-  current_epoch=$(date -u +%s) || return "${EXIT_INTERNAL}"
-  if [ "${current_epoch}" -ge "${expires_epoch}" ]; then
-    log_error 'Snapshot expired during offline preflight'
-    return "${EXIT_EXPIRED}"
-  fi
+  check_snapshot_expiry "${preflight_workspace}/verified-manifest.json" || return $?
   log_info "Preflight accepted snapshot revision ${snapshot_revision} (${revision_disposition}); manifest sha256:${snapshot_manifest_digest}"
   return 0
 }

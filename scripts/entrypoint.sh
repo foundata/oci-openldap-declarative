@@ -272,6 +272,7 @@ main() {
     return "${initialization_status}"
   fi
   remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove verified snapshot data'
+  check_snapshot_expiry "${verified_manifest_file}" || return $?
   record_snapshot_revision "${verified_manifest_file}" "${revision_state_file}" \
     || die "${EXIT_INTERNAL}" 'Cannot record the accepted snapshot revision'
   cp "${verified_manifest_file}" "${runtime_dir}/active-manifest.json" || die "${EXIT_INTERNAL}" 'Cannot record active snapshot metadata'
