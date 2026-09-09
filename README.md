@@ -14,6 +14,7 @@ the full design, its security assumptions and the alternatives it rejects.
 - [Features](#features)
 - [Usage](#usage)
   - [Generate a snapshot](#usage-generate-snapshot)
+  - [Credential sources and pre-generated hashes](#usage-credentials)
   - [Run with rootless Podman](#usage-rootless-podman)
 - [Runtime inputs](#runtime-inputs)
 - [Snapshot lifecycle](#snapshot-lifecycle)
@@ -31,8 +32,8 @@ the full design, its security assumptions and the alternatives it rejects.
   once in YAML; a generator turns that declaration into deterministic LDAP
   identifiers and a signed, expiring snapshot for one application.
 - **Disposable, read-only runtime:** the local database is rebuilt from the
-  snapshot on every restart; LDAP writes are not an administration
-  interface.
+  snapshot on every restart; normal LDAP accounts cannot write. Explicit
+  recovery access is privileged and is not a persistent administration interface.
 - **Minimal runtime attack surface:** the runtime image contains OpenLDAP,
   Argon2, LDAP clients and distribution utilities, including the shell, jq,
   minisign and OpenSSL. It has no compiler or Python generator stack. The
@@ -70,13 +71,15 @@ The generator accepts two strict YAML documents:
 
 - identity and authorization data, such as
   [`examples/generator/directory.yaml`](examples/generator/directory.yaml);
-- paths to credential files, such as
+- credential sources, such as
   [`examples/generator/credentials.yaml.example`](examples/generator/credentials.yaml.example).
 
-Credential values are never accepted inside YAML or on the command line. Each
-referenced file must be a regular, non-symlink file readable only by its owner
-and must contain exactly one non-empty UTF-8 line. A per-service password
-overrides a user's default password for that service.
+Plaintext passwords are accepted only through files, never as YAML values or
+command-line arguments. Pre-generated Argon2id hashes can come from files or
+inline YAML values; see [credential sources](#usage-credentials). Each referenced
+file must be a regular, non-symlink file accessible only to its owner and contain
+exactly one non-empty UTF-8 line (at most 4096 bytes, optional LF or CRLF ending).
+A per-service credential overrides a user's default credential for that service.
 
 The published schemas are:
 
@@ -89,10 +92,10 @@ Schema alone cannot express. It rejects duplicate YAML keys, aliases, unknown
 fields, invalid DNs, duplicate LDAP names, dangling memberships, missing
 credentials, and ambiguous output paths.
 
-Every service declares the same policy maximums through `soft_ttl_seconds` and
+Every service declares its own policy maximums through `soft_ttl_seconds` and
 `hard_ttl_seconds`, plus an explicit `expiry_offset_seconds` from 0 through
 86400. The offset must be smaller than the soft TTL and is subtracted from both
-deadlines, so staggering can only expire a service earlier and always preserves
+service deadlines, so staggering can only expire it earlier and preserves
 `soft_expires_at < expires_at`. All services generated in one invocation use the
 same controlled `generated_at` value.
 
@@ -114,12 +117,12 @@ install -m 0600 examples/generator/credentials.yaml.example \
   "$workspace/private/credentials.yaml"
 ```
 
-Create the password files referenced by `credentials.yaml` in `$workspace/private` and
+Create the credential files referenced by `credentials.yaml` in `$workspace/private` and
 keep every file at mode `0600`. The example names are placeholders, not default
 credentials. Paths beginning with `/run/credentials/` refer to these files inside
 the container. Keep using the same shell so `$workspace` remains set.
 
-Then generate a new output directory:
+Then generate a new output directory for `example-app`:
 
 ```sh
 podman run --rm \
@@ -133,11 +136,14 @@ podman run --rm \
   --directory /input/directory.yaml \
   --credentials /run/credentials/credentials.yaml \
   --signing-key /run/credentials/snapshot.key \
+  --service example-app \
   --output /output/revision-1
 ```
 
 The host parent `$workspace/output` must exist before mounting it; only its
 child `revision-1` (the container's `/output/revision-1`) must not exist.
+Omitting `--service` generates every service in the directory YAML. Repeat
+`--service ID` to select several services.
 The generator constructs all requested services
 in a private staging directory and renames the completed directory atomically.
 Each service directory contains:
@@ -154,6 +160,83 @@ from the immutable source ID. The same user therefore has the same `entryUUID`
 in every service and after every rebuild. Disabled users are omitted. Static
 `member` and `memberOf` values are emitted together because OpenLDAP overlays do
 not run during offline import.
+Groups with no selected active members are omitted, including groups whose
+members are all disabled. A user does not need any group: add the user's
+immutable ID to a service's `users` list to select them directly. There is no
+implicit "Domain Users" group; a group-less user has no `memberOf` attribute.
+
+
+### Credential sources and pre-generated hashes<a id="usage-credentials"></a>
+
+These keys belong in the private credentials YAML, not the directory YAML:
+
+| Source | User default | Per-service user overrides (map of service IDs) | Service bind account |
+| ------ | ------------ | ---------------------------------------------- | -------------------- |
+| Plaintext file | `password_file` | `service_password_files` | `bind_password_file` |
+| Hash file | `password_hash_file` | `service_password_hash_files` | `bind_password_hash_file` |
+| Inline hash value | `password_hash` | `service_password_hashes` | `bind_password_hash` |
+
+Choose at most one default source per user and exactly one source per bind
+account. Override maps can mix source types for different services, but cannot
+define the same service twice. An override wins over the default regardless of
+source type. Users may have only overrides and no default.
+
+Plaintext files are hashed with a new random salt on generation. Hash sources
+are validated and copied unchanged, never hashed again. A hash-looking value
+in a `password_file` is still treated as a literal plaintext password; select
+the appropriate hash field explicitly.
+
+Supported hashes use OpenLDAP's complete `{ARGON2}$argon2id$v=19$...` encoding,
+with `m>=19456` KiB, `t>=2`, `p>=1`, at least 16 salt bytes and 32 digest bytes,
+and canonical unpadded base64. Other schemes, weak parameters and malformed
+values are rejected. Generate a fresh random salt for each new password.
+Stronger parameters are allowed, but benchmark their memory, CPU and concurrent
+bind cost against the target runtime limits before deployment.
+
+To pre-generate a hash, use the runtime image's native OpenLDAP tool. In the
+same Bash terminal where `$workspace` was prepared above:
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  umask 077
+  read -r -s -p 'Password: ' password
+  printf '\n' >&2
+  printf '%s' "$password" |
+    podman run --rm -i --network none \
+      --entrypoint slappasswd localhost/openldap-declarative:latest \
+      -o module-path=/usr/lib/ldap \
+      -o 'module-load=argon2 m=19456 t=2 p=1' \
+      -h '{ARGON2}' -T /dev/stdin \
+      > "$workspace/private/person-0001-example-app.hash"
+  unset password
+)
+```
+
+The password is prompted without echo and passed through stdin, not the process
+arguments or environment. Repeat with a different output name for each user or
+bind-account password. Replace the corresponding plaintext source in
+`$workspace/private/credentials.yaml`, for example:
+
+```yaml
+users:
+  person-0001:
+    service_password_hash_files:
+      example-app: "/run/credentials/person-0001-example-app.hash"
+```
+
+For an inline value, replace that map with `service_password_hashes` and set
+`example-app` to the entire generated verifier in single quotes. Likewise,
+`password_hash: 'COMPLETE_VERIFIER'` sets a user's default, and
+`bind_password_hash: 'COMPLETE_VERIFIER'` sets a service bind credential.
+`COMPLETE_VERIFIER` is a placeholder, not a usable credential.
+
+Hash files and credentials YAML containing inline hashes must have no group or
+other permission bits, normally mode `0600`. Hashes remain sensitive offline
+cracking targets: keep them outside the checkout and out of logs, image layers
+and application access. Pre-generation removes the generator's need for the
+plaintext password; it does not remove the risk of distributing verifiers.
 
 
 ### Run with rootless Podman<a id="usage-rootless-podman"></a>
@@ -224,7 +307,7 @@ may not silently redefine signed values.
 | `LDAP_REVISION_STATE_FILE`      | `/state/highest-revision`              | Highest accepted revision; keep its volume across container replacement. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_FILE` | `/run/credentials/snapshot-public-key` | One minisign verification key. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`  | none                                   | Directory of `*.pub` verification keys for rotation; mutually exclusive with the file input. |
-| `LDAP_ADMIN_PASSWORD_FILE`      | none                                   | Optional recovery root password file. Avoid in normal operation. |
+| `LDAP_ADMIN_PASSWORD_FILE`      | none                                   | Optional plaintext recovery root password file. Avoid in normal operation. |
 | `LDAP_ADMIN_PASSWORD`           | none                                   | Deprecated direct secret; rejected when the file form is also set. |
 | `LDAP_BASE_DN`                  | none                                   | Compatibility input; if set, must equal the manifest. |
 | `LDAP_DOMAIN`                   | none                                   | Deprecated compatibility input; derived DN must equal the manifest. |
@@ -241,15 +324,24 @@ public key. Public-key symlinks and empty key directories are rejected.
 There is no unsigned mode, empty-password mode, ignored-expiry switch, or
 fail-open import path in the release image.
 
+Without an explicit recovery password, the runtime does not generate one or
+configure `olcRootPW`. Setting `LDAP_ADMIN_PASSWORD_FILE` enables
+`cn=admin,<base_dn>` as a privileged recovery identity: it bypasses ordinary ACLs,
+can write LDAP data and can read password hashes. Never give it to applications.
+Recovery edits disappear on rebuild; update the authoritative inputs and issue
+a new revision for persistent changes. Remove the recovery input and restart
+when recovery is finished.
+
 The runtime accepts at most 32 LDIF files and 16 MiB of LDIF data; manifests are
 limited to 1 MiB and detached signatures to 16 KiB. These are defensive bounds,
 not capacity targets. The directory is intended to remain far smaller.
 
 ## Snapshot lifecycle<a id="snapshot-lifecycle"></a>
 
-For every authorization, group, password, or identity change:
+For every authorization, group, password or identity change, and every scheduled
+renewal before expiry (even with unchanged users):
 
-1. change the authoritative YAML and credential source;
+1. change the authoritative YAML and credential source when needed;
 2. increase the affected service revision;
 3. generate and sign a complete new snapshot;
 4. transfer it to a private staging location on the target VM;
@@ -257,6 +349,18 @@ For every authorization, group, password, or identity change:
 6. atomically switch the active snapshot only after preflight exits `0`;
 7. restart or recreate the Quadlet service;
 8. verify the active revision and application login behavior.
+
+Increase the revision for **every selected service** on each new generation.
+New timestamps and, for plaintext sources, new salts change the signed content;
+reusing a revision is rejected even when the identities are unchanged. Seeded
+hashes do not remove the revision requirement. Replaying the exact existing
+signed artifact is allowed but does not extend its lifetime.
+
+For example, change only `example-app`'s `revision` from `1` to `2` in
+`$workspace/input/directory.yaml`, then repeat the generation command with
+`--service example-app --output /output/revision-2`. Deploy only
+`$workspace/output/revision-2/example-app`. If generating and deploying all
+services, increment every service's revision, not just the changed one.
 
 The future Ansible role invokes the candidate image without a listener, mounting
 the staged snapshot, verification key and existing state read-only, and a fresh
@@ -269,12 +373,17 @@ private writable `/run/openldap` path:
 
 Exit `0` accepts a new revision, an exact revision/digest replay, or legacy
 revision-only state that the runtime will migrate after successful import. Exit
-`65` rejects rollback or same-revision/different-content; `66` rejects malformed
-state or inputs; `70` reports an internal failure; and `78` reports expiry. The
-preflight verifies signature, service ID, timestamps and file digests before the
-revision pair. It never mutates the state file or active snapshot. The
-deployment role remains responsible for the subsequent atomic path switch and
-restart.
+`65` rejects invalid snapshot data, rollback or same-revision/different-content;
+`66` rejects malformed state or inputs; `70` reports an internal failure; and
+`78` reports expiry. Preflight verifies signature, service ID, timestamps,
+file digests and the revision pair, then reuses the runtime's offline initializer
+to import the LDIF and validate base DN, UUIDs, password verifiers and reciprocal
+memberships.
+It builds in a private subdirectory, deletes candidate artifacts on exit, never
+opens a listener and never mutates the state file or active snapshot. Supply
+the target TLS configuration and mounted certificates too when preflighting an
+LDAPS deployment. The deployment role remains responsible for the subsequent
+atomic path switch and restart.
 
 The container copies the signed manifest and LDIF into private runtime storage,
 verifies those copied bytes, constructs `cn=config` and MDB offline, validates

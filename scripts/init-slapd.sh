@@ -114,10 +114,6 @@ prepare_root_password() {
       return "${EXIT_INTERNAL}"
     fi
     unset LDAP_ADMIN_PASSWORD
-  else
-    if ! openssl rand -hex 32 >"${root_password_input}"; then
-      return "${EXIT_INTERNAL}"
-    fi
   fi
 
   if [ ! -s "${root_password_input}" ]; then
@@ -252,17 +248,20 @@ write_base_configuration() {
       'olcDatabase: {1}mdb' \
       "olcDbDirectory: ${data_dir}" \
       "olcSuffix: ${base_dn}" \
-      "olcRootDN: cn=admin,${base_dn}" \
-      "olcRootPW: ${root_password_hash}" \
+      "olcRootDN: cn=admin,${base_dn}"
+    if [ -n "${root_password_hash}" ]; then
+      printf 'olcRootPW: %s\n' "${root_password_hash}"
+    fi
+    printf '%s\n' \
       'olcDbIndex: objectClass eq' \
       'olcDbIndex: cn,uid eq' \
       'olcDbIndex: mail eq,sub' \
       'olcDbIndex: member,memberOf eq' \
       'olcDbIndex: entryUUID eq' \
       'olcDbMaxSize: 67108864' \
-      "olcAccess: {0}to attrs=userPassword by dn.exact=cn=admin,${base_dn} manage by self auth by anonymous auth by * none" \
-      "olcAccess: {1}to attrs=entry,children,objectClass,entryUUID,dc,o,ou,uid,cn,sn,givenName,displayName,mail,member,memberOf by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by users read by * none" \
-      "olcAccess: {2}to * by dn.exact=cn=admin,${base_dn} manage by dn.exact=${external_identity} read by * none"
+      "olcAccess: {0}to attrs=userPassword by self auth by anonymous auth by * none" \
+      "olcAccess: {1}to attrs=entry,children,objectClass,entryUUID,dc,o,ou,uid,cn,sn,givenName,displayName,mail,member,memberOf by dn.exact=${external_identity} read by users read by * none" \
+      "olcAccess: {2}to * by dn.exact=${external_identity} read by * none"
   } >>"${config_file}" || return "${EXIT_INTERNAL}"
 
   return 0
@@ -399,8 +398,11 @@ main() {
   base_dn=$(jq -r '.base_dn' "${verified_manifest_file}") || die "${EXIT_INTERNAL}" 'Cannot read the verified base DN'
   validate_compatibility_inputs "${base_dn}" || exit $?
   reset_runtime_database || exit $?
-  prepare_root_password || exit $?
-  root_password_hash=$(hash_root_password) || exit $?
+  root_password_hash=''
+  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] || [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+    prepare_root_password || exit $?
+    root_password_hash=$(hash_root_password) || exit $?
+  fi
   config_file=$(mktemp "${runtime_dir}/config.XXXXXX") || die "${EXIT_INTERNAL}" 'Cannot create the configuration input'
 
   write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}" || exit $?

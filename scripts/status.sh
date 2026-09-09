@@ -53,7 +53,7 @@ write_status() {
     }'
 }
 
-main() {
+report_status() {
   if [ ! -f "${active_manifest_file}" ] \
     || [ -L "${active_manifest_file}" ] \
     || [ ! -r "${active_manifest_file}" ]; then
@@ -63,13 +63,18 @@ main() {
 
   current_epoch=$(date -u +%s) || return 2
   service_id=$(read_manifest_field service_id) || return 2
-  revision=$(jq -er '.revision | numbers' "${active_manifest_file}") || return 2
+  revision=$(jq -er '.revision | numbers | select(floor == . and . >= 1 and . <= 9007199254740991)' "${active_manifest_file}") || return 2
   generated_at=$(read_manifest_field generated_at) || return 2
   soft_expires_at=$(read_manifest_field soft_expires_at) || return 2
   expires_at=$(read_manifest_field expires_at) || return 2
+  generated_epoch=$(jq -r '.generated_at | fromdateiso8601' "${active_manifest_file}") || return 2
   soft_expires_epoch=$(jq -r '.soft_expires_at | fromdateiso8601' "${active_manifest_file}") || return 2
   expires_epoch=$(jq -r '.expires_at | fromdateiso8601' "${active_manifest_file}") || return 2
   base_dn=$(read_manifest_field base_dn) || return 2
+  if [ "${generated_epoch}" -gt "${soft_expires_epoch}" ] \
+    || [ "${soft_expires_epoch}" -ge "${expires_epoch}" ]; then
+    return 2
+  fi
 
   ldap_state=unavailable
   if ldap_is_available "${base_dn}"; then
@@ -102,6 +107,17 @@ main() {
     "${expires_at}" || return 2
 
   return "${exit_status}"
+}
+
+main() {
+  status_code=0
+  status_output=$(report_status) || status_code=$?
+  if [ -z "${status_output}" ]; then
+    status_output='{"state":"unavailable","reason":"active manifest is invalid"}'
+    status_code=2
+  fi
+  printf '%s\n' "${status_output}"
+  return "${status_code}"
 }
 
 main "$@"

@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 import testinfra
 import yaml
+from argon2 import PasswordHasher
+from ldif import LDIFRecordList
 
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
@@ -115,13 +117,16 @@ class Generator:
         )
 
     def generate_variant(
-        self, name: str, content: str
+        self, name: str, content: str, *arguments: str
     ) -> subprocess.CompletedProcess[str]:
         variant = self.path / f"{name}.yaml"
         variant.write_text(content, encoding="utf-8")
         variant.chmod(0o644)
         return self.run(
-            f"{variant}:/input/directory.yaml:ro,Z", "/input/directory.yaml", name
+            f"{variant}:/input/directory.yaml:ro,Z",
+            "/input/directory.yaml",
+            name,
+            *arguments,
         )
 
 
@@ -497,6 +502,169 @@ def service(
     podman: Podman, store: Store, images: Images, generator: Generator
 ) -> RuntimeService:
     return RuntimeService(podman, images.require_runtime(), generator, store.prefix)
+
+
+@pytest.mark.parametrize(
+    ("user_field", "bind_field"),
+    [
+        ("password_hash", "bind_password_hash_file"),
+        ("password_hash_file", "bind_password_hash"),
+        ("service_password_hashes", "bind_password_file"),
+        ("service_password_hash_files", "bind_password_hash"),
+    ],
+)
+def test_seeded_hashes_authenticate_unchanged(
+    podman: Podman,
+    store: Store,
+    images: Images,
+    generator: Generator,
+    user_field: str,
+    bind_field: str,
+) -> None:
+    image = images.require_runtime()
+    name = f"seeded-{user_field}"
+    # Native OpenLDAP hashing from stdin is also the documented admin workflow.
+    user_hash = podman.run_container(
+        "--rm",
+        "-i",
+        "--network",
+        "none",
+        "--entrypoint",
+        "slappasswd",
+        image,
+        "-o",
+        "module-path=/usr/lib/ldap",
+        "-o",
+        "module-load=argon2 m=19456 t=2 p=1",
+        "-h",
+        "{ARGON2}",
+        "-T",
+        "/dev/stdin",
+        stdin="TEST-ONLY-seeded-user",
+    ).stdout.strip()
+    assert user_hash.startswith("{ARGON2}$argon2id$v=19$m=19456,t=2,p=1$")
+    bind_hash = "{ARGON2}" + PasswordHasher(
+        memory_cost=65536, time_cost=3, parallelism=4
+    ).hash("TEST-ONLY-app-bind")
+    for suffix, value in (("user", user_hash), ("bind", bind_hash)):
+        path = generator.credentials / f"{name}-{suffix}.hash"
+        path.write_text(value + "\n", encoding="utf-8")
+        path.chmod(0o600)
+    user_value = (
+        f"/run/credentials/{name}-user.hash"
+        if user_field.endswith(("file", "files"))
+        else user_hash
+    )
+    user = (
+        {
+            "password_file": "/run/credentials/person-0001",
+            user_field: {"example-app": user_value},
+        }
+        if user_field.startswith("service_")
+        else {user_field: user_value}
+    )
+    bind_value = {
+        "bind_password_hash": bind_hash,
+        "bind_password_hash_file": f"/run/credentials/{name}-bind.hash",
+        "bind_password_file": "/run/credentials/bind-example-app",
+    }[bind_field]
+    credential_path = generator.credentials / f"{name}.yaml"
+    credential_path.write_text(
+        yaml.safe_dump(
+            {
+                "format_version": 1,
+                "users": {"person-0001": user},
+                "services": {"example-app": {bind_field: bind_value}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    credential_path.chmod(0o600)
+    result = generator.generate_examples(
+        name,
+        "--service",
+        "example-app",
+        "--credentials",
+        f"/run/credentials/{credential_path.name}",
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(path.name for path in (generator.output / name).iterdir()) == {
+        "example-app"
+    }
+    snapshot = generator.output / name / "example-app"
+    with (snapshot / "directory.ldif").open("rb") as stream:
+        parser = LDIFRecordList(stream)
+        parser.parse()
+    entries = dict(parser.all_records)
+    assert entries[ALICE_DN]["userPassword"] == [user_hash.encode()]
+    if bind_field != "bind_password_file":
+        assert entries[APPLICATION_DN]["userPassword"] == [bind_hash.encode()]
+    running = RuntimeService(podman, image, generator, f"{store.prefix}-{name}")
+    running.start(snapshot)
+    assert running.bind(ALICE_DN, "TEST-ONLY-seeded-user").returncode == 0
+    assert running.bind(ALICE_DN, "TEST-ONLY-default-user").returncode != 0
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-wrong-bind").returncode != 0
+    podman.stop(running.name)
+
+
+def test_group_optional_users_empty_groups_and_per_service_ttls(
+    podman: Podman,
+    store: Store,
+    images: Images,
+    generator: Generator,
+) -> None:
+    image = images.require_runtime()
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][2]["uid"] = "foo.bar"
+    document["services"][0]["users"] = ["person-0003"]
+    document["services"][1]["soft_ttl_seconds"] = 3600
+    document["services"][1]["hard_ttl_seconds"] = 7200
+    for group_id, members in (("empty", []), ("inactive", ["person-0002"])):
+        document["groups"].append(
+            {
+                "id": group_id,
+                "common_name": group_id,
+                "members": members,
+            }
+        )
+        document["services"][0]["groups"].append(group_id)
+    credentials = yaml.safe_load(
+        (generator.credentials / "credentials.yaml").read_text()
+    )
+    credentials["users"]["person-0003"]["password_file"] = (
+        "/run/credentials/person-0003-example-mail"
+    )
+    source = generator.credentials / "group-optional.yaml"
+    source.write_text(yaml.safe_dump(credentials), encoding="utf-8")
+    source.chmod(0o600)
+    result = generator.generate_variant(
+        "group-optional",
+        yaml.safe_dump(document),
+        "--credentials",
+        "/run/credentials/group-optional.yaml",
+    )
+    assert result.returncode == 0, result.stderr
+    output = generator.output / "group-optional"
+    app = output / "example-app/manifest.json"
+    mail = output / "example-mail/manifest.json"
+    assert epoch(app, "generated_at") == epoch(mail, "generated_at")
+    assert epoch(app, "expires_at") - epoch(app, "generated_at") == 43200
+    assert epoch(mail, "soft_expires_at") - epoch(mail, "generated_at") == 3000
+    assert epoch(mail, "expires_at") - epoch(mail, "generated_at") == 6600
+    running = RuntimeService(podman, image, generator, f"{store.prefix}-group-optional")
+    running.start(output / "example-app")
+    user_dn = f"uid=foo.bar,ou=people,{APP_BASE}"
+    assert running.bind(user_dn, "TEST-ONLY-bob-mail").returncode == 0
+    user = running.search("-b", user_dn, "-s", "base", "uid", "memberOf")
+    assert user.returncode == 0 and "uid: foo.bar" in user.stdout
+    assert "memberOf:" not in user.stdout
+    groups = running.search(
+        "-b", f"ou=groups,{APP_BASE}", "(objectClass=groupOfNames)", "cn"
+    )
+    assert groups.returncode == 0 and "cn: staff" in groups.stdout
+    assert "cn: empty" not in groups.stdout and "cn: inactive" not in groups.stdout
+    podman.stop(running.name)
 
 
 def test_runtime_authenticates_against_generated_output(

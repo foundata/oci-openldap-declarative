@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -15,14 +17,14 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast
 
 import ldap.dn
 import yaml
-from argon2 import PasswordHasher, Type
+from argon2 import PasswordHasher, Type, extract_parameters
 from ldif import LDIFWriter
 from yaml.events import AliasEvent
 
@@ -38,6 +40,21 @@ ARGON_MEMORY_COST = 19_456
 ARGON_TIME_COST = 2
 ARGON_PARALLELISM = 1
 MAX_EXPIRY_OFFSET_SECONDS = 86_400
+HASH_PATTERN = re.compile(
+    r"\{ARGON2\}\$argon2id\$v=19\$m=[1-9][0-9]*,t=[1-9][0-9]*,p=[1-9][0-9]*"
+    r"\$[A-Za-z0-9+/]+\$[A-Za-z0-9+/]+"
+)
+type CredentialKind = Literal["plaintext-file", "hash-file", "hash"]
+PASSWORD_FIELDS: dict[str, CredentialKind] = {
+    "password_file": "plaintext-file",
+    "password_hash_file": "hash-file",
+    "password_hash": "hash",
+}
+OVERRIDE_FIELDS: dict[str, CredentialKind] = {
+    "service_password_files": "plaintext-file",
+    "service_password_hash_files": "hash-file",
+    "service_password_hashes": "hash",
+}
 
 
 class ConfigurationError(Exception):
@@ -111,9 +128,21 @@ class Directory:
 
 
 @dataclass(frozen=True)
+class CredentialSource:
+    kind: CredentialKind
+    value: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class UserCredential:
+    default: CredentialSource | None
+    services: dict[str, CredentialSource]
+
+
+@dataclass(frozen=True)
 class Credentials:
-    users: dict[str, dict[str, Any]]
-    services: dict[str, str]
+    users: dict[str, UserCredential]
+    services: dict[str, CredentialSource]
 
 
 def error(message: str) -> NoReturn:
@@ -188,8 +217,11 @@ def load_yaml(path: Path, *, context: str) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as stream:
             value = yaml.load(stream, Loader=StrictLoader)
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+    except OSError as exc:
         error(f"cannot parse {context}: {exc}")
+    except (UnicodeError, yaml.YAMLError):
+        # Parser diagnostics can include source lines containing inline credentials.
+        error(f"cannot parse {context}: invalid UTF-8 or YAML syntax")
     if not isinstance(value, dict):
         error(f"{context} must contain one top-level mapping")
     return value
@@ -427,6 +459,59 @@ def credential_path(value: Any, *, context: str) -> str:
     return str(path)
 
 
+def validate_password_hash(value: Any, *, context: str) -> str:
+    verifier = text_value(value, context=context, maximum=4096)
+    if not HASH_PATTERN.fullmatch(verifier):
+        error(f"{context} must be an OpenLDAP {{ARGON2}} Argon2id v=19 verifier")
+    parameters = extract_parameters(verifier.removeprefix("{ARGON2}"))
+    if not (
+        ARGON_MEMORY_COST <= parameters.memory_cost <= 2**32 - 1
+        and ARGON_TIME_COST <= parameters.time_cost <= 2**32 - 1
+        and 1 <= parameters.parallelism <= 2**24 - 1
+        and parameters.memory_cost >= 8 * parameters.parallelism
+        and parameters.salt_len >= 16
+        and parameters.hash_len >= 32
+    ):
+        error(
+            f"{context} has unsupported Argon2 parameters; require m>=19456, t>=2, "
+            "p>=1, a salt of at least 16 bytes and a digest of at least 32 bytes"
+        )
+    for encoded in verifier.rsplit("$", 2)[-2:]:
+        try:
+            decoded = base64.b64decode(
+                encoded + "=" * (-len(encoded) % 4), validate=True
+            )
+        except binascii.Error:
+            error(f"{context} has invalid Argon2 base64 encoding")
+        if base64.b64encode(decoded).decode("ascii").rstrip("=") != encoded:
+            error(f"{context} has non-canonical Argon2 base64 encoding")
+    return verifier
+
+
+def credential_source(
+    kind: CredentialKind, value: Any, *, context: str
+) -> CredentialSource:
+    if kind == "hash":
+        return CredentialSource(kind, validate_password_hash(value, context=context))
+    return CredentialSource(kind, credential_path(value, context=context))
+
+
+def default_credential_source(
+    item: dict[str, Any], *, context: str, prefix: str = ""
+) -> CredentialSource | None:
+    fields = [prefix + name for name in PASSWORD_FIELDS if prefix + name in item]
+    if len(fields) > 1:
+        error(f"{context} must not combine password sources: {', '.join(fields)}")
+    if not fields:
+        return None
+    name = fields[0]
+    return credential_source(
+        PASSWORD_FIELDS[name.removeprefix(prefix)],
+        item[name],
+        context=f"{context}.{name}",
+    )
+
+
 def parse_credentials(path: Path) -> Credentials:
     root = strict_keys(
         load_yaml(path, context="credentials YAML"),
@@ -438,63 +523,76 @@ def parse_credentials(path: Path) -> Credentials:
         error("credentials YAML format_version must be 1")
     if not isinstance(root["users"], dict):
         error("credentials users must be a mapping keyed by immutable user id")
-    users: dict[str, dict[str, Any]] = {}
+    users: dict[str, UserCredential] = {}
     for user_id, raw_credential in root["users"].items():
         source_id = validate_source_id(user_id, context="credentials user id")
         item = strict_keys(
             raw_credential,
             required=set(),
-            optional={"password_file", "service_password_files"},
+            optional=set(PASSWORD_FIELDS) | set(OVERRIDE_FIELDS),
             context=f"credentials.users.{source_id}",
         )
-        default_password = None
-        if "password_file" in item:
-            default_password = credential_path(
-                item["password_file"],
-                context=f"credentials.users.{source_id}.password_file",
-            )
-        service_passwords: dict[str, str] = {}
-        if "service_password_files" in item:
-            if not isinstance(item["service_password_files"], dict):
-                error(
-                    f"credentials.users.{source_id}.service_password_files must be a mapping"
-                )
-            for service_id, password_file in item["service_password_files"].items():
+        default_password = default_credential_source(
+            item, context=f"credentials.users.{source_id}"
+        )
+        service_passwords: dict[str, CredentialSource] = {}
+        for name, kind in OVERRIDE_FIELDS.items():
+            if name not in item:
+                continue
+            context = f"credentials.users.{source_id}.{name}"
+            if not isinstance(item[name], dict) or not item[name]:
+                error(f"{context} must be a non-empty mapping")
+            for service_id, value in item[name].items():
                 validated_service_id = validate_service_id(
                     service_id,
-                    context=f"credentials.users.{source_id}.service_password_files key",
+                    context=f"{context} key",
                 )
-                service_passwords[validated_service_id] = credential_path(
-                    password_file,
-                    context=(
-                        f"credentials.users.{source_id}.service_password_files.{validated_service_id}"
-                    ),
+                if validated_service_id in service_passwords:
+                    error(
+                        f"credentials.users.{source_id} has conflicting sources for service {validated_service_id}"
+                    )
+                service_passwords[validated_service_id] = credential_source(
+                    kind,
+                    value,
+                    context=f"{context}.{validated_service_id}",
                 )
         if default_password is None and not service_passwords:
             error(
                 f"credentials.users.{source_id} must define at least one password source"
             )
-        users[source_id] = {
-            "password_file": default_password,
-            "service_password_files": service_passwords,
-        }
+        users[source_id] = UserCredential(default_password, service_passwords)
 
     if not isinstance(root["services"], dict):
         error("credentials services must be a mapping keyed by service id")
-    services: dict[str, str] = {}
+    services: dict[str, CredentialSource] = {}
     for service_id, raw_credential in root["services"].items():
         validated_service_id = validate_service_id(
             service_id, context="credentials service id"
         )
         item = strict_keys(
             raw_credential,
-            required={"bind_password_file"},
-            optional=set(),
+            required=set(),
+            optional={f"bind_{name}" for name in PASSWORD_FIELDS},
             context=f"credentials.services.{validated_service_id}",
         )
-        services[validated_service_id] = credential_path(
-            item["bind_password_file"],
-            context=f"credentials.services.{validated_service_id}.bind_password_file",
+        source = default_credential_source(
+            item,
+            context=f"credentials.services.{validated_service_id}",
+            prefix="bind_",
+        )
+        if source is None:
+            error(
+                f"credentials.services.{validated_service_id} must define one bind password source"
+            )
+        services[validated_service_id] = source
+    sources = list(services.values())
+    for user in users.values():
+        sources.extend(user.services.values())
+        if user.default is not None:
+            sources.append(user.default)
+    if any(source.kind == "hash" for source in sources) and path.stat().st_mode & 0o077:
+        error(
+            "credentials YAML containing inline hashes must be readable only by its owner"
         )
     return Credentials(users=users, services=services)
 
@@ -513,9 +611,7 @@ def validate_credential_references(
             f"credentials reference unknown services: {', '.join(sorted(unknown_services))}"
         )
     for user_id, item in credentials.users.items():
-        unknown_overrides = set(item["service_password_files"]) - set(
-            directory.services
-        )
+        unknown_overrides = set(item.services) - set(directory.services)
         if unknown_overrides:
             error(
                 f"credentials for {user_id} reference unknown services: "
@@ -523,7 +619,7 @@ def validate_credential_references(
             )
 
 
-def read_password(path_value: str, *, context: str) -> str:
+def read_credential_file(path_value: str, *, context: str) -> str:
     path = Path(path_value)
     try:
         file_stat = path.lstat()
@@ -556,17 +652,28 @@ def read_password(path_value: str, *, context: str) -> str:
         error(f"{context} must contain valid UTF-8: {exc}")
 
 
-def user_password_file(credentials: Credentials, user_id: str, service_id: str) -> str:
+def user_credential(
+    credentials: Credentials, user_id: str, service_id: str
+) -> CredentialSource:
     if user_id not in credentials.users:
         error(f"no credential is defined for authorized user {user_id}")
     item = credentials.users[user_id]
-    if service_id in item["service_password_files"]:
-        return cast(str, item["service_password_files"][service_id])
-    if item["password_file"] is None:
+    if service_id in item.services:
+        return item.services[service_id]
+    if item.default is None:
         error(
             f"no default or {service_id}-specific credential is defined for user {user_id}"
         )
-    return cast(str, item["password_file"])
+    return item.default
+
+
+def password_verifier(source: CredentialSource, *, context: str) -> str:
+    value = source.value
+    if source.kind != "hash":
+        value = read_credential_file(value, context=context)
+    if source.kind == "plaintext-file":
+        return hash_password(value)
+    return validate_password_hash(value, context=context)
 
 
 def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
@@ -669,9 +776,9 @@ def write_service_ldif(
             selected, key=lambda item: directory.users[item].uid.casefold()
         ):
             user = directory.users[user_id]
-            password = read_password(
-                user_password_file(credentials, user_id, service.service_id),
-                context=f"password file for user {user_id} and service {service.service_id}",
+            verifier = password_verifier(
+                user_credential(credentials, user_id, service.service_id),
+                context=f"credential for user {user_id} and service {service.service_id}",
             )
             attributes = {
                 "objectClass": ["top", "inetOrgPerson"],
@@ -679,7 +786,7 @@ def write_service_ldif(
                 "cn": [user.common_name],
                 "sn": [user.surname],
                 "entryUUID": [stable_uuid(directory.namespace, "user", user.source_id)],
-                "userPassword": [hash_password(password)],
+                "userPassword": [verifier],
             }
             if user.mail is not None:
                 attributes["mail"] = [user.mail]
@@ -693,9 +800,9 @@ def write_service_ldif(
 
         if service.service_id not in credentials.services:
             error(f"no bind credential is defined for service {service.service_id}")
-        bind_password = read_password(
+        bind_verifier = password_verifier(
             credentials.services[service.service_id],
-            context=f"bind password file for service {service.service_id}",
+            context=f"bind credential for service {service.service_id}",
         )
         write_entry(
             writer,
@@ -710,7 +817,7 @@ def write_service_ldif(
                         service.bind_account.source_id,
                     )
                 ],
-                "userPassword": [hash_password(bind_password)],
+                "userPassword": [bind_verifier],
             },
         )
 
@@ -850,7 +957,7 @@ def parse_arguments() -> argparse.Namespace:
         "--directory", required=True, type=Path, help="identity and authorization YAML"
     )
     parser.add_argument(
-        "--credentials", required=True, type=Path, help="credential file reference YAML"
+        "--credentials", required=True, type=Path, help="credential sources YAML"
     )
     parser.add_argument(
         "--signing-key", required=True, type=Path, help="minisign secret key"

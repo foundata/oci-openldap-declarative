@@ -307,10 +307,13 @@ The deployment process writes a new snapshot to a staging location and invokes
 the image's non-listening `preflight-snapshot.sh` with that candidate, the
 verification key, expected service ID and the host's existing revision state.
 Preflight verifies the signature, identity, deadlines, file digests and
-revision/digest pair without changing the state file or active path. Only exit
+revision/digest pair, then imports the candidate with the same offline
+initializer and semantic checks used at startup. A private subdirectory holds
+the candidate database and is removed on exit; neither state nor active data
+is changed and no listener is opened. Only exit
 status 0 permits the future Ansible role to switch the active path atomically.
-Status 65 rejects rollback or same-revision/different-content, 66 rejects bad
-input or state, 70 reports an internal failure and 78 reports expiry. The
+Status 65 rejects invalid snapshot data, rollback or same-revision/different-content;
+66 rejects bad input or state, 70 reports an internal failure and 78 reports expiry. The
 runtime repeats the check before import as defense in depth.
 
 The verifier should be a small fail-fast program with tested, distinct exit
@@ -388,10 +391,12 @@ file, failed ACL update or missing base entry must cause a non-zero container
 exit. Continuing with a partial directory is worse than an outage because it
 produces service-dependent and difficult-to-explain authentication results.
 
-The initialization process should not require a network root DN password.
-Configuration can use LDAPI with SASL EXTERNAL, and data can be loaded offline.
-If a root DN is retained for recovery, its secret belongs in a Podman or systemd
-credential file, not an environment variable or command line.
+The initialization process does not require a network root DN password.
+Configuration and data are loaded offline; normal startup omits `olcRootPW`.
+Explicit recovery access uses a Podman or systemd credential file, not an
+environment variable or command line. The root DN bypasses ACLs, including
+write and password-read restrictions; it must never be an application account.
+Its edits are disposable and must be reflected centrally to survive a rebuild.
 
 ### 4.6 Freshness and the deadman switch
 
@@ -580,13 +585,24 @@ The implementation should:
 - benchmark parameters on the smallest target VM;
 - choose enough memory and iterations to make offline guessing expensive;
 - limit concurrent binds so expensive verification cannot exhaust the VM;
-- prevent LDAP searches from returning `userPassword` to any account;
+- prevent LDAP searches from returning `userPassword` to normal accounts;
 - keep the generated database on tmpfs where operationally practical;
 - store snapshot files with an account and SELinux label unavailable to the
   application container;
 - encrypt snapshot artifacts in transit and at rest outside the container;
 - remove the verified LDIF plaintext immediately after successful import and on
   every initialization failure or shutdown path.
+
+The generator accepts plaintext credential files or pre-generated OpenLDAP
+Argon2id verifiers from files or inline private YAML values. Explicit source
+keys distinguish these forms: plaintext is salted and hashed, while supplied
+verifiers are validated and preserved. New hashes need fresh random salts;
+reusing an existing verifier for an unchanged password does not re-salt it.
+The generator enforces the same minimum costs as the runtime plus valid encoding,
+salt and digest lengths. Hash-bearing inputs are sensitive, owner-only files.
+See the README for the field names and native `slappasswd` preparation command.
+Password quality and enrollment checks remain the central workflow's duty;
+the generator cannot assess a password from its pre-generated hash.
 
 Argon2 parameters need measurement. A spike benchmarked Debian 13's Argon2
 module on one host: the packaged default (`m=7168,t=5,p=1`) verified a
@@ -1290,9 +1306,9 @@ The repository implements and tests the following baseline:
   paths;
 - signed manifests whose JSON Schema, generator output and small fail-closed
   runtime verifier are tested for agreement;
-- bounded expiry offsets that only shorten the common maximum TTLs and derive
-  both deadlines from one generation time;
-- non-listening staged revision preflight plus runtime replay defense that binds
+- bounded expiry offsets that only shorten each service's own maximum TTLs
+  and derive both deadlines from one generation time;
+- non-listening staged import/revision preflight plus runtime replay defense that binds
   revision to manifest digest and migrates legacy revision-only state;
 - offline OpenLDAP import without the unused NIS schema, followed by immediate
   verified-LDIF plaintext deletion;

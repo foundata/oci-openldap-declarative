@@ -379,6 +379,43 @@ class Runtime:
             completed.stdout + completed.stderr
         )
 
+    def preflight(
+        self, snapshot: Path, state_dir: Path, runtime_dir: Path
+    ) -> subprocess.CompletedProcess[str]:
+        return self.podman.run_container(
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--read-only-tmpfs=false",
+            "--ulimit",
+            "nofile=1024:1024",
+            "--memory=256m",
+            "--pids-limit=128",
+            "--userns",
+            "keep-id:uid=1001,gid=1001",
+            "--user",
+            "1001:1001",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--volume",
+            f"{runtime_dir}:/run/openldap:rw,Z",
+            "--volume",
+            f"{snapshot}:/candidate:ro,z",
+            "--volume",
+            f"{self.workspace.path}/public/snapshot.pub:/keys/snapshot.pub:ro,z",
+            "--volume",
+            f"{state_dir}:/existing-state:ro,Z",
+            "--entrypoint",
+            f"{LIB}/preflight-snapshot.sh",
+            self.image,
+            "/candidate",
+            "/keys/snapshot.pub",
+            "test-service",
+            "/existing-state/highest-revision",
+            check=False,
+        )
+
     def assert_valid(self, container: Container) -> None:
         status, document = self.status(container)
         assert status == 0
@@ -767,6 +804,77 @@ def test_recovery_password_files_bind_the_root_dn(
     runtime.start_healthy(container)
     whoami = runtime.whoami(container, f"cn=admin,{BASE_DN}", "recovery-root-password")
     assert whoami.returncode == 0 and f"dn:cn=admin,{BASE_DN}" in whoami.stdout
+    secret = runtime.ldap_search(
+        container,
+        "-D",
+        f"cn=admin,{BASE_DN}",
+        "-w",
+        "recovery-root-password",
+        "-b",
+        TEST_USER_DN,
+        "-s",
+        "base",
+        "userPassword",
+    )
+    assert "userPassword:" in secret
+    runtime.podman.run(
+        "exec",
+        "-i",
+        container.name,
+        "ldapmodify",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        f"cn=admin,{BASE_DN}",
+        "-w",
+        "recovery-root-password",
+        stdin=f"dn: {TEST_USER_DN}\nchangetype: modify\nreplace: description\ndescription: recovery edit\n",
+    )
+    changed = runtime.ldap_search(
+        container,
+        "-D",
+        f"cn=admin,{BASE_DN}",
+        "-w",
+        "recovery-root-password",
+        "-b",
+        TEST_USER_DN,
+        "-s",
+        "base",
+        "description",
+    )
+    assert "description: recovery edit" in changed
+    assert runtime.stop(container) == 0
+
+
+def test_default_runtime_has_no_network_recovery_password(runtime: Runtime) -> None:
+    container = runtime.create("no-recovery", "valid")
+    runtime.start_healthy(container)
+    config = runtime.podman.exec_output(
+        container.name,
+        "ldapsearch",
+        "-LLL",
+        "-Q",
+        "-Y",
+        "EXTERNAL",
+        "-H",
+        LDAPI_URI,
+        "-b",
+        "cn=config",
+        "(objectClass=olcMdbConfig)",
+        "olcRootDN",
+        "olcRootPW",
+        "olcAccess",
+    )
+    assert f"olcRootDN: cn=admin,{BASE_DN}" in config
+    assert "olcRootPW:" not in config
+    assert " manage" not in config
+    assert (
+        runtime.whoami(
+            container, f"cn=admin,{BASE_DN}", "recovery-root-password"
+        ).returncode
+        != 0
+    )
     assert runtime.stop(container) == 0
 
 
@@ -897,34 +1005,7 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
         state_path.chmod(0o644)
         before = sha256_file(state_path)
 
-    completed = runtime.podman.run_container(
-        "--rm",
-        "--network",
-        "none",
-        "--read-only",
-        "--userns",
-        "keep-id:uid=1001,gid=1001",
-        "--user",
-        "1001:1001",
-        "--cap-drop=all",
-        "--security-opt=no-new-privileges",
-        "--volume",
-        f"{runtime_dir}:/run/openldap:rw,Z",
-        "--volume",
-        f"{workspace.path}/valid:/candidate:ro,Z",
-        "--volume",
-        f"{workspace.path}/public/snapshot.pub:/keys/snapshot.pub:ro,Z",
-        "--volume",
-        f"{state_dir}:/existing-state:ro,Z",
-        "--entrypoint",
-        f"{LIB}/preflight-snapshot.sh",
-        runtime.image,
-        "/candidate",
-        "/keys/snapshot.pub",
-        "test-service",
-        "/existing-state/highest-revision",
-        check=False,
-    )
+    completed = runtime.preflight(workspace.path / "valid", state_dir, runtime_dir)
     output = completed.stdout + completed.stderr
     assert completed.returncode == status, output
     assert message in output, output
@@ -934,6 +1015,81 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
         assert not state_path.exists()
     else:
         assert sha256_file(state_path) == before
+    assert not list(runtime_dir.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("ldif", "Offline import failed"),
+        ("uuid", "entryUUID"),
+        ("password", "valid Argon2id"),
+        (
+            "membership",
+            "member and memberOf attributes must describe the same relationships",
+        ),
+        ("none", "Preflight accepted"),
+    ],
+)
+def test_preflight_imports_candidates_without_touching_active_runtime(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    damage: str,
+    message: str,
+) -> None:
+    candidate = workspace.create_snapshot(
+        f"candidate-{damage}", 2, 30 * MINUTES, 60 * MINUTES
+    )
+    if damage != "none":
+
+        def edit(content: str) -> str:
+            if damage == "ldif":
+                return content + "\nnot valid LDIF\n"
+            if damage == "uuid":
+                return content.replace(f"entryUUID: {TEST_USER_UUID}\n", "")
+            if damage == "password":
+                return content.replace("{ARGON2}", "{INVALID}", 1)
+            return content.replace(f"memberOf: cn=users,ou=groups,{BASE_DN}\n", "")
+
+        workspace.modify_ldif(candidate, edit)
+    active = runtime.create(f"preflight-active-{damage}", "valid")
+    runtime.start_healthy(active)
+    state_dir = workspace.path / f"candidate-state-{damage}"
+    state_dir.mkdir(mode=0o700)
+    state = state_dir / "highest-revision"
+    accepted = runtime.podman.exec_output(active.name, "cat", "/state/highest-revision")
+    state.write_text(accepted, encoding="utf-8")
+    state_before = state.read_bytes()
+    runtime_dir = workspace.path / f"candidate-runtime-{damage}"
+    runtime_dir.mkdir(mode=0o700)
+    for name in ("active-manifest.json", "slapd.d/config", "data/database"):
+        sentinel = runtime_dir / name
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text("protected active runtime fixture\n", encoding="utf-8")
+    before = {
+        p.relative_to(runtime_dir): p.read_bytes()
+        for p in runtime_dir.rglob("*")
+        if p.is_file()
+    }
+    for _ in range(2):
+        result = runtime.preflight(candidate, state_dir, runtime_dir)
+        assert result.returncode == (0 if damage == "none" else 65), (
+            result.stdout + result.stderr
+        )
+        assert message.lower() in (result.stdout + result.stderr).lower()
+        assert state.read_bytes() == state_before
+        assert {
+            p.relative_to(runtime_dir): p.read_bytes()
+            for p in runtime_dir.rglob("*")
+            if p.is_file()
+        } == before
+        assert not list(runtime_dir.glob("preflight.*"))
+        runtime.assert_valid(active)
+        assert (
+            runtime.podman.exec_output(active.name, "cat", "/state/highest-revision")
+            == accepted
+        )
+    assert runtime.stop(active) == 0
 
 
 @dataclass(frozen=True)

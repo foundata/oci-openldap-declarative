@@ -12,14 +12,14 @@ readonly script_dir
 . "${script_dir}/revision-state.sh"
 
 readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
+preflight_workspace=''
+preflight_status=0
 
 cleanup_preflight() {
-  remove_verified_snapshot "${runtime_dir}" || true
-  for output in verified-manifest.json verification-keys; do
-    if [ -e "${runtime_dir}/${output}" ] || [ -L "${runtime_dir}/${output}" ]; then
-      unlink "${runtime_dir}/${output}" || true
-    fi
-  done
+  if [ -n "${preflight_workspace}" ] && [ -d "${preflight_workspace}" ]; then
+    find "${preflight_workspace}" -mindepth 1 -delete || return "${EXIT_INTERNAL}"
+    rmdir "${preflight_workspace}" || return "${EXIT_INTERNAL}"
+  fi
 }
 
 main() {
@@ -44,12 +44,21 @@ main() {
 
   umask 077
   mkdir -p "${runtime_dir}" || return "${EXIT_INTERNAL}"
-  cleanup_preflight
-  trap cleanup_preflight 0
+  preflight_workspace=$(mktemp -d "${runtime_dir}/preflight.XXXXXX") || return "${EXIT_INTERNAL}"
+  trap 'preflight_status=$?; cleanup_preflight || exit 70; exit "${preflight_status}"' 0
   trap 'exit 70' HUP INT TERM
+  LDAP_RUNTIME_DIR=${preflight_workspace}
+  export LDAP_RUNTIME_DIR
 
   "${script_dir}/verify-snapshot.sh" || return $?
-  validate_snapshot_revision "${runtime_dir}/verified-manifest.json" "${revision_state_file}" || return $?
+  validate_snapshot_revision "${preflight_workspace}/verified-manifest.json" "${revision_state_file}" || return $?
+  "${script_dir}/init-slapd.sh" || return $?
+  expires_epoch=$(jq -r '.expires_at | fromdateiso8601' "${preflight_workspace}/verified-manifest.json") || return "${EXIT_INTERNAL}"
+  current_epoch=$(date -u +%s) || return "${EXIT_INTERNAL}"
+  if [ "${current_epoch}" -ge "${expires_epoch}" ]; then
+    log_error 'Snapshot expired during offline preflight'
+    return "${EXIT_EXPIRED}"
+  fi
   log_info "Preflight accepted snapshot revision ${snapshot_revision} (${revision_disposition}); manifest sha256:${snapshot_manifest_digest}"
   return 0
 }

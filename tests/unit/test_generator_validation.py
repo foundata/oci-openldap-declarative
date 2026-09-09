@@ -107,8 +107,8 @@ def test_password_file_yields_one_line_without_its_terminator(
     unix = write_secret(tmp_path / "unix", b"s3cret\n")
     windows = write_secret(tmp_path / "windows", b"s3cret\r\n")
 
-    assert generate.read_password(str(unix), context="unix") == "s3cret"
-    assert generate.read_password(str(windows), context="windows") == "s3cret"
+    assert generate.read_credential_file(str(unix), context="unix") == "s3cret"
+    assert generate.read_credential_file(str(windows), context="windows") == "s3cret"
 
 
 @pytest.mark.parametrize(
@@ -131,7 +131,7 @@ def test_unsafe_password_files_are_rejected(
     secret = write_secret(tmp_path / "secret", content, mode)
 
     with pytest.raises(generate.ConfigurationError, match=message):
-        generate.read_password(str(secret), context="secret")
+        generate.read_credential_file(str(secret), context="secret")
 
 
 def test_password_file_symlinks_are_rejected(
@@ -142,7 +142,7 @@ def test_password_file_symlinks_are_rejected(
     os.symlink(target, link)
 
     with pytest.raises(generate.ConfigurationError, match="not a symbolic link"):
-        generate.read_password(str(link), context="secret")
+        generate.read_credential_file(str(link), context="secret")
 
 
 @pytest.mark.parametrize(
@@ -214,6 +214,197 @@ def test_password_hashes_use_the_documented_argon2id_parameters(
     assert PasswordHasher().verify(
         verifier.removeprefix("{ARGON2}"), "correct horse battery staple"
     )
+
+
+@pytest.fixture(scope="module")
+def seeded_hash(generate: ModuleType) -> str:
+    return str(generate.hash_password("TEST-ONLY-seeded-password"))
+
+
+@pytest.mark.parametrize("kind", ["hash", "hash-file", "plaintext-file"])
+def test_credential_sources_are_explicit_and_hashes_are_preserved(
+    generate: ModuleType, tmp_path: Path, seeded_hash: str, kind: str
+) -> None:
+    value = seeded_hash
+    if kind != "hash":
+        value = str(write_secret(tmp_path / "credential", (value + "\r\n").encode()))
+    source = generate.credential_source(kind, value, context="credential")
+    result = generate.password_verifier(source, context="credential")
+    assert seeded_hash not in repr(source)
+    if kind == "plaintext-file":
+        # A hash-looking plaintext password must not silently change meaning.
+        assert result != seeded_hash
+        assert PasswordHasher().verify(result.removeprefix("{ARGON2}"), seeded_hash)
+    else:
+        assert result == seeded_hash
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("{ARGON2}", "{SSHA}"),
+        ("argon2id", "argon2i"),
+        ("v=19", "v=16"),
+        ("m=19456", "m=8192"),
+        ("t=2", "t=1"),
+        ("p=1", "p=0"),
+        ("p=1", "p=16777216"),
+        ("p=1", "p=3000"),
+        ("m=19456", "m=4294967296"),
+        ("t=2", "t=4294967296"),
+    ],
+)
+def test_unsupported_seeded_hashes_are_rejected_without_echoing_them(
+    generate: ModuleType, seeded_hash: str, old: str, new: str
+) -> None:
+    invalid = seeded_hash.replace(old, new)
+    with pytest.raises(generate.ConfigurationError) as raised:
+        generate.validate_password_hash(invalid, context="credential")
+    assert invalid not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("salt", "digest"),
+    [
+        ("YQ", "Yg" * 22),
+        ("YQ" * 11, "Yg"),
+        ("YQ" * 10 + "YR", "Yg" * 22),
+        ("YQ" * 11 + "=", "Yg" * 22),
+        ("YQ" * 11, "Yg" * 22 + "A"),
+    ],
+)
+def test_seeded_hash_lengths_and_base64_are_checked(
+    generate: ModuleType, salt: str, digest: str
+) -> None:
+    verifier = "{ARGON2}$argon2id$v=19$m=19456,t=2,p=1$" + salt + "$" + digest
+    with pytest.raises(generate.ConfigurationError):
+        generate.validate_password_hash(verifier, context="credential")
+
+
+@pytest.mark.parametrize(
+    ("default", "override", "bind"),
+    [
+        ("password_file", "service_password_hash_files", "bind_password_hash"),
+        ("password_hash_file", "service_password_hashes", "bind_password_file"),
+        ("password_hash", "service_password_files", "bind_password_hash_file"),
+    ],
+)
+def test_credentials_schema_and_parser_accept_mixed_sources(
+    generate: ModuleType,
+    tmp_path: Path,
+    seeded_hash: str,
+    default: str,
+    override: str,
+    bind: str,
+) -> None:
+    document = {
+        "format_version": 1,
+        "users": {
+            "person-0001": {
+                default: seeded_hash if default == "password_hash" else "/secret",
+                override: {
+                    "example-app": seeded_hash
+                    if override == "service_password_hashes"
+                    else "/override"
+                },
+            }
+        },
+        "services": {
+            "example-app": {
+                bind: seeded_hash if bind == "bind_password_hash" else "/bind"
+            }
+        },
+    }
+    source = write_secret(
+        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/credentials-v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(document)
+    parsed = generate.parse_credentials(source)
+    user = parsed.users["person-0001"]
+    assert (
+        generate.user_credential(parsed, "person-0001", "example-app")
+        == user.services["example-app"]
+    )
+    assert (
+        generate.user_credential(parsed, "person-0001", "example-mail") == user.default
+    )
+    assert seeded_hash not in repr(parsed)
+
+
+@pytest.mark.parametrize("bind", [False, True])
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("password_file", "password_hash_file"),
+        ("password_file", "password_hash"),
+        ("password_hash_file", "password_hash"),
+    ],
+)
+def test_credentials_reject_conflicting_defaults(
+    generate: ModuleType,
+    tmp_path: Path,
+    seeded_hash: str,
+    bind: bool,
+    first: str,
+    second: str,
+) -> None:
+    prefix = "bind_" if bind else ""
+    item = {
+        prefix + key: seeded_hash if key == "password_hash" else "/secret"
+        for key in (first, second)
+    }
+    document = {
+        "format_version": 1,
+        "users": {} if bind else {"person-0001": item},
+        "services": {"example-app": item} if bind else {},
+    }
+    source = write_secret(
+        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/credentials-v1.schema.json").read_text())
+    assert not Draft202012Validator(schema).is_valid(document)
+    with pytest.raises(generate.ConfigurationError, match="must not combine"):
+        generate.parse_credentials(source)
+
+
+def test_credentials_reject_conflicting_service_overrides(
+    generate: ModuleType, tmp_path: Path, seeded_hash: str
+) -> None:
+    document = {
+        "format_version": 1,
+        "users": {
+            "person-0001": {
+                "service_password_files": {"example-app": "/secret"},
+                "service_password_hashes": {"example-app": seeded_hash},
+            }
+        },
+        "services": {},
+    }
+    source = write_secret(
+        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
+    )
+    with pytest.raises(generate.ConfigurationError, match="conflicting sources"):
+        generate.parse_credentials(source)
+
+
+def test_inline_hash_yaml_is_private_and_syntax_errors_do_not_leak_hashes(
+    generate: ModuleType, tmp_path: Path, seeded_hash: str
+) -> None:
+    document = {
+        "format_version": 1,
+        "users": {},
+        "services": {"example-app": {"bind_password_hash": seeded_hash}},
+    }
+    source = write_secret(
+        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode(), 0o644
+    )
+    with pytest.raises(generate.ConfigurationError, match="readable only by its owner"):
+        generate.parse_credentials(source)
+    source.write_text(f'password_hash: "{seeded_hash}\n')
+    with pytest.raises(generate.ConfigurationError) as raised:
+        generate.load_yaml(source, context="credentials YAML")
+    assert seeded_hash not in str(raised.value)
 
 
 def test_example_directory_selects_active_users_per_service(
@@ -288,17 +479,17 @@ def test_credentials_resolve_service_overrides_before_defaults(
     generate.validate_credential_references(example_directory, credentials)
 
     assert (
-        generate.user_password_file(credentials, "person-0001", "example-app")
+        generate.user_credential(credentials, "person-0001", "example-app").value
         == "/run/credentials/person-0001-example-app"
     )
     assert (
-        generate.user_password_file(credentials, "person-0001", "other")
+        generate.user_credential(credentials, "person-0001", "other").value
         == "/run/credentials/person-0001"
     )
     with pytest.raises(
         generate.ConfigurationError, match="no default or example-app-specific"
     ):
-        generate.user_password_file(credentials, "person-0003", "example-app")
+        generate.user_credential(credentials, "person-0003", "example-app")
 
 
 @pytest.mark.parametrize(
