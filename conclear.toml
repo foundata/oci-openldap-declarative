@@ -8,7 +8,6 @@ source = "https://github.com/foundata/oci-openldap-declarative"
 id = "runtime"
 repository = "quay.io/foundata/openldap-declarative"
 platforms = ["linux/amd64", "linux/arm64"]
-scanner = "trivy"
 
 [images.test]
 dependencies = ["generator"]
@@ -88,7 +87,7 @@ command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.
 timeout_seconds = 1800
 
 [[images.pins]]
-reference = "docker.io/library/debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
+reference = "docker.io/library/debian:13-slim"
 tag_intent = "moving-release-line"
 
 [images.release]
@@ -113,7 +112,6 @@ id = "generator"
 containerfile = "Containerfile.generator"
 repository = "quay.io/foundata/openldap-declarative-generator"
 platforms = ["linux/amd64", "linux/arm64"]
-scanner = "trivy"
 
 [[images.test.fixtures]]
 name = "generator-input"
@@ -158,7 +156,7 @@ command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.
 timeout_seconds = 1800
 
 [[images.pins]]
-reference = "docker.io/library/debian:13-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
+reference = "docker.io/library/debian:13-slim"
 tag_intent = "moving-release-line"
 
 [images.release]
