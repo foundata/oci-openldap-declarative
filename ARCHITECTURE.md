@@ -352,12 +352,17 @@ UUIDs in the LDIF.
 UUIDv5 is suitable for this purpose:
 
 ```text
-entryUUID = UUIDv5(company_directory_namespace, immutable_source_id)
+entryUUID = UUIDv5(uuid_namespace, "user:" + immutable_source_id)
 ```
 
 The namespace is fixed and backed up. The input is the immutable source ID, not
 the username, DN, email address or employee number if that number can ever be
 reused. The same person receives the same UUID in every service snapshot.
+The generator's `id` is this source key, not a YAML anchor or an LDAP username.
+Renaming `uid` changes the user's DN and generated membership DNs, not their
+`entryUUID`; clients must key persistent account mappings by that UUID rather
+than the name or DN. A UUID string is a valid source key, but is still hashed
+as a name by UUIDv5, not copied verbatim into `entryUUID`.
 
 A spike on Debian 13 with OpenLDAP 2.6.10 verified that `slapadd` preserves
 explicitly supplied version-5 `entryUUID` values, and that importing without
