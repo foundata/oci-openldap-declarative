@@ -51,6 +51,26 @@ This is enough to run `hack/check.sh` and the unit suite; see
 [Testing](#testing). ConClear is not required until you touch pins,
 qualification or a release.
 
+Build local images from the repository root with rootless Podman:
+
+```sh
+created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+revision=$(git rev-parse HEAD)
+podman build --format oci --pull=always --file Containerfile \
+  --build-arg "IMAGE_CREATED=${created}" \
+  --build-arg "IMAGE_REVISION=${revision}" \
+  --build-arg IMAGE_VERSION=dev --tag localhost/openldap-declarative:dev .
+podman build --format oci --pull=always --file Containerfile.generator \
+  --build-arg "IMAGE_CREATED=${created}" \
+  --build-arg "IMAGE_REVISION=${revision}" \
+  --build-arg IMAGE_VERSION=dev \
+  --tag localhost/openldap-declarative-generator:dev .
+```
+
+To test the README workflow locally, use these tags for `runtime` and
+`generator` and skip its pull/digest-resolution commands. These images are for
+development, not qualified releases.
+
 
 ## Project structure<a id="project-structure"></a>
 
