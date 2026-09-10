@@ -26,11 +26,26 @@ their own expiry policy.
 ## Table of contents<a id="toc"></a>
 
 - [Features](#features)
-- [Installation](#installation)
+- [Where actions run](#usage-hosts)
+- [Installation (admin/CI)](#installation)
 - [Quick start](#usage)
-- [Directory administration](#usage-maintenance)
+  - [1. Create directory data (admin/CI)](#usage-yaml)
+  - [2. Set passwords (admin)](#usage-credentials-setup)
+  - [3. Create signing keys (admin)](#usage-signing-keys)
+  - [4. Generate a snapshot (admin/CI)](#usage-generate-snapshot)
+  - [5. Deploy and query LDAP (LDAP host)](#usage-rootless-podman)
+- [Directory administration (admin/CI)](#usage-maintenance)
+  - [Services: one directory per application](#usage-services)
+  - [IDs and renames](#usage-identities)
+  - [Membership and access](#usage-membership)
+  - [Credential sources](#usage-credentials)
+    - [Hashes in private Git](#usage-hashes-in-git)
 - [Operations](#usage-ops)
-- [Runtime inputs](#runtime-inputs)
+  - [Deploy and renew (admin/CI and LDAP host)](#snapshot-lifecycle)
+  - [Status and logs (LDAP host)](#usage-status)
+  - [TLS and signing keys (admin/CI and LDAP host)](#tls)
+  - [Backup and recovery (admin/CI and LDAP host)](#backup-and-recovery)
+- [Runtime inputs (LDAP host)](#runtime-inputs)
 - [Development](#tests)
 - [Licensing, copyright](#licensing-copyright)
 - [Author information](#author-information)
@@ -45,10 +60,28 @@ their own expiry policy.
 - Rootless Podman deployment with a read-only filesystem; optional LDAPS.
 
 
-## Installation<a id="installation"></a>
+## Where actions run<a id="usage-hosts"></a>
+
+| Location | Actions and files |
+| -------- | ----------------- |
+| Admin/CI | Maintain directory and credentials YAML, generate and sign snapshots, then transfer them. Holds the private signing key; runs the generator image. |
+| LDAP host | Preflight and serve one service snapshot using the runtime image. Holds that snapshot, public verification keys and persistent revision state. No generator or private signing key. |
+
+An admin machine can perform the whole signing workflow. For automation, a
+protected CI job uses the same inputs and signing key. Password prompts and
+initial key creation below are manual setup; CI consumes the prepared credentials.
+
+Only the selected service snapshot and public key cross to the LDAP host.
+Commands in a container still run on the host named in the heading. Use a
+separate Bash terminal for each host; shell variables are local to that terminal.
+
+
+## Installation (admin/CI)<a id="installation"></a>
 
 Use Linux with rootless Podman, Bash and Git. The generator and runtime images both
 include minisign; no host installation of minisign or Python is needed.
+The runtime image is used here only to generate password hashes. The deployment
+guide pulls it separately on the LDAP host.
 
 Pull the runtime and generator from the same release. The commands below select
 `stable` and resolve each image to its pulled digest:
@@ -69,13 +102,15 @@ authenticate an image publisher.
 
 ## Quick start<a id="usage"></a><a id="usage-quick-start"></a>
 
-Run steps 1-4 in the same Bash terminal on your administration host.
-Step 5 deploys the result on the LDAP host.
+Run steps 1-4 in the admin terminal. For step 5, prepare the LDAP host, transfer
+from the admin terminal, then return to the LDAP host to activate and query.
 
-### 1. Create directory data<a id="usage-yaml"></a>
+### 1. Create directory data (admin/CI)<a id="usage-yaml"></a>
 
 Keep `directory.yaml` in a dedicated, access-controlled Git repository.
-Keep credentials, signing keys and generated snapshots outside it.
+This example keeps credentials outside it; [hash-only credentials YAML can also
+be versioned privately](#usage-hashes-in-git). Keep plaintext passwords, private
+signing keys and generated snapshots out of Git.
 
 ```bash
 umask 077
@@ -119,8 +154,10 @@ YAML
 Generate `uuid_namespace` once for a new directory; preserve it on every update
 and in backups. See [IDs and renames](#usage-identities) before choosing IDs.
 The [larger example](examples/generator/directory.yaml) includes multiple services.
+The [service fields](#usage-services) select which users and groups each
+application receives and how long its snapshot remains valid.
 
-### 2. Set passwords<a id="usage-credentials-setup"></a>
+### 2. Set passwords (admin)<a id="usage-credentials-setup"></a>
 
 This prompts for Alice's password and then the application's LDAP bind password,
 writing only their hashes. Keep the two passwords distinct.
@@ -157,7 +194,7 @@ Passwords pass through stdin, never command arguments or environment variables.
 Paths in credentials YAML refer to the container's mounted directory.
 [Other credential sources](#usage-credentials) include plaintext files and inline hashes.
 
-### 3. Create signing keys<a id="usage-signing-keys"></a>
+### 3. Create signing keys (admin)<a id="usage-signing-keys"></a>
 
 Run once on the administration host:
 
@@ -172,7 +209,7 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 `snapshot.key` securely; keep it on the signing host or in its secret store,
 never in Git, an image or an application host. Deploy only `snapshot.pub`.
 
-### 4. Generate a snapshot<a id="usage-generate-snapshot"></a>
+### 4. Generate a snapshot (admin/CI)<a id="usage-generate-snapshot"></a>
 
 ```bash
 revision=1
@@ -193,14 +230,43 @@ Each selected service produces `directory.ldif`, `manifest.json` and
 `manifest.json.minisig`. Repeat `--service ID` for several services; omit it
 to generate all services.
 
-### 5. Deploy and query LDAP<a id="usage-rootless-podman"></a>
+### 5. Deploy and query LDAP (LDAP host)<a id="usage-rootless-podman"></a>
 
 Follow the [Quadlet deployment guide](examples/quadlet/README.md) to transfer
 the snapshot, preflight it, start LDAP and verify the application bind and user
 password. It also covers renewals and the host expiry backstop.
 
 
-## Directory administration<a id="usage-maintenance"></a>
+## Directory administration (admin/CI)<a id="usage-maintenance"></a>
+
+### Services: one directory per application<a id="usage-services"></a>
+
+Users and groups are the shared source records. A service selects which of them
+to export for an application, such as Nextcloud, and configures that export's
+LDAP base DN, bind account and expiry. Each service produces a separate snapshot
+for its own LDAP container. `services` is this project's export configuration,
+not an OpenLDAP requirement. Defining a service does not start containers.
+
+For one application, define one service. Add another when an application needs
+its own selection, bind password or snapshot lifecycle; reuse the existing user
+and group IDs.
+
+| Field in the example | Meaning |
+| -------------------- | ------- |
+| `id: "example-app"` | Names the export; used by `--service`, its output directory and the target's `LDAP_EXPECTED_SERVICE_ID`. |
+| `base_dn` | LDAP search root for this application. It does not configure a DNS name or hostname. |
+| `revision: 1` | Snapshot version. Increase it for every new snapshot, including renewals. |
+| `soft_ttl_seconds: 21600` | Warn 6 hours after generation. |
+| `hard_ttl_seconds: 43200` | Stop LDAP 12 hours after generation unless replaced. |
+| `expiry_offset_seconds: 0` | Subtract this many seconds from both deadlines; `0` leaves them unchanged. |
+| `groups: ["group-staff"]` | Include this group and its active members. |
+| `users: []` | No additional individual users. This does not exclude users selected through groups. |
+| `bind_account` | The application's search account: `cn=application,ou=services,<base_dn>`. Its `id` keeps its UUID stable. |
+
+The example exports Alice and `staff`, plus a separate application bind
+account. Its password comes from `credentials.yaml` under `services.example-app`.
+Configure the application with the original bind password, not its stored hash;
+Alice authenticates with her own password.
 
 ### IDs and renames<a id="usage-identities"></a>
 
@@ -229,12 +295,14 @@ change their case or regenerate the namespace. A UUID used as `id` is still
 an input to the [UUID calculation](ARCHITECTURE.md#44-stable-identifiers),
 not the resulting LDAP `entryUUID`.
 
-### Membership and access
+### Membership and access<a id="usage-membership"></a>
 
 Only selected, active users appear in a service snapshot. Select users through
 `services[].groups` or directly through `services[].users`. Groups with no
 selected active members are omitted. OpenLDAP requires no default group;
 a directly selected user can have no groups and no `memberOf` attribute.
+Names such as `ALLOW` or `DENY` have no built-in effect: service selections only
+include users. Enforce any additional group-based access rules in the application.
 
 Normal accounts cannot write, read password hashes or access `cn=config`.
 Authenticated users can read approved attributes of other entries in the same
@@ -278,25 +346,47 @@ it contains hashes.
 Accepted hashes: `{ARGON2}$argon2id$v=19$...`, `m>=19456` KiB, `t>=2`, `p>=1`,
 at least 16 salt bytes and 32 digest bytes, canonical unpadded base64.
 Use fresh salts; test stronger settings against your memory limits and bind load.
-Hashes and snapshots allow offline password guessing: keep them out of Git,
-logs, image layers and application filesystem access.
+Keep hashes out of logs, image layers and application filesystem access.
+
+#### Hashes in private Git<a id="usage-hashes-in-git"></a>
+
+Hash-only credentials YAML can live in a tightly controlled private repository.
+Treat repository readers, CI jobs, clones and backups as having access to those
+verifiers. Argon2id makes offline guessing expensive; it cannot protect a weak
+password from being guessed. Use strong, unique passwords and review changes
+before a protected job signs them. See [OWASP's password storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html).
+
+Deleting a hash from the current file does not remove it from
+[history or existing clones](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository).
+Use a separate secret store or encrypted credentials file when repository access
+is broader than credential access. Decrypt outside the checkout before generation.
+Never commit plaintext passwords or private signing keys.
+
+Git does not preserve owner-only permissions. If credentials YAML is versioned
+alongside directory YAML, stage it after checkout before running the generator:
+
+```bash
+install -m 0600 "${data}/credentials.yaml" "${private}/credentials.yaml"
+```
 
 
 ## Operations<a id="usage-ops"></a>
 
-### Deploy and renew<a id="snapshot-lifecycle"></a>
+### Deploy and renew (admin/CI and LDAP host)<a id="snapshot-lifecycle"></a>
 
 Use the [rootless Quadlet guide](examples/quadlet/README.md) to install a service,
 preflight snapshots, switch revisions and enable the host expiry backstop.
 Applications on its internal network use `ldap://ldap:1389`, their service's
 base DN and `cn=application,ou=services,<base_dn>` bind DN.
 
-1. Edit directory data or credentials and increment each selected service's
-   YAML `revision`, even for a renewal with no account changes.
-2. Repeat [generation](#usage-generate-snapshot) with a new output directory.
-3. Transfer only the selected service snapshot and public verification key.
-4. Preflight against the existing revision state, activate and restart.
-5. Check status and application authentication.
+1. On admin/CI, edit directory data or credentials and increment each selected
+   service's YAML `revision`, even for a renewal with no account changes.
+2. On admin/CI, repeat [generation](#usage-generate-snapshot) with a new output
+   directory.
+3. From admin/CI, transfer the selected snapshot to the LDAP host; provision its
+   public verification key on initial setup or planned rotation.
+4. On the LDAP host, preflight against existing revision state, activate and restart.
+5. On the LDAP host, check status; verify authentication in the application.
 
 The example warns after 6 hours and stops after 12 hours. Refresh before the
 warning deadline. Each service sets `soft_ttl_seconds < hard_ttl_seconds`;
@@ -304,10 +394,11 @@ warning deadline. Each service sets `soft_ttl_seconds < hard_ttl_seconds`;
 less than the soft TTL. Replaying the exact artifact is allowed but does not
 renew it. Regenerating with the same revision is rejected.
 
-For an image update, pull and record the new release digests, preflight with the
-new runtime image, then update the Quadlet's `Image=` and restart.
+For an image update, update the generator on admin/CI. On the LDAP host, pull
+the new runtime, preflight with it, then update the Quadlet's `Image=` and restart.
+Record both release digests.
 
-### Status and logs
+### Status and logs (LDAP host)<a id="usage-status"></a>
 
 ```bash
 systemctl --user status openldap-example.service
@@ -318,30 +409,32 @@ podman exec openldap-example /usr/local/lib/openldap-declarative/status.sh
 Status returns JSON: exit `0` healthy, `1` soft-expired, `2` expired/unavailable.
 Soft expiry is a warning; at hard expiry the runtime stops LDAP with exit `78`.
 
-### TLS and signing keys<a id="tls"></a>
+### TLS and signing keys (admin/CI and LDAP host)<a id="tls"></a>
 
 Use validated LDAPS outside trusted host-local connections. TLS 1.2/1.3 is
 required; clients must validate the server name and CA. Restart after certificate
 renewal. See the [deployment guide](examples/quadlet/README.md#tls-and-signing-key-rotation)
-for certificate mounts and signing-key rotation, including the backstop's
-single-key requirement.
+for certificate mounts on the LDAP host and coordinated signing-key rotation.
+Private signing keys stay on admin/CI; public verification keys go to the LDAP
+host, including the backstop's single-key file.
 
-### Backup and recovery<a id="backup-and-recovery"></a>
+### Backup and recovery (admin/CI and LDAP host)<a id="backup-and-recovery"></a>
 
-Back up directory YAML (including its namespace), credentials, signing keys,
-deployment files, image digests and per-service revision state. The MDB database
-is rebuilt at startup. Restore on a clean host with a current signed snapshot;
+On admin/CI, back up directory YAML (including its namespace), credentials,
+private signing keys, deployment files and image digests. On the LDAP host,
+back up public keys and per-service revision state. The MDB database is rebuilt
+at startup. Restore on a clean LDAP host with a current signed snapshot;
 check UUIDs, user authentication and rejection of expired snapshots.
 
-No administrator password is configured by default. For temporary recovery,
-mount a plaintext password file and set `LDAP_ADMIN_PASSWORD_FILE`.
+No administrator password is configured by default. For temporary recovery on
+the LDAP host, mount a plaintext password file and set `LDAP_ADMIN_PASSWORD_FILE`.
 The resulting `cn=admin,<base_dn>` account bypasses ACLs, can write and can read
 password hashes. Never give it to applications. Recovery edits disappear on
 rebuild; update source YAML for lasting changes. Remove the input and restart
 when finished.
 
 
-## Runtime inputs<a id="runtime-inputs"></a>
+## Runtime inputs (LDAP host)<a id="runtime-inputs"></a>
 
 Service identity, base DN, revision and expiry come from the signed snapshot.
 
