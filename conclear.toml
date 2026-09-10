@@ -11,33 +11,25 @@ platforms = ["linux/amd64", "linux/arm64"]
 
 [images.test]
 dependencies = ["generator"]
-
-[[images.test.fixtures]]
-name = "generator-input"
-path = "examples/generator"
-
-[[images.test.outputs]]
-name = "credentials"
-secret = true
-
-[[images.test.outputs]]
-name = "snapshot"
-
-[[images.test.outputs]]
-name = "runtime-work"
-secret = true
-
-[[images.test.outputs]]
-name = "revision-state"
-secret = true
+fixtures = [
+  { name = "generator-input", path = "examples/generator" },
+  { name = "test-tools", path = "tests/fixtures" },
+]
+outputs = [
+  { name = "credentials", secret = true },
+  { name = "snapshot" },
+  { name = "runtime-work", secret = true },
+  { name = "revision-state", secret = true },
+]
 
 [[images.test.preparations]]
 name = "create-test-credentials"
 image = "generator"
-command = ["/bin/sh", "-c", "set -eu; cp /input/credentials.yaml.example /output/credentials.yaml; printf '%s\\n' 'TEST-ONLY-user-default-20260903' > /output/person-0001; printf '%s\\n' 'TEST-ONLY-user-app-20260903' > /output/person-0001-example-app; printf '%s\\n' 'TEST-ONLY-user-mail-20260903' > /output/person-0001-example-mail; printf '%s\\n' 'TEST-ONLY-user-bob-20260903' > /output/person-0003-example-mail; printf '%s\\n' 'TEST-ONLY-bind-app-20260903' > /output/bind-example-app; printf '%s\\n' 'TEST-ONLY-bind-mail-20260903' > /output/bind-example-mail; minisign -G -W -p /output/snapshot-public-key -s /output/snapshot.key >/dev/null; chmod 0600 /output/*"]
+command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/input", "/output"]
 timeout_seconds = 60
 mounts = [
   { name = "generator-input", target = "/input" },
+  { name = "test-tools", target = "/test-tools" },
   { name = "credentials", target = "/output", read_only = false },
 ]
 
@@ -52,23 +44,8 @@ mounts = [
   { name = "snapshot", target = "/output", read_only = false },
 ]
 
-[[images.test.preparations]]
-name = "initialize-runtime-work"
-image = "generator"
-command = ["/bin/sh", "-c", "umask 077; printf '%s\n' 'conclear-owned-runtime' > /output/.prepared"]
-timeout_seconds = 30
-mounts = [{ name = "runtime-work", target = "/output", read_only = false }]
-
-[[images.test.preparations]]
-name = "initialize-revision-state"
-image = "generator"
-command = ["/bin/sh", "-c", "umask 077; printf '%s\n' 'conclear-owned-state' > /output/.prepared"]
-timeout_seconds = 30
-mounts = [{ name = "revision-state", target = "/output", read_only = false }]
-
 [images.test.launch]
 environment = { LDAP_EXPECTED_SERVICE_ID = "example-app", LDAP_SNAPSHOT_DIR = "/snapshot/generated/example-app" }
-expected_exit_status = 0
 mounts = [
   { name = "credentials", target = "/run/credentials" },
   { name = "snapshot", target = "/snapshot" },
@@ -91,8 +68,8 @@ reference = "docker.io/library/debian:13-slim"
 tag_intent = "moving-release-line"
 
 [images.release]
-immutable_tags = ["{version}"]
-moving_tags = ["stable"]
+version_tags = ["{version}"]
+moving_tags = ["stable", "latest"]
 
 [images.runtime]
 profile = "service"
@@ -113,37 +90,29 @@ containerfile = "Containerfile.generator"
 repository = "quay.io/foundata/openldap-declarative-generator"
 platforms = ["linux/amd64", "linux/arm64"]
 
-[[images.test.fixtures]]
-name = "generator-input"
-path = "examples/generator"
-
-[[images.test.outputs]]
-name = "credentials"
-secret = true
-
-[[images.test.outputs]]
-name = "snapshot"
+[images.test]
+fixtures = [
+  { name = "generator-input", path = "examples/generator" },
+  { name = "test-tools", path = "tests/fixtures" },
+]
+outputs = [
+  { name = "credentials", secret = true },
+  { name = "snapshot" },
+]
 
 [[images.test.preparations]]
 name = "create-test-credentials"
 image = "generator"
-command = ["/bin/sh", "-c", "set -eu; cp /input/credentials.yaml.example /output/credentials.yaml; printf '%s\\n' 'TEST-ONLY-user-default-20260903' > /output/person-0001; printf '%s\\n' 'TEST-ONLY-user-app-20260903' > /output/person-0001-example-app; printf '%s\\n' 'TEST-ONLY-user-mail-20260903' > /output/person-0001-example-mail; printf '%s\\n' 'TEST-ONLY-user-bob-20260903' > /output/person-0003-example-mail; printf '%s\\n' 'TEST-ONLY-bind-app-20260903' > /output/bind-example-app; printf '%s\\n' 'TEST-ONLY-bind-mail-20260903' > /output/bind-example-mail; minisign -G -W -p /output/snapshot-public-key -s /output/snapshot.key >/dev/null; chmod 0600 /output/*"]
+command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/input", "/output"]
 timeout_seconds = 60
 mounts = [
   { name = "generator-input", target = "/input" },
+  { name = "test-tools", target = "/test-tools" },
   { name = "credentials", target = "/output", read_only = false },
 ]
 
-[[images.test.preparations]]
-name = "initialize-snapshot-output"
-image = "generator"
-command = ["/bin/sh", "-c", "printf '%s\\n' 'conclear-owned-output' > /output/.prepared"]
-timeout_seconds = 30
-mounts = [{ name = "snapshot", target = "/output", read_only = false }]
-
 [images.test.launch]
 arguments = ["--directory", "/input/directory.yaml", "--credentials", "/run/credentials/credentials.yaml", "--signing-key", "/run/credentials/snapshot.key", "--output", "/output/generated"]
-expected_exit_status = 0
 mounts = [
   { name = "generator-input", target = "/input" },
   { name = "credentials", target = "/run/credentials" },
@@ -160,8 +129,8 @@ reference = "docker.io/library/debian:13-slim"
 tag_intent = "moving-release-line"
 
 [images.release]
-immutable_tags = ["{version}"]
-moving_tags = ["stable"]
+version_tags = ["{version}"]
+moving_tags = ["stable", "latest"]
 
 [images.runtime]
 profile = "one-shot"
