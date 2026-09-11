@@ -1,6 +1,6 @@
 [Unit]
 Description=Verify and stop an unsafe application-local OpenLDAP directory
-Documentation=https://github.com/foundata/oci-openldap-declarative
+Documentation=https://foundata.com/en/projects/oci-openldap-declarative/#doc
 
 [Service]
 Type=oneshot

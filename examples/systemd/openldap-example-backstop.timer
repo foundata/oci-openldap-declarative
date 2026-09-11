@@ -1,6 +1,6 @@
 [Unit]
 Description=Check the application-local OpenLDAP directory independently
-Documentation=https://github.com/foundata/oci-openldap-declarative
+Documentation=https://foundata.com/en/projects/oci-openldap-declarative/#doc
 
 [Timer]
 OnBootSec=2min

@@ -105,3 +105,19 @@ def test_release_tags_publish_exact_versions_and_latest() -> None:
     for image in config["images"]:
         assert image["release"]["version_tags"] == ["{version}"]
         assert image["release"]["moving_tags"] == ["latest"]
+
+
+def test_public_image_metadata_uses_project_page() -> None:
+    project_url = "https://foundata.com/en/projects/oci-openldap-declarative/"
+    for name in ("Containerfile", "Containerfile.generator"):
+        labels = {
+            key: value
+            for line in (ROOT / name).read_text().splitlines()
+            if line.startswith("LABEL ")
+            for key, value in (shlex.split(line)[1].split("=", 1),)
+        }
+        assert labels["org.opencontainers.image.url"] == project_url
+        assert labels["org.opencontainers.image.documentation"] == project_url + "#doc"
+    with (ROOT / "REUSE.toml").open("rb") as stream:
+        reuse = tomllib.load(stream)
+    assert reuse["SPDX-PackageDownloadLocation"] == project_url + "#releases"

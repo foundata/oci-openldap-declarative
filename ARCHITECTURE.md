@@ -9,7 +9,7 @@ Implementation and tests MUST conform to this contract.
 Discrepancies MUST be investigated; an approved correction changes either the
 implementation or the contract. This document contains no planned or speculative
 behavior. Proposals and future changes are tracked separately, preferably as
-[issues](https://github.com/foundata/oci-openldap-declarative/issues), until the
+[issues](https://foundata.com/en/projects/oci-openldap-declarative/#issues), until the
 implementation, tests and corresponding contract changes are merged together.
 
 

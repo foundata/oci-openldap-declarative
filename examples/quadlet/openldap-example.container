@@ -1,6 +1,6 @@
 [Unit]
 Description=Example application-local OpenLDAP directory
-Documentation=https://github.com/foundata/oci-openldap-declarative
+Documentation=https://foundata.com/en/projects/oci-openldap-declarative/#doc
 
 [Container]
 # Replace this placeholder with a tested image digest mirrored to your registry.
