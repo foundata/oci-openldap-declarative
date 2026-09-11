@@ -23,7 +23,7 @@ write_status() {
   current_epoch=${3}
   soft_expires_epoch=${4}
   expires_epoch=${5}
-  service_id=${6}
+  directory_id=${6}
   revision=${7}
   generated_at=${8}
   soft_expires_at=${9}
@@ -33,7 +33,7 @@ write_status() {
   jq -cn \
     --arg state "${state}" \
     --arg ldap_state "${ldap_state}" \
-    --arg service_id "${service_id}" \
+    --arg directory_id "${directory_id}" \
     --arg revision "${revision}" \
     --arg generated_at "${generated_at}" \
     --arg soft_expires_at "${soft_expires_at}" \
@@ -43,7 +43,7 @@ write_status() {
     '{
       state: $state,
       ldap: $ldap_state,
-      service_id: $service_id,
+      directory_id: $directory_id,
       revision: ($revision | tonumber),
       generated_at: $generated_at,
       soft_expires_at: $soft_expires_at,
@@ -62,7 +62,7 @@ report_status() {
   fi
 
   current_epoch=$(date -u +%s) || return 2
-  service_id=$(read_manifest_field service_id) || return 2
+  directory_id=$(read_manifest_field directory_id) || return 2
   revision=$(jq -er '.revision | numbers | select(floor == . and . >= 1 and . <= 9007199254740991)' "${active_manifest_file}") || return 2
   generated_at=$(read_manifest_field generated_at) || return 2
   soft_expires_at=$(read_manifest_field soft_expires_at) || return 2
@@ -100,7 +100,7 @@ report_status() {
     "${current_epoch}" \
     "${soft_expires_epoch}" \
     "${expires_epoch}" \
-    "${service_id}" \
+    "${directory_id}" \
     "${revision}" \
     "${generated_at}" \
     "${soft_expires_at}" \

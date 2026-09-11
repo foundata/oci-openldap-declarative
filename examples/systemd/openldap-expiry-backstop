@@ -9,14 +9,14 @@ readonly podman_binary="${PODMAN:-podman}"
 main() {
   if [ "$#" -ne 4 ] || [ -z "${1}" ] || [ -z "${2}" ] \
     || [ -z "${3}" ] || [ -z "${4}" ]; then
-    printf 'Usage: %s CONTAINER SNAPSHOT_DIR PUBLIC_KEY_FILE SERVICE_ID\n' \
+    printf 'Usage: %s CONTAINER SNAPSHOT_DIR PUBLIC_KEY_FILE DIRECTORY_ID\n' \
       "${0##*/}" >&2
     return 64
   fi
   container_name=${1}
   snapshot_directory=${2}
   public_key_file=${3}
-  expected_service_id=${4}
+  expected_directory_id=${4}
 
   if ! "${podman_binary}" container exists "${container_name}"; then
     printf 'Container does not exist: %s\n' "${container_name}" >&2
@@ -64,7 +64,7 @@ main() {
     --cap-drop all \
     --security-opt no-new-privileges \
     --tmpfs /run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=1777 \
-    --env "LDAP_EXPECTED_SERVICE_ID=${expected_service_id}" \
+    --env "LDAP_EXPECTED_DIRECTORY_ID=${expected_directory_id}" \
     --env LDAP_SNAPSHOT_DIR=/snapshot \
     --env LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/run/credentials/snapshot-public-key \
     --volume "${snapshot_directory}:/snapshot:ro,z" \

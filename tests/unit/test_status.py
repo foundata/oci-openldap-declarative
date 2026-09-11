@@ -42,7 +42,7 @@ def test_status_and_health_share_deadlines_and_availability(
     health_code: int,
 ) -> None:
     manifest = {
-        "service_id": "test-service",
+        "directory_id": "test-service",
         "revision": 7,
         "base_dn": "DC=example,dc=org",
         "generated_at": "2025-01-01T00:00:00Z",

@@ -1,8 +1,7 @@
 # Development
 
-This file provides information for maintainers and contributors to OpenLDAP
-Declarative. What the system is, why it exists, and its security boundaries
-live in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+Build, test and release instructions for maintainers. The behavioral contract
+is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 
 ## Table of contents<a id="toc"></a>
@@ -74,29 +73,25 @@ development, not qualified releases.
 
 ## Project structure<a id="project-structure"></a>
 
-The repository builds two independent images from one pipeline, split by
-`Containerfile`. The runtime image contains only what a listening LDAP service
-needs: OpenLDAP, the Argon2 module, LDAP clients, and the scripts that verify
-and import a snapshot. It retains the distribution shell and utilities,
-including jq, minisign and OpenSSL, but carries no compiler or Python generator
-stack. This keeps generation dependencies off the host accepting LDAP connections.
+The runtime image contains OpenLDAP, LDAP clients, signature tools and the
+startup scripts. Python and `python-ldap` validate LDIF before offline import;
+the same validator runs in the generator. Runtime does not contain PyYAML,
+Argon2 generation bindings or Ansible Vault.
 
-Generating a signed snapshot's LDIF from declarative YAML instead needs Python,
-PyYAML, and `python-ldap`. Those dependencies live in `Containerfile.generator`,
-a separate image that never runs next to an application and is never part of
-the release the runtime depends on. Generation happens offline, ahead of
-deployment; its only output is a signed, self-contained snapshot that the
-runtime image treats as untrusted input to verify, not as code to execute.
-Keeping the two Containerfiles apart makes that separation structural: the
-generator's dependencies have no path into the image that holds an
-application's credentials.
+The generator image contains source parsing, Argon2id generation and
+`ansible-core` for its official `ansible-vault` CLI. Its dependency boundary is
+the signed snapshot; no generator process or source-decryption key is needed
+on the LDAP host. Debian package installation uses `--no-install-recommends`
+to exclude the full Ansible collection bundle.
 
 ```text
 Containerfile                    # runtime image
 Containerfile.generator          # LDIF snapshot-generator image
 conclear.toml                    # image, runtime and test declarations
 generator/                       # snapshot generator, Python, offline only
+generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
+scripts/directory_data.py        # shared LDIF, schema and verifier validation
 schema/                          # public JSON Schema contracts
 examples/                        # deployment and input examples
 tests/                           # schema, policy and behavioral tests
@@ -127,6 +122,11 @@ hack/check.sh                    # direct repository check
 `hack/check.sh` runs the direct repository check: shell, Containerfiles, and
 Python formatting/lint/type checks, plus the unit tests below `tests/unit`.
 None of this needs ConClear.
+
+Unit tests do not require a host Ansible installation. Integration tests exercise
+the generator image's actual Vault CLI, both input routes, custom schema imports,
+authentication, access policy and snapshot lifecycle. Input-schema checks apply
+after Vault decryption; OpenLDAP's offline import is the schema authority.
 
 ```sh
 sh hack/check.sh

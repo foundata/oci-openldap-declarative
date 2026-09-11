@@ -27,8 +27,8 @@ readonly MAX_SNAPSHOT_BYTES=16777216
 validate_input_files() {
   validation_errors=0
 
-  if [ -z "${LDAP_EXPECTED_SERVICE_ID:-}" ]; then
-    log_error 'LDAP_EXPECTED_SERVICE_ID is required'
+  if [ -z "${LDAP_EXPECTED_DIRECTORY_ID:-}" ]; then
+    log_error 'LDAP_EXPECTED_DIRECTORY_ID is required'
     validation_errors=$((validation_errors + 1))
   fi
 
@@ -145,23 +145,31 @@ verify_signature() {
 validate_manifest_schema() {
   if ! jq -e --argjson max_snapshot_files "${MAX_SNAPSHOT_FILES}" '
     type == "object" and
-    ((keys | sort) == ["base_dn", "expires_at", "files", "format_version", "generated_at", "revision", "service_id", "soft_expires_at", "uuid_namespace"]) and
+    ((keys | sort) == ["base_dn", "directory_id", "expires_at", "files", "format_version", "generated_at", "input_type", "read_attributes", "revision", "soft_expires_at", "uuid_namespace"]) and
     (.format_version == 1) and
-    (.service_id | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,127}$")) and
-    (.base_dn | type == "string" and length > 0 and length <= 1024) and
+    (.directory_id | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,127}$")) and
+    (.base_dn | type == "string" and length > 0 and length <= 1024 and (test("[\\u0000\\r\\n]") | not)) and
     (.revision | type == "number" and floor == . and . >= 1 and . <= 9007199254740991) and
     (.generated_at | type == "string" and fromdateiso8601 >= 0) and
     (.soft_expires_at | type == "string" and fromdateiso8601 >= 0) and
     (.expires_at | type == "string" and fromdateiso8601 >= 0) and
-    (.uuid_namespace | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")) and
+    (if .input_type == "users-groups" then
+      (.uuid_namespace | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))
+    else .input_type == "ldif" and .uuid_namespace == null end) and
+    (.read_attributes | type == "array" and length > 0 and length <= 128 and
+      all(.[]; type == "string" and length <= 128 and test("^([A-Za-z][A-Za-z0-9-]*|[0-9]+(\\.[0-9]+)+)$") and
+        (ascii_downcase | . != "userpassword" and . != "2.5.4.35" and (startswith("olc") | not))) and
+      (map(ascii_downcase) | length == (unique | length))) and
     (.files | type == "array" and length > 0 and length <= $max_snapshot_files) and
     (all(.files[];
       type == "object" and
-      ((keys | sort) == ["path", "sha256"]) and
+      ((keys | sort) == ["kind", "path", "sha256"]) and
+      (.kind == "data" or .kind == "schema") and
       (.path | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*\\.ldif$")) and
       (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
     )) and
     ([.files[].path] | length == (unique | length)) and
+    (any(.files[]; .kind == "data")) and
     ((.generated_at | fromdateiso8601) <= (.soft_expires_at | fromdateiso8601)) and
     ((.soft_expires_at | fromdateiso8601) < (.expires_at | fromdateiso8601))
   ' "${VERIFIED_MANIFEST_FILE}" >/dev/null; then
@@ -173,10 +181,10 @@ validate_manifest_schema() {
 }
 
 validate_manifest_identity() {
-  manifest_service_id=$(jq -r '.service_id' "${VERIFIED_MANIFEST_FILE}") || return "${EXIT_SNAPSHOT}"
+  manifest_directory_id=$(jq -r '.directory_id' "${VERIFIED_MANIFEST_FILE}") || return "${EXIT_SNAPSHOT}"
 
-  if [ "${manifest_service_id}" != "${LDAP_EXPECTED_SERVICE_ID}" ]; then
-    log_error "Snapshot service ID does not match LDAP_EXPECTED_SERVICE_ID"
+  if [ "${manifest_directory_id}" != "${LDAP_EXPECTED_DIRECTORY_ID}" ]; then
+    log_error "Snapshot directory ID does not match LDAP_EXPECTED_DIRECTORY_ID"
     return "${EXIT_SNAPSHOT}"
   fi
 
@@ -286,7 +294,7 @@ main() {
   validate_manifest_times || exit $?
   validate_manifest_files || exit $?
 
-  log_info "Accepted signed snapshot for service ${LDAP_EXPECTED_SERVICE_ID}"
+  log_info "Accepted signed snapshot for directory ${LDAP_EXPECTED_DIRECTORY_ID}"
 }
 
 main "$@"

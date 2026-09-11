@@ -55,37 +55,6 @@ check_snapshot_expiry() {
   return 0
 }
 
-validate_password_hashes() {
-  # PHC base64 is unpadded: check decoded lengths and zero unused trailing bits.
-  # Keep these bounds aligned with generator.validate_password_hash.
-  LC_ALL=C awk '
-    function valid_base64(value, minimum, size, remainder, last) {
-      size = length(value)
-      remainder = size % 4
-      last = substr(value, size, 1)
-      return value ~ /^[A-Za-z0-9+\/]+$/ && int(size * 3 / 4) >= minimum \
-        && remainder != 1 \
-        && (remainder != 2 || last ~ /^[AQgw]$/) \
-        && (remainder != 3 || last ~ /^[AEIMQUYcgkosw048]$/)
-    }
-    {
-      if (length($0) > 4096 || split($0, fields, "\\$") != 6 \
-          || fields[1] != "{ARGON2}" || fields[2] != "argon2id" \
-          || fields[3] != "v=19" \
-          || fields[4] !~ /^m=[1-9][0-9]*,t=[1-9][0-9]*,p=[1-9][0-9]*$/) exit 1
-      split(fields[4], costs, ",")
-      memory = substr(costs[1], 3) + 0
-      iterations = substr(costs[2], 3) + 0
-      parallelism = substr(costs[3], 3) + 0
-      if (memory < 19456 || memory > 4294967295 \
-          || iterations < 2 || iterations > 4294967295 \
-          || parallelism < 1 || parallelism > 16777215 \
-          || memory < 8 * parallelism \
-          || !valid_base64(fields[5], 16) || !valid_base64(fields[6], 32)) exit 1
-    }
-  ' "${1}"
-}
-
 remove_verified_snapshot() {
   cleanup_runtime_dir=${1}
   cleanup_snapshot_dir=${cleanup_runtime_dir}/verified-snapshot

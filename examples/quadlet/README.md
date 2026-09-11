@@ -1,6 +1,6 @@
 # Rootless Podman deployment
 
-Deploy one service snapshot per container. These commands use the README's
+Deploy one directory snapshot per container. These commands use the README's
 `example-app` directory and the files in this repository's `examples/` tree.
 Use example files from the same release as your images.
 Headings name the host where each action runs; see
@@ -39,7 +39,7 @@ runtime=$(podman image inspect --format '{{index .RepoDigests 0}}' "${runtime}")
 ```
 
 Install the units from the repository root. Adjust names, paths and resource
-limits for additional services; do not share their revision-state volumes.
+limits for additional directories; do not share their revision-state volumes.
 
 ```bash
 umask 077
@@ -74,7 +74,7 @@ revision=1
 (
   set -eu
   ssh "${ldap_host}" "umask 077; mkdir ~/.local/share/openldap-declarative/example-app/incoming/revision-${revision}"
-  scp -r "${output}/revision-${revision}/example-app/." \
+  scp -r "${output}/revision-${revision}/." \
     "${ldap_host}:.local/share/openldap-declarative/example-app/incoming/revision-${revision}/"
 )
 ```
@@ -88,7 +88,7 @@ scp "${private}/snapshot.pub" \
 
 The destination revision directory must be new. For later key changes, follow
 [signing-key rotation](#tls-and-signing-key-rotation). Never transfer the private
-signing key, credentials YAML or source password files to the LDAP host.
+signing key, source definition, Vault keys or password files to the LDAP host.
 
 ## Preflight and activate (LDAP host)<a id="preflight-and-activate"></a>
 
@@ -162,7 +162,7 @@ Add `Network=openldap-example.network` to the application's Quadlet:
 | LDAP URL | `ldap://ldap:1389` |
 | Base DN | `dc=example-app,dc=services,dc=example,dc=org` |
 | Bind DN | `cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
-| Bind password | Password used to generate `example-app-bind.hash` |
+| Bind password | Original password used for the bind account's verifier |
 | Login attribute | `uid` |
 | Persistent identity attribute | `entryUUID` |
 | Group membership attribute | `memberOf` |
@@ -175,7 +175,7 @@ required, bound to host `127.0.0.1` for host-local clients.
 
 ### Generate and transfer (admin/CI)<a id="generate-and-transfer"></a>
 
-Increment the service's YAML revision, regenerate before soft expiry and
+Increment the directory's YAML revision, regenerate before soft expiry and
 transfer to a new staging directory. Replaying an existing artifact does not
 renew it. For a release update, use the new generator digest on admin/CI.
 

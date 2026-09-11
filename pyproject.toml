@@ -20,6 +20,7 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 addopts = ["--import-mode=importlib"]
 filterwarnings = ["error"]
 markers = [
@@ -39,4 +40,4 @@ select = ["B", "E4", "E7", "E9", "F", "I", "RUF", "SIM", "UP"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
-files = ["generator", "tests"]
+files = ["generator", "scripts/directory_data.py", "tests"]

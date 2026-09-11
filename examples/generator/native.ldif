@@ -1,0 +1,25 @@
+# TEST DATA ONLY. The reader password is TEST-ONLY-native-bind; replace its hash.
+dn: o=Example
+objectClass: organization
+o: Example
+entryUUID: 5c426156-1ce1-419b-86cd-f145476d9019
+
+dn: ou=devices,o=Example
+objectClass: organizationalUnit
+ou: devices
+entryUUID: 5240fbe1-ab25-4465-806b-3741373c6d73
+
+dn: cn=router,ou=devices,o=Example
+objectClass: device
+objectClass: exampleDevice
+cn: router
+deviceLabel: Main router
+description: Not exposed to LDAP clients
+entryUUID: 1088fe7c-71e9-4b5f-b968-820d4bb24c37
+
+dn: cn=reader,o=Example
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: reader
+entryUUID: 20a13d02-80ca-44a6-8f15-5c223b9bc72c
+userPassword: {ARGON2}$argon2id$v=19$m=19456,t=2,p=1$ZwU78/Z/XmcjZ/UMvpqrpw$hM07Toib4QFICSBoN4zJt/TWHHyNwGbh1PL52OVVeQ8

@@ -31,7 +31,7 @@ def wait_until_initializing(podman: Podman, name: str) -> None:
     while time.monotonic() < deadline:
         if podman.state(name) != "running":
             pytest.fail(f"{name} stopped before initializing:\n{podman.logs(name)}")
-        if "Starting snapshot initialization for service" in podman.logs(name):
+        if "Starting snapshot initialization for directory" in podman.logs(name):
             return
         time.sleep(POLL_INTERVAL)
     pytest.fail(f"{name} did not start initializing:\n{podman.logs(name)}")

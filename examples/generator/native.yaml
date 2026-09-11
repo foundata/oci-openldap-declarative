@@ -1,0 +1,10 @@
+format_version: 1
+directory_id: "native-example"
+base_dn: "o=Example"
+revision: 1
+soft_ttl_seconds: 21600
+hard_ttl_seconds: 43200
+input_type: "ldif"
+ldif_files: ["native.ldif"]
+schema_files: ["device-schema.ldif"]
+read_attributes: ["objectClass", "entryUUID", "o", "ou", "cn", "deviceLabel"]

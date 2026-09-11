@@ -1,4 +1,11 @@
 format_version: 1
+directory_id: "example-app"
+base_dn: "dc=example-app,dc=services,dc=example,dc=org"
+revision: 1
+soft_ttl_seconds: 21600
+hard_ttl_seconds: 43200
+expiry_offset_seconds: 0
+input_type: "users-groups"
 uuid_namespace: "7f38d690-8427-5ca2-98b4-bd5ee71ac31f"
 organization: "Example Company"
 
@@ -9,6 +16,7 @@ users:
     surname: "Example"
     mail: "alice@example.org"
     active: true
+    password_file: "/run/credentials/person-0001-example-app"
   - id: "person-0002"
     uid: "disabled"
     common_name: "Disabled Example"
@@ -20,6 +28,7 @@ users:
     surname: "Example"
     mail: "bob@example.org"
     active: true
+    password_file: "/run/credentials/person-0003"
 
 groups:
   - id: "group-staff"
@@ -28,29 +37,7 @@ groups:
       - "person-0001"
       - "person-0002"
 
-services:
-  - id: "example-app"
-    base_dn: "dc=example-app,dc=services,dc=example,dc=org"
-    revision: 1
-    soft_ttl_seconds: 21600
-    hard_ttl_seconds: 43200
-    expiry_offset_seconds: 0
-    groups:
-      - "group-staff"
-    users: []
-    bind_account:
-      id: "bind-example-app"
-      common_name: "application"
-  - id: "example-mail"
-    base_dn: "dc=example-mail,dc=services,dc=example,dc=org"
-    revision: 7
-    soft_ttl_seconds: 21600
-    hard_ttl_seconds: 43200
-    expiry_offset_seconds: 600
-    groups:
-      - "group-staff"
-    users:
-      - "person-0003"
-    bind_account:
-      id: "bind-example-mail"
-      common_name: "application"
+bind_account:
+  id: "bind-example-app"
+  common_name: "application"
+  password_file: "/run/credentials/bind-example-app"

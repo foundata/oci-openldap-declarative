@@ -37,7 +37,7 @@ def test_representative_manifest_matches_meta_validated_schema() -> None:
     "missing_key",
     [
         "format_version",
-        "service_id",
+        "directory_id",
         "base_dn",
         "revision",
         "generated_at",
@@ -57,7 +57,7 @@ def test_required_manifest_keys_are_enforced(missing_key: str) -> None:
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("service_id", "Wrong Service"),
+        ("directory_id", "Wrong Service"),
         ("generated_at", "not-a-timestamp"),
         ("soft_expires_at", "2030-01-01"),
         ("expires_at", "tomorrow"),

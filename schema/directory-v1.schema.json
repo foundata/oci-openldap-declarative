@@ -1,26 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://foundata.com/schemas/openldap-directory-v1.schema.json",
-  "title": "OpenLDAP declarative source directory",
+  "title": "One OpenLDAP directory definition (validate after Vault decryption)",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "format_version",
-    "uuid_namespace",
-    "organization",
-    "users",
-    "groups",
-    "services"
+    "directory_id",
+    "base_dn",
+    "revision",
+    "soft_ttl_seconds",
+    "hard_ttl_seconds",
+    "input_type"
   ],
   "properties": {
     "format_version": {
       "const": 1
     },
+    "directory_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "base_dn": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000\\r\\n]+$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "soft_ttl_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "hard_ttl_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    },
+    "expiry_offset_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 86400
+    },
+    "input_type": {
+      "enum": [
+        "users-groups",
+        "ldif"
+      ]
+    },
+    "schema_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^[^\\u0000\\r\\n]+$"
+      },
+      "minItems": 0,
+      "maxItems": 31,
+      "uniqueItems": true
+    },
+    "read_attributes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^([A-Za-z][A-Za-z0-9-]*|[0-9]+(\\.[0-9]+)+)$"
+      },
+      "minItems": 1,
+      "maxItems": 128,
+      "uniqueItems": true
+    },
     "uuid_namespace": {
-      "$ref": "#/$defs/uuid"
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
     },
     "organization": {
-      "$ref": "#/$defs/nonemptyText"
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000\\r\\n]+$"
     },
     "users": {
       "type": "array",
@@ -34,42 +98,195 @@
         "$ref": "#/$defs/group"
       }
     },
-    "services": {
+    "bind_account": {
+      "$ref": "#/$defs/bindAccount"
+    },
+    "ldif_files": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/service"
-      }
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^[^\\u0000\\r\\n]+$"
+      },
+      "minItems": 1,
+      "maxItems": 31,
+      "uniqueItems": true
     }
   },
+  "oneOf": [
+    {
+      "properties": {
+        "input_type": {
+          "const": "users-groups"
+        }
+      },
+      "required": [
+        "uuid_namespace",
+        "organization",
+        "users",
+        "groups",
+        "bind_account"
+      ],
+      "not": {
+        "required": [
+          "ldif_files"
+        ]
+      }
+    },
+    {
+      "properties": {
+        "input_type": {
+          "const": "ldif"
+        }
+      },
+      "required": [
+        "ldif_files",
+        "read_attributes"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "uuid_namespace"
+            ]
+          },
+          {
+            "required": [
+              "organization"
+            ]
+          },
+          {
+            "required": [
+              "users"
+            ]
+          },
+          {
+            "required": [
+              "groups"
+            ]
+          },
+          {
+            "required": [
+              "bind_account"
+            ]
+          }
+        ]
+      }
+    }
+  ],
   "$defs": {
-    "uuid": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
-    },
-    "sourceId": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
-    },
-    "serviceId": {
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
-    },
-    "uid": {
-      "type": "string",
-      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
-    },
-    "nonemptyText": {
+    "credentialValue": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 256,
+      "maxLength": 4096,
       "pattern": "^[^\\u0000\\r\\n]+$"
     },
-    "referenceList": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/sourceId"
-      }
+    "credentialPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^/[^\\u0000\\r\\n]+$"
+    },
+    "passwordSource": {
+      "oneOf": [
+        {
+          "required": [
+            "password"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "password_file"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash_file"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "password_file"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "password"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash_file"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "password_hash"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "password"
+                ]
+              },
+              {
+                "required": [
+                  "password_file"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash_file"
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "required": [
+            "password_hash_file"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "password"
+                ]
+              },
+              {
+                "required": [
+                  "password_file"
+                ]
+              },
+              {
+                "required": [
+                  "password_hash"
+                ]
+              }
+            ]
+          }
+        }
+      ]
     },
     "user": {
       "type": "object",
@@ -83,16 +300,26 @@
       ],
       "properties": {
         "id": {
-          "$ref": "#/$defs/sourceId"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
         },
         "uid": {
-          "$ref": "#/$defs/uid"
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
         },
         "common_name": {
-          "$ref": "#/$defs/nonemptyText"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000\\r\\n]+$"
         },
         "surname": {
-          "$ref": "#/$defs/nonemptyText"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000\\r\\n]+$"
         },
         "mail": {
           "type": "string",
@@ -102,8 +329,67 @@
         },
         "active": {
           "type": "boolean"
+        },
+        "password": {
+          "$ref": "#/$defs/credentialValue"
+        },
+        "password_file": {
+          "$ref": "#/$defs/credentialPath"
+        },
+        "password_hash": {
+          "$ref": "#/$defs/credentialValue"
+        },
+        "password_hash_file": {
+          "$ref": "#/$defs/credentialPath"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "active": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "$ref": "#/$defs/passwordSource"
+          },
+          "else": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/passwordSource"
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "password"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "password_file"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "password_hash"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "password_hash_file"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      ]
     },
     "group": {
       "type": "object",
@@ -115,13 +401,26 @@
       ],
       "properties": {
         "id": {
-          "$ref": "#/$defs/sourceId"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
         },
         "common_name": {
-          "$ref": "#/$defs/uid"
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
         },
         "members": {
-          "$ref": "#/$defs/referenceList"
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+          },
+          "minItems": 0,
+          "maxItems": 100000,
+          "uniqueItems": true
         }
       }
     },
@@ -134,66 +433,33 @@
       ],
       "properties": {
         "id": {
-          "$ref": "#/$defs/sourceId"
-        },
-        "common_name": {
-          "$ref": "#/$defs/uid"
-        }
-      }
-    },
-    "service": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "base_dn",
-        "revision",
-        "soft_ttl_seconds",
-        "hard_ttl_seconds",
-        "expiry_offset_seconds",
-        "groups",
-        "users",
-        "bind_account"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/serviceId"
-        },
-        "base_dn": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 1024
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
         },
-        "revision": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+        "common_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
         },
-        "soft_ttl_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 2147483647
+        "password": {
+          "$ref": "#/$defs/credentialValue"
         },
-        "hard_ttl_seconds": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 2147483647
+        "password_file": {
+          "$ref": "#/$defs/credentialPath"
         },
-        "expiry_offset_seconds": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 86400
+        "password_hash": {
+          "$ref": "#/$defs/credentialValue"
         },
-        "groups": {
-          "$ref": "#/$defs/referenceList"
-        },
-        "users": {
-          "$ref": "#/$defs/referenceList"
-        },
-        "bind_account": {
-          "$ref": "#/$defs/bindAccount"
+        "password_hash_file": {
+          "$ref": "#/$defs/credentialPath"
         }
-      }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/passwordSource"
+        }
+      ]
     }
   }
 }

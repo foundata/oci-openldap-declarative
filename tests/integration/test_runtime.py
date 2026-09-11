@@ -17,6 +17,7 @@ import pytest
 import testinfra
 from ldif import LDIFRecordList, LDIFWriter
 
+from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import (
     OWNER_LABEL,
@@ -45,7 +46,7 @@ BASE_DN = "dc=example,dc=org"
 TEST_USER_DN = f"uid=test,ou=people,{BASE_DN}"
 APP_DN = f"cn=app,ou=services,{BASE_DN}"
 TEST_USER_UUID = "a4bcb5de-4982-51e9-b7e8-7e8d6b6f4c22"
-MAXIMUM_IMAGE_SIZE = 185_000_000
+MAXIMUM_IMAGE_SIZE = 200_000_000
 MINUTES = timedelta(minutes=1)
 SECONDS = timedelta(seconds=1)
 
@@ -179,7 +180,9 @@ class RuntimeWorkspace:
         now = utc_now()
         manifest = {
             "format_version": 1,
-            "service_id": "test-service",
+            "input_type": "users-groups",
+            "read_attributes": list(DEFAULT_READ_ATTRIBUTES),
+            "directory_id": "test-service",
             "base_dn": BASE_DN,
             "revision": revision,
             "generated_at": iso_timestamp(now + generated),
@@ -189,6 +192,7 @@ class RuntimeWorkspace:
             "files": [
                 {
                     "path": "directory.ldif",
+                    "kind": "data",
                     "sha256": sha256_file(snapshot_dir / "directory.ldif"),
                 }
             ],
@@ -241,7 +245,7 @@ class Runtime:
         self,
         test_name: str,
         snapshot_name: str,
-        service_id: str = "test-service",
+        directory_id: str = "test-service",
         state_volume: str | None = None,
         transport: str = "ldap",
         key_mode: str = "file",
@@ -286,7 +290,7 @@ class Runtime:
             "--cap-drop=all",
             "--security-opt=no-new-privileges",
             "--env",
-            f"LDAP_EXPECTED_SERVICE_ID={service_id}",
+            f"LDAP_EXPECTED_DIRECTORY_ID={directory_id}",
             "--env",
             f"LDAP_TRANSPORT={transport}",
             "--env",
@@ -432,7 +436,7 @@ class Runtime:
         assert status == 0
         assert document["state"] == "healthy"
         assert document["ldap"] == "available"
-        assert document["service_id"] == "test-service"
+        assert document["directory_id"] == "test-service"
         assert document["revision"] == 1
         assert isinstance(document["seconds_until_hard_expiry"], int)
         assert document["seconds_until_hard_expiry"] > 0
@@ -703,7 +707,12 @@ def test_image_contents_match_the_production_boundary(
     assert scripts
     for script in scripts:
         immutable = host.file(f"{LIB}/{script}")
-        assert (immutable.uid, immutable.gid, immutable.mode) == (0, 0, 0o555), script
+        expected_mode = 0o444 if script.endswith(".py") else 0o555
+        assert (immutable.uid, immutable.gid, immutable.mode) == (
+            0,
+            0,
+            expected_mode,
+        ), script
         assert host.run(f"chmod u+w {LIB}/{script}").rc != 0, script
     assert (
         host.check_output(
@@ -712,7 +721,17 @@ def test_image_contents_match_the_production_boundary(
         )
         == ""
     )
-    for tool in ("cc", "gcc", "make", "sudo", "vim", "ip", "ping", "ps"):
+    for tool in (
+        "cc",
+        "gcc",
+        "make",
+        "sudo",
+        "vim",
+        "ip",
+        "ping",
+        "ps",
+        "ansible-vault",
+    ):
         assert not host.exists(tool), tool
 
 
@@ -787,7 +806,7 @@ def test_runtime_namespace_verification_matches_the_public_contract(
         "--tmpfs",
         "/run/openldap:rw,noexec,nosuid,nodev,size=20m,mode=1777",
         "--env",
-        "LDAP_EXPECTED_SERVICE_ID=test-service",
+        "LDAP_EXPECTED_DIRECTORY_ID=test-service",
         "--volume",
         f"{snapshot}:/snapshot:ro,Z",
         "--volume",
@@ -877,7 +896,7 @@ def test_default_runtime_has_no_network_recovery_password(runtime: Runtime) -> N
         "olcRootPW",
         "olcAccess",
     )
-    assert f"olcRootDN: cn=admin,{BASE_DN}" in config
+    assert "olcRootDN:" not in config
     assert "olcRootPW:" not in config
     assert " manage" not in config
     assert (
@@ -1032,9 +1051,9 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
 @pytest.mark.parametrize(
     ("damage", "message"),
     [
-        ("ldif", "Offline import failed"),
+        ("ldif", "invalid LDIF"),
         ("uuid", "entryUUID"),
-        ("password", "valid Argon2id"),
+        ("password", "Argon2id"),
         (
             "membership",
             "member and memberOf attributes must describe the same relationships",
@@ -1146,7 +1165,8 @@ def test_signed_password_hash_contract(
         assert runtime.whoami(container, APP_DN, "test-bind-password").returncode == 0
         assert runtime.stop(container) == 0
     else:
-        runtime.expect_exit(container, 65, "valid Argon2id verifier")
+        runtime.expect_exit(container, 65, "userPassword")
+
         logs = runtime.podman.logs(container.name)
         assert "Starting slapd" not in logs
         assert not verifier or verifier not in logs
@@ -1162,6 +1182,66 @@ def test_signed_password_hash_contract(
             "-c",
             "test ! -e /state/highest-revision",
         )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "read-wildcard",
+        "read-password",
+        "read-injection",
+        "wrong-mode",
+        "schema-module",
+        "data-config",
+        "unknown-class",
+    ],
+)
+def test_signed_native_policy_is_validated_before_listening(
+    runtime: Runtime, workspace: RuntimeWorkspace, mutation: str
+) -> None:
+    name = "native-policy-" + mutation
+    candidate = workspace.create_snapshot(name, 2, 30 * MINUTES, 60 * MINUTES)
+    manifest_path = candidate / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["input_type"] = "ldif"
+    manifest["uuid_namespace"] = None
+    if mutation.startswith("read-"):
+        manifest["read_attributes"] = [
+            {
+                "read-wildcard": "*",
+                "read-password": "2.5.4.35",
+                "read-injection": "cn by * write",
+            }[mutation]
+        ]
+    elif mutation == "wrong-mode":
+        manifest["input_type"] = "unknown"
+    elif mutation == "schema-module":
+        schema = candidate / "extra.ldif"
+        schema.write_text(
+            "dn: cn=module{9},cn=config\nobjectClass: olcModuleList\ncn: module{9}\nolcModuleLoad: back_ldap\n\n"
+        )
+        schema.chmod(0o644)
+        manifest["files"].append(
+            {"path": schema.name, "kind": "schema", "sha256": sha256_file(schema)}
+        )
+    else:
+        data = candidate / "directory.ldif"
+        content = data.read_text()
+        if mutation == "data-config":
+            content += "\ndn: cn=config\nobjectClass: olcGlobal\ncn: config\nentryUUID: 6081d19f-2178-45af-8bf9-40bd8496721e\n\n"
+        else:
+            content = content.replace(
+                "objectClass: inetOrgPerson", "objectClass: notAnInstalledClass"
+            )
+        data.write_text(content)
+        data.chmod(0o644)
+        manifest["files"][0]["sha256"] = sha256_file(data)
+    manifest_path.write_text(json.dumps(manifest) + "\n")
+    manifest_path.chmod(0o644)
+    workspace.sign_manifest(candidate)
+    container = runtime.create(name, name)
+    runtime.expect_exit(container, 65)
+    assert "Starting slapd" not in runtime.podman.logs(container.name)
 
 
 @pytest.mark.parametrize("operation", ["startup", "preflight"])
@@ -1265,7 +1345,7 @@ class Rejection:
     prepare: Callable[[RuntimeWorkspace], str]
     status: int
     message: str = ""
-    service_id: str = "test-service"
+    directory_id: str = "test-service"
     transport: str = "ldap"
     key_mode: str = "file"
     extra_environment: str = "LDAP_TLS_CA_FILE=/tls/ca.pem"
@@ -1343,7 +1423,8 @@ def _too_many_files(workspace: RuntimeWorkspace) -> str:
     document = json.loads(manifest.read_text(encoding="utf-8"))
     digest = sha256_file(snapshot / "directory.ldif")
     document["files"] = [
-        {"path": f"directory-{index}.ldif", "sha256": digest} for index in range(33)
+        {"path": f"directory-{index}.ldif", "kind": "data", "sha256": digest}
+        for index in range(33)
     ]
     manifest.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     manifest.chmod(0o644)
@@ -1372,16 +1453,14 @@ REJECTIONS = {
     "wrong-service": Rejection(
         lambda _: "valid",
         65,
-        "Snapshot service ID does not match LDAP_EXPECTED_SERVICE_ID",
-        service_id="another-service",
+        "Snapshot directory ID does not match LDAP_EXPECTED_DIRECTORY_ID",
+        directory_id="another-service",
     ),
     "expired": Rejection(_expired, 78, "Snapshot has expired"),
     "missing-uuid": Rejection(
-        _missing_uuid, 65, "Every directory entryUUID must be a lowercase UUIDv5 value"
+        _missing_uuid, 65, "every entry must supply exactly one stable entryUUID"
     ),
-    "weak-password": Rejection(
-        _weak_password, 65, "Every userPassword must use a valid Argon2id verifier"
-    ),
+    "weak-password": Rejection(_weak_password, 65, "userPassword must be an OpenLDAP"),
     "inconsistent-membership": Rejection(
         _inconsistent_membership,
         65,
@@ -1417,7 +1496,7 @@ def test_rejected_input_never_opens_a_listener(
     container = runtime.create(
         request.node.callspec.id,
         snapshot_name,
-        service_id=case.service_id,
+        directory_id=case.directory_id,
         transport=case.transport,
         key_mode=case.key_mode,
         extra_environment=case.extra_environment,

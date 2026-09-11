@@ -25,7 +25,7 @@ outputs = [
 [[images.test.preparations]]
 name = "create-test-credentials"
 image = "generator"
-command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/input", "/output"]
+command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/output"]
 timeout_seconds = 60
 mounts = [
   { name = "generator-input", target = "/input" },
@@ -36,7 +36,7 @@ mounts = [
 [[images.test.preparations]]
 name = "generate-runtime-snapshot"
 image = "generator"
-command = ["/usr/local/bin/openldap-snapshot-generator", "--directory", "/input/directory.yaml", "--credentials", "/run/credentials/credentials.yaml", "--signing-key", "/run/credentials/snapshot.key", "--service", "example-app", "--output", "/output/generated"]
+command = ["/usr/bin/python3", "-m", "generator.generate", "--directory", "/input/directory.yaml", "--signing-key", "/run/credentials/snapshot.key", "--output", "/output/generated"]
 timeout_seconds = 120
 mounts = [
   { name = "generator-input", target = "/input" },
@@ -45,7 +45,7 @@ mounts = [
 ]
 
 [images.test.launch]
-environment = { LDAP_EXPECTED_SERVICE_ID = "example-app", LDAP_SNAPSHOT_DIR = "/snapshot/generated/example-app" }
+environment = { LDAP_EXPECTED_DIRECTORY_ID = "example-app", LDAP_SNAPSHOT_DIR = "/snapshot/generated" }
 mounts = [
   { name = "credentials", target = "/run/credentials" },
   { name = "snapshot", target = "/snapshot" },
@@ -103,7 +103,7 @@ outputs = [
 [[images.test.preparations]]
 name = "create-test-credentials"
 image = "generator"
-command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/input", "/output"]
+command = ["/bin/sh", "/test-tools/create-test-credentials.sh", "/output"]
 timeout_seconds = 60
 mounts = [
   { name = "generator-input", target = "/input" },
@@ -112,7 +112,7 @@ mounts = [
 ]
 
 [images.test.launch]
-arguments = ["--directory", "/input/directory.yaml", "--credentials", "/run/credentials/credentials.yaml", "--signing-key", "/run/credentials/snapshot.key", "--output", "/output/generated"]
+arguments = ["--directory", "/input/directory.yaml", "--signing-key", "/run/credentials/snapshot.key", "--output", "/output/generated"]
 mounts = [
   { name = "generator-input", target = "/input" },
   { name = "credentials", target = "/run/credentials" },
@@ -140,6 +140,6 @@ memory = "256MiB"
 cpus = 1.0
 pids = 64
 nofile = 512
-immutable_paths = ["/usr/local/bin/openldap-snapshot-generator", "/usr/local/share/openldap-declarative"]
+immutable_paths = ["/usr/local/lib/openldap-declarative", "/usr/local/share/openldap-declarative"]
 startup_timeout_seconds = 180
 shutdown_timeout_seconds = 10

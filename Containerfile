@@ -22,6 +22,8 @@ RUN apt-get update \
     ldap-utils \
     minisign \
     openssl \
+    python3 \
+    python3-ldap \
     slapd \
   && find /usr/share/doc -type f ! -name copyright -delete \
   && find /usr/share/doc -type l -delete \
@@ -57,6 +59,7 @@ RUN apt-get update \
     /tls
 
 ENV LDAP_RUNTIME_DIR="/run/openldap" \
+    PYTHONDONTWRITEBYTECODE="1" \
     LDAP_SNAPSHOT_DIR="/snapshot" \
     LDAP_REVISION_STATE_FILE="/state/highest-revision" \
     LDAP_LDAPI_URI="ldapi://%2Frun%2Fopenldap%2Fldapi" \
@@ -67,6 +70,7 @@ ENV LDAP_RUNTIME_DIR="/run/openldap" \
     LDAP_LOG_LEVEL="256"
 
 COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
+COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/directory_data.py
 COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
 COPY --chown=0:0 --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh

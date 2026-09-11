@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "service_id": "example-app",
+  "directory_id": "example-app",
   "base_dn": "dc=example-app,dc=services,dc=example,dc=org",
   "revision": 1,
   "generated_at": "2030-01-01T00:00:00Z",
@@ -10,7 +10,24 @@
   "files": [
     {
       "path": "directory.ldif",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "kind": "data"
     }
+  ],
+  "input_type": "users-groups",
+  "read_attributes": [
+    "objectClass",
+    "entryUUID",
+    "dc",
+    "o",
+    "ou",
+    "uid",
+    "cn",
+    "sn",
+    "givenName",
+    "displayName",
+    "mail",
+    "member",
+    "memberOf"
   ]
 }

@@ -11,11 +11,11 @@ UserNS=keep-id:uid=1001,gid=1001
 Network=openldap-example.network
 NetworkAlias=ldap
 
-Environment=LDAP_EXPECTED_SERVICE_ID=example-app
+Environment=LDAP_EXPECTED_DIRECTORY_ID=example-app
 Environment=LDAP_LISTEN_HOST=0.0.0.0
 Environment=LDAP_TRANSPORT=ldap
 
-# Ansible installs these private files below the rootless service account's home.
+# Install these private files below the rootless service account's home.
 Volume=%h/.local/share/openldap-declarative/example-app/snapshot:/snapshot:ro,Z
 Volume=%h/.local/share/openldap-declarative/snapshot.pub:/run/credentials/snapshot-public-key:ro,Z
 Volume=openldap-example-runtime.volume:/run/openldap

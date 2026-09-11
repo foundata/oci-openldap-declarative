@@ -15,7 +15,7 @@ readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
 readonly config_dir="${runtime_dir}/slapd.d"
 readonly verified_manifest_file="${runtime_dir}/verified-manifest.json"
 readonly revision_state_file="${LDAP_REVISION_STATE_FILE:-/state/highest-revision}"
-readonly expected_service_id="${LDAP_EXPECTED_SERVICE_ID:-}"
+readonly expected_directory_id="${LDAP_EXPECTED_DIRECTORY_ID:-}"
 
 slapd_pid=''
 watchdog_pid=''
@@ -181,7 +181,7 @@ supervise_slapd() {
   trap expire_snapshot USR1
   trap fail_watchdog USR2
 
-  log_info "Starting slapd for service ${expected_service_id}"
+  log_info "Starting slapd for directory ${expected_directory_id}"
   /usr/sbin/slapd \
     -F "${config_dir}" \
     -h "${listener_urls}" \
@@ -244,7 +244,7 @@ main() {
   mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
   remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove stale verified snapshot data'
   validate_runtime_configuration || exit $?
-  log_info "Starting snapshot initialization for service ${expected_service_id}"
+  log_info "Starting snapshot initialization for directory ${expected_directory_id}"
   run_startup_phase "${script_dir}/verify-snapshot.sh"
   verification_status=$?
   if [ "${shutdown_requested}" -eq 1 ]; then

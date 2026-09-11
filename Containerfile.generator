@@ -5,7 +5,7 @@ ARG IMAGE_REVISION
 ARG IMAGE_VERSION
 
 LABEL org.opencontainers.image.title="OpenLDAP Declarative Snapshot Generator"
-LABEL org.opencontainers.image.description="Build tool for signed, service-specific OpenLDAP snapshots"
+LABEL org.opencontainers.image.description="Build tool for signed OpenLDAP directory snapshots"
 LABEL org.opencontainers.image.vendor="foundata GmbH"
 LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
@@ -18,6 +18,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
+    ansible-core \
     libssl3t64 \
     minisign \
     openssl-provider-legacy \
@@ -47,9 +48,15 @@ RUN apt-get update \
   && install -d -o openldap-generator -g openldap-generator -m 0700 /output \
   && install -d -o root -g root -m 0555 /input /run/credentials
 
-COPY --chown=0:0 --chmod=0555 generator/generate.py /usr/local/bin/openldap-snapshot-generator
+ENV PYTHONPATH="/usr/local/lib/openldap-declarative" \
+    TMPDIR="/output" \
+    PYTHONDONTWRITEBYTECODE="1"
+
+COPY --chown=0:0 --chmod=0444 generator/generate.py /usr/local/lib/openldap-declarative/generator/generate.py
+COPY --chown=0:0 --chmod=0444 generator/vault.py /usr/local/lib/openldap-declarative/generator/vault.py
+COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/scripts/directory_data.py
 COPY --chown=0:0 --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 
 USER 1001:1001
 
-ENTRYPOINT ["/usr/local/bin/openldap-snapshot-generator"]
+ENTRYPOINT ["/usr/bin/python3", "-m", "generator.generate"]

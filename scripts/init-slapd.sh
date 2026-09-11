@@ -22,12 +22,11 @@ directory_dump=''
 group_memberships=''
 user_memberships=''
 normalized_memberships=''
-password_values=''
 
 remove_build_artifacts() {
   for build_artifact in \
     "${root_password_input}" "${config_file}" "${directory_dump}" \
-    "${group_memberships}" "${user_memberships}" "${normalized_memberships}" "${password_values}"; do
+    "${group_memberships}" "${user_memberships}" "${normalized_memberships}"; do
     if [ -n "${build_artifact}" ] && [ -e "${build_artifact}" ]; then
       unlink "${build_artifact}" || return "${EXIT_INTERNAL}"
     fi
@@ -191,6 +190,7 @@ write_base_configuration() {
   current_uid=$(id -u) || return "${EXIT_INTERNAL}"
   current_gid=$(id -g) || return "${EXIT_INTERNAL}"
   external_identity="gidNumber=${current_gid}+uidNumber=${current_uid},cn=peercred,cn=external,cn=auth"
+  read_attributes=$(jq -r '.read_attributes | join(",")' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
 
   {
     printf '%s\n' \
@@ -220,7 +220,24 @@ write_base_configuration() {
       'include: file:///etc/ldap/schema/core.ldif' \
       'include: file:///etc/ldap/schema/cosine.ldif' \
       'include: file:///etc/ldap/schema/inetorgperson.ldif' \
-      '' \
+      'include: file:///etc/ldap/schema/nis.ldif' \
+      ''
+    printf '%s\n' \
+      'dn: cn=module{0},cn=config' \
+      'objectClass: olcModuleList' \
+      'cn: module{0}' \
+      'olcModulePath: /usr/lib/ldap' \
+      'olcModuleLoad: back_mdb' \
+      'olcModuleLoad: argon2' \
+      'olcModuleLoad: memberof' \
+      ''
+    while IFS= read -r relative_path; do
+      file_kind=$(jq -r --arg path "${relative_path}" '.files[] | select(.path == $path) | .kind' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+      if [ "${file_kind}" = schema ]; then
+        printf 'include: file://%s/%s\n\n' "${verified_snapshot_dir}" "${relative_path}"
+      fi
+    done <"${verified_files_file}"
+    printf '%s\n' \
       'dn: olcDatabase={-1}frontend,cn=config' \
       'objectClass: olcDatabaseConfig' \
       'objectClass: olcFrontendConfig' \
@@ -234,22 +251,14 @@ write_base_configuration() {
       'olcDatabase: {0}config' \
       "olcAccess: {0}to * by dn.exact=${external_identity} read by * none" \
       '' \
-      'dn: cn=module{0},cn=config' \
-      'objectClass: olcModuleList' \
-      'cn: module{0}' \
-      'olcModulePath: /usr/lib/ldap' \
-      'olcModuleLoad: back_mdb' \
-      'olcModuleLoad: argon2' \
-      'olcModuleLoad: memberof' \
-      '' \
       'dn: olcDatabase={1}mdb,cn=config' \
       'objectClass: olcDatabaseConfig' \
       'objectClass: olcMdbConfig' \
       'olcDatabase: {1}mdb' \
       "olcDbDirectory: ${data_dir}" \
-      "olcSuffix: ${base_dn}" \
-      "olcRootDN: cn=admin,${base_dn}"
+      "olcSuffix: ${base_dn}"
     if [ -n "${root_password_hash}" ]; then
+      printf 'olcRootDN: cn=admin,%s\n' "${base_dn}"
       printf 'olcRootPW: %s\n' "${root_password_hash}"
     fi
     printf '%s\n' \
@@ -260,7 +269,7 @@ write_base_configuration() {
       'olcDbIndex: entryUUID eq' \
       'olcDbMaxSize: 67108864' \
       "olcAccess: {0}to attrs=userPassword by self auth by anonymous auth by * none" \
-      "olcAccess: {1}to attrs=entry,children,objectClass,entryUUID,dc,o,ou,uid,cn,sn,givenName,displayName,mail,member,memberOf by dn.exact=${external_identity} read by users read by * none" \
+      "olcAccess: {1}to attrs=entry,children,${read_attributes} by dn.exact=${external_identity} read by users read by * none" \
       "olcAccess: {2}to * by dn.exact=${external_identity} read by * none"
   } >>"${config_file}" || return "${EXIT_INTERNAL}"
 
@@ -282,6 +291,10 @@ reset_runtime_database() {
 
 import_directory_data() {
   while IFS= read -r relative_path; do
+    file_kind=$(jq -r --arg path "${relative_path}" '.files[] | select(.path == $path) | .kind' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+    if [ "${file_kind}" = schema ]; then
+      continue
+    fi
     log_info "Importing signed LDIF file ${relative_path}"
     if ! slapadd -F "${config_dir}" -n 1 -l "${verified_snapshot_dir}/${relative_path}"; then
       log_error "Offline import failed for ${relative_path}"
@@ -292,13 +305,25 @@ import_directory_data() {
   return 0
 }
 
+validate_directory_inputs() {
+  set -- --base-dn "${1}"
+  while IFS= read -r relative_path; do
+    file_kind=$(jq -r --arg path "${relative_path}" '.files[] | select(.path == $path) | .kind' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+    if [ "${file_kind}" = schema ]; then
+      set -- "$@" --schema "${verified_snapshot_dir}/${relative_path}"
+    else
+      set -- "$@" "${verified_snapshot_dir}/${relative_path}"
+    fi
+  done <"${verified_files_file}"
+  python3 "${script_dir}/directory_data.py" "$@"
+}
+
 verify_built_database() {
   base_dn="${1}"
   directory_dump=$(mktemp "${runtime_dir}/directory.XXXXXX") || return "${EXIT_INTERNAL}"
   group_memberships=$(mktemp "${runtime_dir}/group-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
   user_memberships=$(mktemp "${runtime_dir}/user-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
   normalized_memberships=$(mktemp "${runtime_dir}/normalized-memberships.XXXXXX") || return "${EXIT_INTERNAL}"
-  password_values=$(mktemp "${runtime_dir}/password-values.XXXXXX") || return "${EXIT_INTERNAL}"
 
   if ! slaptest -F "${config_dir}" -u; then
     log_error 'Generated slapd configuration failed validation'
@@ -310,60 +335,14 @@ verify_built_database() {
     return "${EXIT_INTERNAL}"
   fi
 
-  pretty_base_dn=$(slapdn -F "${config_dir}" -P "${base_dn}") || return "${EXIT_SNAPSHOT}"
-  if ! grep -F -x -q "dn: ${pretty_base_dn}" "${directory_dump}"; then
-    log_error 'Generated directory does not contain the manifest base DN'
+  if ! python3 "${script_dir}/directory_data.py" --base-dn "${base_dn}" "${directory_dump}"; then
+    log_error 'Generated directory failed data validation'
     return "${EXIT_SNAPSHOT}"
   fi
 
-  entry_count=$(grep -c '^dn: ' "${directory_dump}") || entry_count=0
-  uuid_count=$(grep -c '^entryUUID: ' "${directory_dump}") || uuid_count=0
-  if [ "${entry_count}" -ne "${uuid_count}" ]; then
-    log_error 'Every directory entry must have an explicit deterministic entryUUID'
-    return "${EXIT_SNAPSHOT}"
-  fi
-
-  if grep '^entryUUID: ' "${directory_dump}" \
-    | cut -d ' ' -f 2- \
-    | grep -E -v -q '^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'; then
-    log_error 'Every directory entryUUID must be a lowercase UUIDv5 value'
-    return "${EXIT_SNAPSHOT}"
-  fi
-
-  while IFS= read -r password_line; do
-    case "${password_line}" in
-      'userPassword:')
-        log_error 'Every userPassword must use a valid Argon2id verifier'
-        return "${EXIT_SNAPSHOT}"
-        ;;
-      'userPassword: '*)
-        printf '%s\n' "${password_line#userPassword: }" >>"${password_values}" || return "${EXIT_INTERNAL}"
-        ;;
-      'userPassword:: '*)
-        encoded_password=${password_line#userPassword:: }
-        decoded_password=$(printf '%s' "${encoded_password}" | base64 --decode) || return "${EXIT_SNAPSHOT}"
-        # Preserve record boundaries and reject bytes lost by shell substitution.
-        case "${decoded_password}" in
-          *[!A-Za-z0-9+/{}\$=,]*)
-            log_error 'Every userPassword must use a valid Argon2id verifier'
-            return "${EXIT_SNAPSHOT}"
-            ;;
-          *) ;;
-        esac
-        reencoded_password=$(printf '%s' "${decoded_password}" | base64 --wrap=0) || return "${EXIT_INTERNAL}"
-        if [ "${reencoded_password}" != "${encoded_password}" ]; then
-          log_error 'Every userPassword must use a valid Argon2id verifier'
-          return "${EXIT_SNAPSHOT}"
-        fi
-        printf '%s\n' "${decoded_password}" >>"${password_values}" || return "${EXIT_INTERNAL}"
-        ;;
-      *) ;;
-    esac
-  done <"${directory_dump}"
-
-  if ! validate_password_hashes "${password_values}"; then
-    log_error 'Every userPassword must use a valid Argon2id verifier'
-    return "${EXIT_SNAPSHOT}"
+  input_type=$(jq -r '.input_type' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
+  if [ "${input_type}" = ldif ]; then
+    return 0
   fi
 
   awk '
@@ -403,6 +382,7 @@ main() {
 
   base_dn=$(jq -r '.base_dn' "${verified_manifest_file}") || die "${EXIT_INTERNAL}" 'Cannot read the verified base DN'
   validate_compatibility_inputs "${base_dn}" || exit $?
+  validate_directory_inputs "${base_dn}" || exit $?
   reset_runtime_database || exit $?
   root_password_hash=''
   if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] || [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
@@ -414,7 +394,7 @@ main() {
   write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}" || exit $?
 
   if ! slapadd -F "${config_dir}" -n 0 -l "${config_file}"; then
-    die "${EXIT_INTERNAL}" 'Cannot create the slapd configuration database'
+    die "${EXIT_SNAPSHOT}" 'Cannot create the slapd configuration database from the snapshot policy'
   fi
   unlink "${config_file}" || die "${EXIT_INTERNAL}" 'Cannot remove the configuration input'
 

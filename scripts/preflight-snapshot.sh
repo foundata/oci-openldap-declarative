@@ -24,13 +24,13 @@ cleanup_preflight() {
 
 main() {
   if [ "$#" -ne 4 ]; then
-    log_error 'Usage: preflight-snapshot.sh SNAPSHOT KEY SERVICE_ID REVISION_STATE'
+    log_error 'Usage: preflight-snapshot.sh SNAPSHOT KEY DIRECTORY_ID REVISION_STATE'
     return "${EXIT_USAGE}"
   fi
 
   LDAP_SNAPSHOT_DIR=${1}
   verification_key=${2}
-  LDAP_EXPECTED_SERVICE_ID=${3}
+  LDAP_EXPECTED_DIRECTORY_ID=${3}
   revision_state_file=${4}
   LDAP_SNAPSHOT_PUBLIC_KEY_FILE=''
   LDAP_SNAPSHOT_PUBLIC_KEY_DIR=''
@@ -39,7 +39,7 @@ main() {
   else
     LDAP_SNAPSHOT_PUBLIC_KEY_FILE=${verification_key}
   fi
-  export LDAP_EXPECTED_SERVICE_ID LDAP_SNAPSHOT_DIR LDAP_SNAPSHOT_PUBLIC_KEY_DIR
+  export LDAP_EXPECTED_DIRECTORY_ID LDAP_SNAPSHOT_DIR LDAP_SNAPSHOT_PUBLIC_KEY_DIR
   export LDAP_SNAPSHOT_PUBLIC_KEY_FILE
 
   umask 077

@@ -150,11 +150,13 @@ def test_password_file_symlinks_are_rejected(
 @pytest.mark.parametrize(
     ("content", "message"),
     [
-        pytest.param("a: 1\na: 2\n", "duplicate YAML key: a", id="duplicate-key"),
+        pytest.param("a: 1\na: 2\n", "duplicate YAML key", id="duplicate-key"),
         pytest.param("a: &x 1\nb: *x\n", "YAML aliases are not accepted", id="alias"),
         pytest.param("- item\n", "must contain one top-level mapping", id="sequence"),
         pytest.param(
-            "1: value\n", "all YAML mapping keys must be strings", id="integer-key"
+            "1: value\n",
+            "all YAML mapping keys must be unencrypted strings",
+            id="integer-key",
         ),
     ],
 )
@@ -236,18 +238,16 @@ def test_generator_and_runtime_password_hash_contract(
             generate.validate_password_hash(verifier, context="credential")
         assert not verifier or verifier not in str(raised.value)
 
-    # Each LDIF value is one record; the importer separately rejects embedded LF/NUL.
-    if "\n" in verifier or "\x00" in verifier:
-        return
-    values = tmp_path / "hashes"
-    values.write_text(VALID_HASH + "\n" + verifier + "\n", encoding="utf-8")
+    entries = generate.parse_ldif((EXAMPLES / "native.ldif").read_bytes())
+    entries[-1][1]["userpassword"] = [VALID_HASH.encode(), verifier.encode()]
+    values = tmp_path / "data.ldif"
+    generate.write_ldif(values, entries)
     result = subprocess.run(
         [
-            "sh",
-            "-c",
-            '. "$1"; validate_password_hashes "$2"',
-            "hash-validation",
-            str(ROOT / "scripts/common.sh"),
+            sys.executable,
+            str(ROOT / "scripts/directory_data.py"),
+            "--base-dn",
+            "o=Example",
             str(values),
         ],
         capture_output=True,
@@ -255,8 +255,8 @@ def test_generator_and_runtime_password_hash_contract(
         check=False,
         timeout=10,
     )
-    assert result.returncode == (0 if valid else 1), result.stdout + result.stderr
-    assert not result.stdout and not result.stderr
+    assert result.returncode == (0 if valid else 65), result.stdout + result.stderr
+    assert not verifier or verifier not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("kind", ["hash", "hash-file", "plaintext-file"])
@@ -320,255 +320,114 @@ def test_seeded_hash_lengths_and_base64_are_checked(
 
 
 @pytest.mark.parametrize(
-    ("default", "override", "bind"),
-    [
-        ("password_file", "service_password_hash_files", "bind_password_hash"),
-        ("password_hash_file", "service_password_hashes", "bind_password_file"),
-        ("password_hash", "service_password_files", "bind_password_hash_file"),
-    ],
+    "field", ["password", "password_file", "password_hash", "password_hash_file"]
 )
-def test_credentials_schema_and_parser_accept_mixed_sources(
-    generate: ModuleType,
-    tmp_path: Path,
-    seeded_hash: str,
-    default: str,
-    override: str,
-    bind: str,
-) -> None:
-    document = {
-        "format_version": 1,
-        "users": {
-            "person-0001": {
-                default: seeded_hash if default == "password_hash" else "/secret",
-                override: {
-                    "example-app": seeded_hash
-                    if override == "service_password_hashes"
-                    else "/override"
-                },
-            }
-        },
-        "services": {
-            "example-app": {
-                bind: seeded_hash if bind == "bind_password_hash" else "/bind"
-            }
-        },
-    }
-    source = write_secret(
-        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
-    )
-    schema = json.loads((ROOT / "schema/credentials-v1.schema.json").read_text())
-    Draft202012Validator(schema).validate(document)
-    parsed = generate.parse_credentials(source)
-    user = parsed.users["person-0001"]
-    assert (
-        generate.user_credential(parsed, "person-0001", "example-app")
-        == user.services["example-app"]
-    )
-    assert (
-        generate.user_credential(parsed, "person-0001", "example-mail") == user.default
-    )
-    assert seeded_hash not in repr(parsed)
-
-
 @pytest.mark.parametrize("bind", [False, True])
-@pytest.mark.parametrize(
-    ("first", "second"),
-    [
-        ("password_file", "password_hash_file"),
-        ("password_file", "password_hash"),
-        ("password_hash_file", "password_hash"),
-    ],
-)
-def test_credentials_reject_conflicting_defaults(
-    generate: ModuleType,
-    tmp_path: Path,
-    seeded_hash: str,
-    bind: bool,
-    first: str,
-    second: str,
+def test_inline_credentials_and_schema_agree(
+    generate: ModuleType, tmp_path: Path, seeded_hash: str, field: str, bind: bool
 ) -> None:
-    prefix = "bind_" if bind else ""
-    item = {
-        prefix + key: seeded_hash if key == "password_hash" else "/secret"
-        for key in (first, second)
-    }
-    document = {
-        "format_version": 1,
-        "users": {} if bind else {"person-0001": item},
-        "services": {"example-app": item} if bind else {},
-    }
-    source = write_secret(
-        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    item = document["bind_account"] if bind else document["users"][0]
+    del item["password_file"]
+    item[field] = (
+        seeded_hash
+        if field == "password_hash"
+        else "/secret"
+        if field.endswith("_file")
+        else "test-password"
     )
-    schema = json.loads((ROOT / "schema/credentials-v1.schema.json").read_text())
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(document)
+    directory = generate.parse_directory(source)
+    credential = (
+        directory.bind_account.credential
+        if bind
+        else directory.users["person-0001"].credential
+    )
+    assert credential.kind == generate.PASSWORD_FIELDS[field]
+    assert seeded_hash not in repr(directory)
+
+
+@pytest.mark.parametrize("field", ["password", "password_hash", "password_hash_file"])
+def test_conflicting_password_sources_are_rejected(
+    generate: ModuleType, tmp_path: Path, seeded_hash: str, field: str
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0][field] = seeded_hash if field == "password_hash" else "/secret"
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
     assert not Draft202012Validator(schema).is_valid(document)
     with pytest.raises(generate.ConfigurationError, match="must not combine"):
-        generate.parse_credentials(source)
+        generate.parse_directory(source)
 
 
-def test_credentials_reject_conflicting_service_overrides(
+def test_inline_unencrypted_credentials_require_private_yaml(
     generate: ModuleType, tmp_path: Path, seeded_hash: str
 ) -> None:
-    document = {
-        "format_version": 1,
-        "users": {
-            "person-0001": {
-                "service_password_files": {"example-app": "/secret"},
-                "service_password_hashes": {"example-app": seeded_hash},
-            }
-        },
-        "services": {},
-    }
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    del document["bind_account"]["password_file"]
+    document["bind_account"]["password_hash"] = seeded_hash
     source = write_secret(
-        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode()
-    )
-    with pytest.raises(generate.ConfigurationError, match="conflicting sources"):
-        generate.parse_credentials(source)
-
-
-def test_inline_hash_yaml_is_private_and_syntax_errors_do_not_leak_hashes(
-    generate: ModuleType, tmp_path: Path, seeded_hash: str
-) -> None:
-    document = {
-        "format_version": 1,
-        "users": {},
-        "services": {"example-app": {"bind_password_hash": seeded_hash}},
-    }
-    source = write_secret(
-        tmp_path / "credentials.yaml", yaml.safe_dump(document).encode(), 0o644
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode(), 0o644
     )
     with pytest.raises(generate.ConfigurationError, match="readable only by its owner"):
-        generate.parse_credentials(source)
-    source.write_text(f'password_hash: "{seeded_hash}\n')
+        generate.parse_directory(source)
+    source.write_text("secret: [" + seeded_hash + "\n", encoding="utf-8")
     with pytest.raises(generate.ConfigurationError) as raised:
-        generate.load_yaml(source, context="credentials YAML")
+        generate.parse_directory(source)
     assert seeded_hash not in str(raised.value)
 
 
-def test_example_directory_selects_active_users_per_service(
+def test_one_directory_includes_all_active_users(
     generate: ModuleType, example_directory: object
 ) -> None:
     directory = example_directory
-    services = directory.services  # type: ignore[attr-defined]
-
-    assert set(services) == {"example-app", "example-mail"}
-    assert services["example-app"].revision == 1
-    assert services["example-mail"].expiry_offset_seconds == 600
-    assert generate.selected_users(directory, services["example-app"]) == {
-        "person-0001"
-    }
-    assert generate.selected_users(directory, services["example-mail"]) == {
-        "person-0001",
-        "person-0003",
-    }
+    assert directory.directory_id == "example-app"  # type: ignore[attr-defined]
+    assert directory.revision == 1  # type: ignore[attr-defined]
+    assert set(directory.users) == {"person-0001", "person-0002", "person-0003"}  # type: ignore[attr-defined]
+    assert directory.users["person-0003"].active  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        pytest.param(
+        (
             "expiry_offset_seconds: 0",
             "expiry_offset_seconds: 21600",
-            "expiry_offset_seconds must be less than soft_ttl_seconds",
-            id="offset-reaches-soft-ttl",
+            "expiry_offset_seconds must be less than",
         ),
-        pytest.param(
+        (
             "expiry_offset_seconds: 0",
             "expiry_offset_seconds: -1",
-            "expiry_offset_seconds must be an integer from 0 through 86400",
-            id="negative-offset",
+            "expiry_offset_seconds must be an integer",
         ),
-        pytest.param(
+        (
             "hard_ttl_seconds: 43200",
             "hard_ttl_seconds: 21600",
-            "soft_ttl_seconds must be less than hard_ttl_seconds",
-            id="soft-reaches-hard",
+            "soft_ttl_seconds must be less than",
         ),
-        pytest.param(
-            '      - "group-staff"\n    users: []',
-            '      - "group-missing"\n    users: []',
-            "references unknown groups: group-missing",
-            id="unknown-group",
-        ),
-        pytest.param(
-            'uid: "bob"',
-            'uid: "ALICE"',
-            "duplicate user uid",
-            id="case-insensitive-uid",
+        ('      - "person-0002"', '      - "missing"', "references unknown users"),
+        ('uid: "bob"', 'uid: "ALICE"', "duplicate user"),
+        ("format_version: 1", "format_version: 99", "format_version must be 1"),
+        (
+            'password_file: "/run/credentials/person-0001-example-app"',
+            'password_file: "relative"',
+            "absolute path",
         ),
     ],
 )
 def test_directory_policy_violations_are_rejected(
     generate: ModuleType, tmp_path: Path, old: str, new: str, message: str
 ) -> None:
-    content = (EXAMPLES / "directory.yaml").read_text(encoding="utf-8")
+    content = (EXAMPLES / "directory.yaml").read_text()
     assert old in content
-    variant = tmp_path / "directory.yaml"
-    variant.write_text(content.replace(old, new, 1), encoding="utf-8")
-
+    source = write_secret(
+        tmp_path / "directory.yaml", content.replace(old, new, 1).encode()
+    )
     with pytest.raises(generate.ConfigurationError, match=message):
-        generate.parse_directory(variant)
-
-
-def test_credentials_resolve_service_overrides_before_defaults(
-    generate: ModuleType, example_directory: object
-) -> None:
-    credentials = generate.parse_credentials(EXAMPLES / "credentials.yaml.example")
-    generate.validate_credential_references(example_directory, credentials)
-
-    assert (
-        generate.user_credential(credentials, "person-0001", "example-app").value
-        == "/run/credentials/person-0001-example-app"
-    )
-    assert (
-        generate.user_credential(credentials, "person-0001", "other").value
-        == "/run/credentials/person-0001"
-    )
-    with pytest.raises(
-        generate.ConfigurationError, match="no default or example-app-specific"
-    ):
-        generate.user_credential(credentials, "person-0003", "example-app")
-
-
-@pytest.mark.parametrize(
-    ("content", "message"),
-    [
-        pytest.param(
-            "format_version: 1\nusers:\n  person-0001: {}\nservices: {}\n",
-            "must define at least one password source",
-            id="no-password-source",
-        ),
-        pytest.param(
-            "format_version: 1\nusers:\n  person-0001:\n"
-            "    password_file: relative\nservices: {}\n",
-            "must be an absolute path",
-            id="relative-path",
-        ),
-    ],
-)
-def test_credential_documents_are_validated(
-    generate: ModuleType, tmp_path: Path, content: str, message: str
-) -> None:
-    document = tmp_path / "credentials.yaml"
-    document.write_text(content, encoding="utf-8")
-
-    with pytest.raises(generate.ConfigurationError, match=message):
-        generate.parse_credentials(document)
-
-
-def test_credentials_for_unknown_users_are_rejected(
-    generate: ModuleType, tmp_path: Path, example_directory: object
-) -> None:
-    document = tmp_path / "credentials.yaml"
-    document.write_text(
-        "format_version: 1\nusers:\n  person-9999:\n"
-        "    password_file: /run/credentials/x\n"
-        "services: {}\n",
-        encoding="utf-8",
-    )
-    credentials = generate.parse_credentials(document)
-
-    with pytest.raises(
-        generate.ConfigurationError, match="reference unknown users: person-9999"
-    ):
-        generate.validate_credential_references(example_directory, credentials)
+        generate.parse_directory(source)
