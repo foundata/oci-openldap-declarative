@@ -145,7 +145,8 @@ verify_signature() {
 validate_manifest_schema() {
   if ! jq -e --argjson max_snapshot_files "${MAX_SNAPSHOT_FILES}" '
     type == "object" and
-    ((keys | sort) == ["base_dn", "directory_id", "expires_at", "files", "format_version", "generated_at", "input_type", "read_attributes", "revision", "soft_expires_at", "uuid_namespace"]) and
+    ((keys | sort) == (["base_dn", "directory_id", "expires_at", "files", "format_version", "generated_at", "input_type", "revision", "soft_expires_at", "uuid_namespace"] +
+      (if .input_type == "users-groups" then ["read_attributes"] else [] end) | sort)) and
     (.format_version == 1) and
     (.directory_id | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,127}$")) and
     (.base_dn | type == "string" and length > 0 and length <= 1024 and (test("[\\u0000\\r\\n]") | not)) and
@@ -156,20 +157,24 @@ validate_manifest_schema() {
     (if .input_type == "users-groups" then
       (.uuid_namespace | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))
     else .input_type == "ldif" and .uuid_namespace == null end) and
-    (.read_attributes | type == "array" and length > 0 and length <= 128 and
+    (if .input_type == "users-groups" then (.read_attributes | type == "array" and length > 0 and length <= 128 and
       all(.[]; type == "string" and length <= 128 and test("^([A-Za-z][A-Za-z0-9-]*|[0-9]+(\\.[0-9]+)+)$") and
         (ascii_downcase | . != "userpassword" and . != "2.5.4.35" and (startswith("olc") | not))) and
-      (map(ascii_downcase) | length == (unique | length))) and
+      (map(ascii_downcase) | length == (unique | length))) else true end) and
     (.files | type == "array" and length > 0 and length <= $max_snapshot_files) and
     (all(.files[];
       type == "object" and
       ((keys | sort) == ["kind", "path", "sha256"]) and
-      (.kind == "data" or .kind == "schema") and
+      (.kind == "data" or .kind == "schema" or .kind == "config") and
       (.path | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*\\.ldif$")) and
       (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
     )) and
     ([.files[].path] | length == (unique | length)) and
     (any(.files[]; .kind == "data")) and
+    (if .input_type == "ldif" then
+      (all(.files[]; .kind == "data" or .kind == "config")) and
+      ([.files[] | select(.kind == "config")] | length == 1)
+    else all(.files[]; .kind != "config") end) and
     ((.generated_at | fromdateiso8601) <= (.soft_expires_at | fromdateiso8601)) and
     ((.soft_expires_at | fromdateiso8601) < (.expires_at | fromdateiso8601))
   ' "${VERIFIED_MANIFEST_FILE}" >/dev/null; then

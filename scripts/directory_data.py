@@ -193,7 +193,9 @@ def parse_ldif(content: bytes) -> list[Entry]:
         raise ConfigurationError("invalid LDIF syntax or encoding") from None
 
 
-def validate_entries(entries: list[Entry], base_dn: str) -> None:
+def validate_entries(
+    entries: list[Entry], base_dn: str, *, application_policy: bool = True
+) -> None:
     base = dn_key(base_dn)
     config = dn_key("cn=config")
     dns: set[DNKey] = set()
@@ -211,11 +213,15 @@ def validate_entries(entries: list[Entry], base_dn: str) -> None:
         exact_dns.add(exact)
         dns.add(key)
         values = attributes.get("entryuuid", [])
-        if len(values) != 1:
+        if application_policy and len(values) != 1:
             raise ConfigurationError(
                 "every entry must supply exactly one stable entryUUID"
             )
+        if len(values) > 1:
+            raise ConfigurationError("entryUUID must be single-valued")
         try:
+            if not values:
+                continue
             text = values[0].decode("ascii")
             identifier = uuid.UUID(text)
         except (ValueError, UnicodeError):
@@ -233,11 +239,11 @@ def validate_entries(entries: list[Entry], base_dn: str) -> None:
         identifiers.add(identifier)
         for name, values in attributes.items():
             attribute = name.split(";", 1)[0]
-            if attribute.startswith("olc"):
+            if application_policy and attribute.startswith("olc"):
                 raise ConfigurationError(
                     "directory data must not contain server configuration"
                 )
-            if attribute in ("userpassword", "2.5.4.35"):
+            if application_policy and attribute in ("userpassword", "2.5.4.35"):
                 if ";" in name:
                     raise ConfigurationError(
                         "userPassword attribute options are not accepted"
@@ -299,6 +305,7 @@ def write_ldif(path: Path, entries: list[Entry]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-dn", required=True)
+    parser.add_argument("--native", action="store_true")
     parser.add_argument("--schema", action="append", type=Path, default=[])
     parser.add_argument("data", nargs="+", type=Path)
     args = parser.parse_args()
@@ -314,7 +321,7 @@ def main() -> None:
             validate_schema(records)
         else:
             entries.extend(records)
-    validate_entries(entries, args.base_dn)
+    validate_entries(entries, args.base_dn, application_policy=not args.native)
 
 
 if __name__ == "__main__":

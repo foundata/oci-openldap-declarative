@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ from ldap.schema.models import AttributeType, ObjectClass
 from ldif import LDIFRecordList
 
 from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
+from scripts.server_config import MODULES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
 from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
@@ -538,7 +540,20 @@ def test_yaml_extensions_offline_preflight(
         document.update(
             input_type="ldif",
             ldif_files=[f"{name}.ldif"],
-            read_attributes=list(DEFAULT_READ_ATTRIBUTES),
+            config_files=yaml.safe_load((EXAMPLES / "native.yaml").read_text())[
+                "config_files"
+            ],
+        )
+        document.pop("read_attributes", None)
+        config_path = generator.inputs / f"{name}-database.ldif"
+        config_path.write_text(
+            (EXAMPLES / "native-database.ldif")
+            .read_text()
+            .replace("o=Example", APP_BASE)
+        )
+        document["config_files"][-1] = config_path.name
+        document["config_files"].insert(
+            -1, "/usr/local/share/openldap-declarative/schema/application-user.ldif"
         )
         name += "-native"
         result = generator.variant(name, document)
@@ -809,7 +824,7 @@ class RuntimeService:
         podman.create_volume(self.runtime_volume)
         podman.create_volume(self.state_volume)
 
-    def start(self, snapshot: Path) -> None:
+    def start(self, snapshot: Path, *options: str) -> None:
         public_key = self.generator.credentials / "snapshot.pub"
         if self.podman.container_exists(self.name):
             self.podman.stop(self.name)
@@ -839,6 +854,7 @@ class RuntimeService:
             f"{snapshot}:/snapshot:ro,Z",
             "--volume",
             f"{public_key}:/run/credentials/snapshot-public-key:ro,Z",
+            *options,
             self.image,
         )
         self.podman.run("start", self.name)
@@ -1100,7 +1116,7 @@ def test_native_ldif_custom_schema_and_read_policy(
         stdin="dn: cn=router,ou=devices,o=Example\nchangetype: modify\nreplace: deviceLabel\ndeviceLabel: Changed\n\n",
         check=False,
     )
-    assert result.returncode == 50, result.stderr
+    assert result.returncode == 53, result.stderr
     podman.stop(running.name)
 
 
@@ -1133,7 +1149,7 @@ def test_native_admin_named_entry_has_no_implicit_privileges(
         stdin="dn: cn=router,ou=devices,o=Example\nchangetype: modify\nreplace: deviceLabel\ndeviceLabel: Changed\n\n",
         check=False,
     )
-    assert result.returncode == 50, result.stderr
+    assert result.returncode == 53, result.stderr
     result = podman.exec(
         running.name,
         "ldapsearch",
@@ -1150,6 +1166,570 @@ def test_native_admin_named_entry_has_no_implicit_privileges(
         "userPassword",
     )
     assert "userPassword:" not in result.stdout
+    podman.stop(running.name)
+
+
+def custom_snapshot(
+    generator: Generator,
+    name: str,
+    *,
+    database: str | None = None,
+    server: str | None = None,
+    data: str | None = None,
+    hard_ttl: int = 43200,
+) -> Path:
+    document = yaml.safe_load((EXAMPLES / "native.yaml").read_text())
+    for kind, content, original in (
+        ("server", server, "native-server.ldif"),
+        ("database", database, "native-database.ldif"),
+    ):
+        if content is not None:
+            path = generator.inputs / f"{name}-{kind}.ldif"
+            path.write_text(content)
+            document["config_files"][document["config_files"].index(original)] = (
+                path.name
+            )
+    if data is not None:
+        path = generator.inputs / f"{name}-data.ldif"
+        path.write_text(data)
+        document["ldif_files"] = [path.name]
+    document["hard_ttl_seconds"] = hard_ttl
+    document["soft_ttl_seconds"] = hard_ttl // 2
+    result = generator.variant(name, document)
+    assert result.returncode == 0, result.stderr
+    return generator.output / name
+
+
+def custom_preflight(
+    generator: Generator,
+    podman: Podman,
+    images: Images,
+    snapshot: Path,
+    *environment: str,
+) -> subprocess.CompletedProcess[str]:
+    state = generator.path / f"{snapshot.name}-preflight-state"
+    state.mkdir(mode=0o700, exist_ok=True)
+    arguments = [
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--read-only-tmpfs=false",
+        "--userns=keep-id:uid=1001,gid=1001",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "--memory=256m",
+        "--pids-limit=128",
+        "--tmpfs",
+        "/run/openldap:rw,noexec,nosuid,nodev,mode=1777",
+        "--volume",
+        f"{snapshot}:/snapshot:ro,Z",
+        "--volume",
+        f"{generator.credentials}:/keys:ro,Z",
+        "--volume",
+        f"{state}:/state:ro,Z",
+        "--entrypoint",
+        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
+    ]
+    for value in environment:
+        arguments.extend(("--env", value))
+    result = podman.run_container(
+        *arguments,
+        images.require_runtime(),
+        "/snapshot",
+        "/keys/snapshot.pub",
+        "native-example",
+        "/state/highest-revision",
+        check=False,
+    )
+    assert not list(state.iterdir())
+    return result
+
+
+def native_search(
+    podman: Podman, name: str, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    return podman.exec(
+        name,
+        "ldapsearch",
+        "-LLL",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        "cn=reader,o=Example",
+        "-w",
+        "TEST-ONLY-native-bind",
+        *arguments,
+        check=False,
+    )
+
+
+def test_custom_writes_are_disposable_and_preflight_cannot_touch_live_data(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    database = (
+        (EXAMPLES / "native-database.ldif")
+        .read_text()
+        .replace("olcReadOnly: TRUE", "olcReadOnly: FALSE")
+        .replace("by users read", "by users write")
+    )
+    snapshot = custom_snapshot(generator, "custom-writable", database=database)
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 0, result.stderr
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-writable"
+    )
+    running.start(snapshot)
+    result = podman.exec(
+        running.name,
+        "ldapmodify",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        "cn=reader,o=Example",
+        "-w",
+        "TEST-ONLY-native-bind",
+        check=False,
+        stdin="dn: cn=router,ou=devices,o=Example\nchangetype: modify\nreplace: deviceLabel\ndeviceLabel: Changed\n\n",
+    )
+    assert result.returncode == 0, result.stderr
+    before_revision = running.accepted_revision()
+    result = podman.exec(
+        running.name,
+        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
+        "/snapshot",
+        "/run/credentials/snapshot-public-key",
+        "native-example",
+        "/state/highest-revision",
+        check=False,
+    )
+    assert result.returncode == 64 and "separate container" in result.stderr
+    assert running.accepted_revision() == before_revision
+    assert (
+        "deviceLabel: Changed"
+        in native_search(podman, running.name, "-b", "o=Example", "deviceLabel").stdout
+    )
+    running.start(snapshot)
+    result = native_search(podman, running.name, "-b", "o=Example", "deviceLabel")
+    assert "Main router" in result.stdout and "Changed" not in result.stdout
+    podman.stop(running.name)
+
+
+def test_custom_credentials_and_generated_entry_ids(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    password = "TEST-ONLY-native-legacy"
+    salt = b"test-salt"
+    verifier = (
+        "{SSHA}"
+        + base64.b64encode(
+            hashlib.sha1(password.encode() + salt).digest() + salt
+        ).decode()
+    )
+    data = "\n".join(
+        "userPassword: " + verifier if line.startswith("userPassword:") else line
+        for line in (EXAMPLES / "native.ldif").read_text().splitlines()
+        if not line.startswith("entryUUID:")
+    )
+    snapshot = custom_snapshot(generator, "custom-legacy", data=data)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-legacy"
+    )
+    running.start(snapshot)
+    assert running.bind("cn=reader,o=Example", password).returncode == 0
+    before = podman.exec_output(
+        running.name, "slapcat", "-F", "/run/openldap/slapd.d", "-b", "o=Example"
+    )
+    running.start(snapshot)
+    after = podman.exec_output(
+        running.name, "slapcat", "-F", "/run/openldap/slapd.d", "-b", "o=Example"
+    )
+    assert entry_uuid(before, "cn=router,") != entry_uuid(after, "cn=router,")
+    podman.stop(running.name)
+
+
+def test_custom_module_loading_and_server_side_sorting(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    server = (EXAMPLES / "native-server.ldif").read_text().rstrip()
+    server += (
+        "".join(
+            f"\nolcModuleLoad: {module}"
+            for module in sorted(MODULES - {"back_mdb", "argon2", "memberof"})
+        )
+        + "\n"
+    )
+    database = (
+        (EXAMPLES / "native-database.ldif").read_text()
+        + "\n\n"
+        + (
+            "dn: olcOverlay={0}sssvlv,olcDatabase={1}mdb,cn=config\n"
+            "objectClass: olcOverlayConfig\nobjectClass: olcSssVlvConfig\n"
+            "olcOverlay: {0}sssvlv\nolcSssVlvMax: 2\nolcSssVlvMaxKeys: 2\nolcSssVlvMaxPerConn: 1\n"
+        )
+    )
+    data = (
+        (EXAMPLES / "native.ldif").read_text()
+        + "\n\ndn: cn=edge,ou=devices,o=Example\nobjectClass: device\ncn: edge\n\n"
+    )
+    plain = custom_snapshot(generator, "custom-unsorted", data=data)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-sorting"
+    )
+    running.start(plain)
+    result = native_search(
+        podman,
+        running.name,
+        "-E",
+        "!sss=cn:caseIgnoreOrderingMatch",
+        "-b",
+        "o=Example",
+        "(objectClass=device)",
+        "cn",
+    )
+    assert result.returncode == 12, result.stderr
+    podman.stop(running.name)
+    enabled = custom_snapshot(
+        generator, "custom-sorting", server=server, database=database, data=data
+    )
+    # Use a distinct service state: these are deliberately different revision-1 inputs.
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-sorting-enabled"
+    )
+    running.start(enabled)
+    result = native_search(
+        podman,
+        running.name,
+        "-E",
+        "!sss=cn:caseIgnoreOrderingMatch",
+        "-E",
+        "pr=1/noprompt",
+        "-b",
+        "o=Example",
+        "(objectClass=device)",
+        "cn",
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.index("cn: edge") < result.stdout.index("cn: router")
+    podman.stop(running.name)
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "LDAP_SEARCH_SIZE_LIMIT=99",
+        "LDAP_SEARCH_TIME_LIMIT=unlimited",
+        "LDAP_TLS_CERT_FILE=/tls/cert.pem",
+        "LDAP_TLS_KEY_FILE=/tls/cert.key",
+        "LDAP_TLS_CA_FILE=/tls/ca.pem",
+        "LDAP_ADMIN_PASSWORD_FILE=/keys/missing",
+        "LDAP_ADMIN_PASSWORD=TEST-ONLY-rejected",
+        "LDAP_SEARCH_SIZE_LIMIT=",
+    ],
+)
+def test_custom_configuration_rejects_runtime_policy_overrides(
+    generator: Generator,
+    podman: Podman,
+    images: Images,
+    setting: str,
+) -> None:
+    snapshot = custom_snapshot(
+        generator,
+        "custom-conflict-"
+        + setting.split("=", 1)[0]
+        + ("-empty" if setting.endswith("=") else ""),
+    )
+    result = custom_preflight(generator, podman, images, snapshot, setting)
+    assert result.returncode == 64 and "conflicts" in result.stderr
+    assert "TEST-ONLY-rejected" not in result.stderr
+
+
+def test_custom_configuration_digest_and_expiry_remain_enforced(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    snapshot = custom_snapshot(generator, "custom-tampered")
+    config_path = snapshot / "config.ldif"
+    config_path.write_text(config_path.read_text() + "\n# unsigned edit\n")
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 65 and "digest" in result.stderr
+    snapshot = custom_snapshot(generator, "custom-expiry", hard_ttl=12)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-custom-expiry"
+    )
+    running.start(snapshot)
+    result = podman.run("wait", running.name)
+    assert result.stdout.strip() == "78"
+
+
+def test_custom_acl_can_limit_an_account_to_a_subtree(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    database = (
+        (EXAMPLES / "native-database.ldif")
+        .read_text()
+        .replace(
+            "olcAccess: {2}to attrs=entry,children,objectClass,entryUUID,o,ou,cn,deviceLabel by users read by * none",
+            'olcAccess: {2}to dn.subtree="ou=devices,o=Example" attrs=entry,children,objectClass,cn,ou,deviceLabel,description by dn.exact="cn=reader,o=Example" read by * none',
+        )
+    )
+    data = (EXAMPLES / "native.ldif").read_text()
+    reader = data[data.index("dn: cn=reader,") :]
+    data += "\n\n" + "\n".join(
+        line.replace("cn=reader,", "cn=auditor,").replace("cn: reader", "cn: auditor")
+        for line in reader.splitlines()
+        if not line.startswith("entryUUID:")
+    )
+    snapshot = custom_snapshot(
+        generator, "custom-subtree", database=database, data=data
+    )
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-subtree"
+    )
+    running.start(snapshot)
+    result = native_search(
+        podman, running.name, "-b", "ou=devices,o=Example", "description", "cn"
+    )
+    assert result.returncode == 0 and "description: Not exposed" in result.stdout
+    assert "cn: router" in result.stdout
+    result = native_search(podman, running.name, "-b", "cn=reader,o=Example", "cn")
+    assert result.returncode == 32 and "dn: " not in result.stdout
+    assert running.bind("cn=auditor,o=Example", "TEST-ONLY-native-bind").returncode == 0
+    result = podman.exec(
+        running.name,
+        "ldapsearch",
+        "-LLL",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        "cn=auditor,o=Example",
+        "-w",
+        "TEST-ONLY-native-bind",
+        "-b",
+        "ou=devices,o=Example",
+        "cn",
+        check=False,
+    )
+    assert result.returncode == 32 and "cn: router" not in result.stdout
+    podman.stop(running.name)
+
+
+@pytest.mark.parametrize(
+    "mutation", ["database-path", "data-config", "managed-policy", "second-config"]
+)
+def test_runtime_rechecks_signed_custom_inputs(
+    generator: Generator,
+    podman: Podman,
+    images: Images,
+    mutation: str,
+) -> None:
+    snapshot = custom_snapshot(generator, "custom-signed-invalid-" + mutation)
+    manifest_path = snapshot / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if mutation == "database-path":
+        path = snapshot / "config.ldif"
+        path.write_text(
+            path.read_text().replace("/run/openldap/data", "/state/forbidden")
+        )
+    elif mutation == "data-config":
+        path = snapshot / "directory.ldif"
+        path.write_text(
+            path.read_text() + "\ndn: cn=config\nobjectClass: olcGlobal\ncn: config\n\n"
+        )
+    elif mutation == "managed-policy":
+        manifest["read_attributes"] = ["cn"]
+    else:
+        shutil.copyfile(snapshot / "config.ldif", snapshot / "second.ldif")
+        manifest["files"].append(
+            {"path": "second.ldif", "kind": "config", "sha256": ""}
+        )
+    for record in manifest["files"]:
+        record["sha256"] = hashlib.sha256(
+            (snapshot / record["path"]).read_bytes()
+        ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    result = generator.container(
+        "-S",
+        "-q",
+        "-s",
+        "/run/credentials/snapshot.key",
+        "-m",
+        f"/output/{snapshot.name}/manifest.json",
+        "-x",
+        f"/output/{snapshot.name}/manifest.json.minisig",
+        entrypoint="minisign",
+    )
+    assert result.returncode == 0, result.stderr
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 65, result.stderr
+
+
+def test_readme_custom_input_uses_only_explicit_core_schema(
+    generator: Generator,
+    podman: Podman,
+    images: Images,
+) -> None:
+    readme = (PROJECT / "README.md").read_text()
+    native_section = (
+        readme.split("##### Custom directory: LDIF", 1)[1]
+        .split("```yaml\n", 1)[1]
+        .split("```", 1)[0]
+    )
+    document = yaml.safe_load(native_section)
+    document["directory_id"] = "native-example"
+    shutil.copyfile(EXAMPLES / "native.ldif", generator.inputs / "directory.ldif")
+    result = generator.variant("readme-custom", document)
+    assert result.returncode == 0, result.stderr
+    snapshot = generator.output / "readme-custom"
+    assert (
+        len(
+            [
+                entry
+                for entry in records(snapshot / "config.ldif")
+                if entry.startswith("cn=") and ",cn=schema," in entry
+            ]
+        )
+        == 2
+    )
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 0, result.stderr
+
+
+def test_custom_preflight_rejects_missing_health_access(
+    generator: Generator,
+    podman: Podman,
+    images: Images,
+) -> None:
+    database = (
+        (EXAMPLES / "native-database.ldif")
+        .read_text()
+        .replace("read by * break", "none by * break")
+    )
+    snapshot = custom_snapshot(generator, "custom-health-denied", database=database)
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 65 and "health-check identity" in result.stderr
+
+
+def test_custom_health_probe_respects_authentication_mapping_and_local_ssf(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    server = (
+        (EXAMPLES / "native-server.ldif")
+        .read_text()
+        .replace(
+            "olcThreads: 4",
+            'olcThreads: 4\nolcLocalSSF: 256\nolcAuthzRegexp: ".*,cn=peercred,cn=external,cn=auth" "cn=reader,o=Example"',
+        )
+    )
+    database = (
+        (EXAMPLES / "native-database.ldif")
+        .read_text()
+        .replace("by users read", "by users ssf=256 read")
+    )
+    snapshot = custom_snapshot(
+        generator, "custom-health-mapped", server=server, database=database
+    )
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 0, result.stderr
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-health-mapped"
+    )
+    running.start(snapshot)
+    result = podman.exec(
+        running.name, "ldapwhoami", "-Q", "-Y", "EXTERNAL", "-H", LDAPI_URI
+    )
+    assert result.stdout.strip() == "dn:cn=reader,o=example"
+    podman.stop(running.name)
+
+
+def test_custom_tls_uses_signed_configuration(
+    generator: Generator,
+    podman: Podman,
+    store: Store,
+    images: Images,
+) -> None:
+    result = generator.container(
+        "req",
+        "-x509",
+        "-nodes",
+        "-newkey",
+        "rsa:2048",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        "-keyout",
+        "/output/native-cert.key",
+        "-out",
+        "/output/native-cert.pem",
+        entrypoint="openssl",
+    )
+    assert result.returncode == 0, result.stderr
+    for filename in ("native-cert.key", "native-cert.pem"):
+        shutil.copyfile(generator.output / filename, generator.credentials / filename)
+        (generator.credentials / filename).chmod(0o600)
+    server = (
+        (EXAMPLES / "native-server.ldif")
+        .read_text()
+        .replace(
+            "olcThreads: 4",
+            "olcThreads: 4\nolcTLSCertificateFile: /keys/native-cert.pem\n"
+            "olcTLSCertificateKeyFile: /keys/native-cert.key\nolcTLSProtocolMin: 3.3",
+        )
+    )
+    snapshot = custom_snapshot(generator, "custom-tls", server=server)
+    result = custom_preflight(generator, podman, images, snapshot)
+    assert result.returncode == 0, result.stderr
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-custom-tls"
+    )
+    running.start(
+        snapshot,
+        "--env",
+        "LDAP_TRANSPORT=ldaps",
+        "--volume",
+        f"{generator.credentials / 'native-cert.pem'}:/keys/native-cert.pem:ro,Z",
+        "--volume",
+        f"{generator.credentials / 'native-cert.key'}:/keys/native-cert.key:ro,Z",
+    )
+    result = podman.exec(
+        running.name,
+        "env",
+        "LDAPTLS_CACERT=/keys/native-cert.pem",
+        "LDAPTLS_REQCERT=demand",
+        "ldapwhoami",
+        "-x",
+        "-H",
+        "ldaps://127.0.0.1:1636",
+        "-D",
+        "cn=reader,o=Example",
+        "-w",
+        "TEST-ONLY-native-bind",
+        check=False,
+    )
+    assert result.returncode == 0 and "cn=reader" in result.stdout, result.stderr
+    assert running.bind("cn=reader,o=Example", "TEST-ONLY-native-bind").returncode != 0
     podman.stop(running.name)
 
 

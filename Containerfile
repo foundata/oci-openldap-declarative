@@ -5,7 +5,7 @@ ARG IMAGE_REVISION
 ARG IMAGE_VERSION
 
 LABEL org.opencontainers.image.title="OpenLDAP Declarative"
-LABEL org.opencontainers.image.description="Read-only OpenLDAP directory built from a signed snapshot"
+LABEL org.opencontainers.image.description="OpenLDAP directory and configuration built from a signed snapshot"
 LABEL org.opencontainers.image.vendor="foundata GmbH"
 LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
@@ -32,6 +32,17 @@ RUN apt-get update \
     ! -name 'argon2.*' \
     ! -name 'back_mdb.*' \
     ! -name 'memberof.*' \
+    ! -name 'sssvlv.*' \
+    ! -name 'dynlist.*' \
+    ! -name 'deref.*' \
+    ! -name 'rwm.*' \
+    ! -name 'ppolicy.*' \
+    ! -name 'refint.*' \
+    ! -name 'unique.*' \
+    ! -name 'constraint.*' \
+    ! -name 'valsort.*' \
+    ! -name 'auditlog.*' \
+    ! -name 'syncprov.*' \
     -delete \
   && install -d -m 0755 /usr/local/share/openldap-declarative \
   && dpkg-query -W -f='${Package}\t${Version}\n' \
@@ -71,6 +82,7 @@ ENV LDAP_RUNTIME_DIR="/run/openldap" \
 
 COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
 COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/directory_data.py
+COPY --chown=0:0 --chmod=0444 scripts/server_config.py /usr/local/lib/openldap-declarative/server_config.py
 COPY --chown=0:0 --chmod=0444 schema/application-user.ldif /usr/local/share/openldap-declarative/schema/application-user.ldif
 COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh

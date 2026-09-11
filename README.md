@@ -1,17 +1,17 @@
 # OpenLDAP Declarative
 
-"OpenLDAP Declarative" serves a read-only LDAP directory from a signed, expiring
-snapshot using OCI containers. Use native LDIF to define directory structures
-and entries, or a simple users/groups YAML for application authentication,
-identities and memberships. One definition produces one directory.
+"OpenLDAP Declarative" serves an LDAP directory from a signed, expiring
+snapshot using OCI containers. Users/groups YAML provides a read-only application
+directory. Custom LDIF gives administrators control of the server configuration
+and entries. One definition produces one directory.
 
 |                   Input                   | Use it for |
 | ----------------------------------------- | ---------- |
 | [Users/groups YAML](#usage-prepare-yaml)  | Application logins, identities, groups and bind accounts, with optional extra attributes and auxiliary classes. The generator supplies the layout and membership attributes. |
-| [Native LDIF](#usage-prepare-native-ldif) | Explicit DNs, different structural classes, binary data or a different directory structure. You supply entries and any extra schemas. |
+| [Custom LDIF](#usage-prepare-native-ldif) | Administrator-owned server configuration and entries, including schemas, ACLs, indexes and packaged overlays. You own the access and credential policies. |
 
-Both routes use YAML for snapshot settings. Native LDIF is general-purpose
-directory data input, not unrestricted OpenLDAP server configuration.
+Both routes use YAML for snapshot settings and retain signature verification,
+revision checks and expiry supervision. Custom LDIF has no generated-policy mode.
 Refresh snapshots before expiry. Removing an account takes effect after
 deployment or expiry; application sessions and caches have their own lifetime.
 
@@ -50,7 +50,7 @@ The project provides two images:
   - [How to use](#usage-generator)
     - [Prepare directory data](#usage-prepare)
       - [Application directory: users/groups YAML](#usage-prepare-yaml)
-      - [General directory: native LDIF](#usage-prepare-native-ldif)
+      - [Custom directory: LDIF](#usage-prepare-native-ldif)
     - [Sign and generate a snapshot](#usage-snapshot)
       - [Create signing keys](#usage-snapshot-keys)
       - [Generate a snapshot](#usage-snapshot-generate)
@@ -99,7 +99,7 @@ or the current one expires.
 |    Location     | Responsibilities |
 | --------------- | ---------------- |
 | Admin host / CI | Maintain directory definitions, generate and sign snapshots. Holds source credentials, Vault passwords and the private signing key. |
-| LDAP host       | Serve the read-only directory via LDAP(S). Holds public verification keys, snapshot files and persistent revision state. |
+| LDAP host       | Serve the directory via LDAP(S). Holds public verification keys, snapshot files and persistent revision state. |
 
 The same machine can fill both roles for testing. Both images support Linux
 amd64 and arm64. Local builds and testing are covered in
@@ -218,11 +218,14 @@ See the [larger example](examples/generator/directory.yaml) for profile fields,
 inactive users and credential files. Continue with
 [signing and generation](#usage-snapshot).
 
-##### General directory: native LDIF<a id="usage-prepare-native-ldif"></a>
+##### Custom directory: LDIF<a id="usage-prepare-native-ldif"></a>
 
-This is for you if you need more flexibility and control over e.g. served
-properties or additional object types. Write `${data}/directory.yaml` with
-snapshot settings and paths to your entry LDIF and optional schemas:
+Supply complete OpenLDAP configuration and directory entries. Start with the
+[custom LDIF guide](docs/custom-ldif.md) and its read-only example. You own the
+schemas, ACLs, indexes, overlays and password policy; the runtime does not merge
+generated defaults into your configuration.
+
+Write `${data}/directory.yaml` with snapshot settings and ordered file lists:
 
 ```yaml
 format_version: 1
@@ -233,31 +236,28 @@ soft_ttl_seconds: 21600
 hard_ttl_seconds: 43200
 input_type: "ldif"
 ldif_files: ["directory.ldif"]
-schema_files: ["device-schema.ldif"]
-read_attributes: ["objectClass", "entryUUID", "o", "ou", "cn", "deviceLabel"]
+config_files:
+  - "native-server.ldif"
+  - "/usr/local/share/openldap-declarative/schema/available/core.ldif"
+  - "device-schema.ldif"
+  - "native-database.ldif"
 ```
 
-Paths are relative to that YAML file unless absolute. See the runnable
-[native definition](examples/generator/native.yaml),
-[entry LDIF](examples/generator/native.ldif) and
-[schema example](examples/generator/device-schema.ldif).
-Their bind password is test-only; replace its verifier before deployment.
+Paths are relative to the YAML file unless absolute; absolute paths refer to
+the generator container. `config_files` includes schema entries in dependency
+order. Packaged schema files are available at the path shown above, but none
+are automatically loaded. The [complete example](examples/generator/native.yaml)
+also selects cosine, inetOrgPerson and NIS. Its bind password is test-only.
 
-Supply the base entry, all parents and a unique lowercase `entryUUID` for
-every entry. Generate UUIDs once and keep them on renames. All `userPassword`
-values must already be Argon2id verifiers. Memberships, including `memberOf`,
-are your responsibility.
+Supply the base entry and all parents. Supply stable `entryUUID` values when
+clients depend on them; otherwise OpenLDAP generates new UUIDs on each rebuild.
+Data, memberships and credentials are administrator-owned. `read_attributes`
+and `schema_files` belong only to the users/groups route.
 
-Core, cosine, inetOrgPerson, NIS and the bundled
-[application-user schema](schema/application-user.ldif) are loaded. Extra schema
-files may only define `olcAttributeTypes` and `olcObjectClasses` in
-`olcSchemaConfig` entries directly below `cn=schema,cn=config`. Use your own
-OIDs in production.
-
-Only the explicit `read_attributes` list is readable by authenticated clients.
-Password attributes cannot be added. Data cannot configure ACLs, modules or
-`cn=config`; changes, includes and URL values are rejected. Preflight is
-required: OpenLDAP checks schema validity during offline import.
+Custom LDIF currently supports one snapshot-loaded MDB database at
+`/run/openldap/data`. Preflight in a fresh container is required. See the
+[runtime envelope](docs/custom-ldif.md#runtime-envelope) for setting ownership
+and the [module list](docs/custom-ldif.md#modules) for available extensions.
 
 Continue with [signing and generation](#usage-snapshot).
 
@@ -296,11 +296,15 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 ```
 
 The output directory must be new. Its files are `directory.ldif`,
-`manifest.json`, `manifest.json.minisig`, and any declared schemas.
+`manifest.json`, `manifest.json.minisig`, and either declared YAML schemas or
+the complete custom `config.ldif`.
 The signed revision comes from YAML; the shell variable only names the output.
 
 
 #### Directory administration<a id="usage-admin"></a>
+
+The model-specific settings below apply to users/groups YAML. Custom LDIF
+administration is covered in [its guide](docs/custom-ldif.md).
 
 ##### IDs, names and renames<a id="usage-admin-identities"></a>
 
@@ -614,17 +618,17 @@ users/groups example; adjust them for another directory definition.
 | `LDAP_TRANSPORT`                           | `ldap`                                 | `ldap`, `ldaps` or `both`. |
 | `LDAP_LISTEN_HOST`                         | `127.0.0.1`                            | `127.0.0.1` or `0.0.0.0`. |
 | `LDAP_PORT` / `LDAP_LDAPS_PORT`            | `1389` / `1636`                        | Unprivileged ports; distinct for `both`. |
-| `LDAP_SEARCH_SIZE_LIMIT`                   | `500`                                  | Maximum results per search, including the total across pages. |
-| `LDAP_SEARCH_TIME_LIMIT`                   | `10`                                   | Maximum search duration in seconds. |
+| `LDAP_SEARCH_SIZE_LIMIT`                   | `500`                                  | YAML only: maximum results per search, including the total across pages. |
+| `LDAP_SEARCH_TIME_LIMIT`                   | `10`                                   | YAML only: maximum search duration in seconds. |
 | `LDAP_LOG_LEVEL`                           | `256`                                  | Numeric slapd log mask. |
-| `LDAP_TLS_CERT_FILE` / `LDAP_TLS_KEY_FILE` | `/tls/cert.pem` / `/tls/cert.key`      | Required for LDAPS. |
-| `LDAP_TLS_CA_FILE`                         | `/tls/ca.pem`                          | Optional server trust bundle. |
+| `LDAP_TLS_CERT_FILE` / `LDAP_TLS_KEY_FILE` | `/tls/cert.pem` / `/tls/cert.key`      | YAML only: required for LDAPS. |
+| `LDAP_TLS_CA_FILE`                         | `/tls/ca.pem`                          | YAML only: optional server trust bundle. |
 | `LDAP_SNAPSHOT_DIR`                        | `/snapshot`                            | Manifest, signature and listed LDIF files. |
 | `LDAP_REVISION_STATE_FILE`                 | `/state/highest-revision`              | Persistent highest revision and manifest digest. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`            | `/run/credentials/snapshot-public-key` | One minisign public key. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`             | none                                   | `*.pub` keys; mutually exclusive with file input. |
-| `LDAP_ADMIN_PASSWORD_FILE`                 | none                                   | Optional original-password file for recovery. |
-| `LDAP_ADMIN_PASSWORD`                      | none                                   | Deprecated; conflicts with the file input. |
+| `LDAP_ADMIN_PASSWORD_FILE`                 | none                                   | YAML only: optional original-password file for recovery. |
+| `LDAP_ADMIN_PASSWORD`                      | none                                   | YAML only: deprecated; conflicts with the file input. |
 | `LDAP_BASE_DN` / `LDAP_DOMAIN`             | none                                   | Compatibility checks; must agree with the manifest. |
 
 Search limits accept integers from `1` through `2147483647`, or `unlimited`.
@@ -632,9 +636,15 @@ Set them as container environment variables (Quadlet `Environment=`); use the
 same settings during preflight and restart after changing them. They do not
 change the number of entries the directory can contain.
 
+For custom LDIF, configure search limits, TLS certificates and any administrator
+credentials in LDIF. Setting `LDAP_SEARCH_*`, `LDAP_TLS_*` file inputs or either
+`LDAP_ADMIN_PASSWORD*` input fails rather than overriding the signed configuration.
+Listener selection and `LDAP_LOG_LEVEL` remain runtime-owned for both paths.
+
 Limits: 1 MiB source YAML; 256 Vault values of 32 KiB each; 32 snapshot LDIF
-files, 16 MiB combined LDIF, a 64 MiB MDB maximum, 1 MiB manifest and 16 KiB
-signature. No unsigned mode or expiry bypass.
+files, 16 MiB combined LDIF, 1 MiB manifest and 16 KiB signature. Users/groups
+YAML uses a 64 MiB MDB maximum; custom LDIF owns `olcDbMaxSize`.
+No unsigned mode or expiry bypass.
 
 
 #### Operations<a id="usage-ops"></a>
@@ -682,11 +692,15 @@ Back up definitions, stable IDs, namespaces, required credentials, Vault and
 signing keys, deployment settings and image digests. On LDAP hosts, preserve
 public keys and revision state. MDB is rebuilt at startup.
 
-No administrator password is configured by default. For temporary recovery,
-mount a password file and set `LDAP_ADMIN_PASSWORD_FILE`. This enables
+For users/groups YAML, no administrator password is configured by default.
+For temporary recovery, mount a password file and set `LDAP_ADMIN_PASSWORD_FILE`. This enables
 `cn=admin,<base_dn>`, which can write and read verifiers. Never use it for
 applications. Recovery changes disappear on rebuild; update the source for
 lasting changes, then remove the recovery input and restart.
+
+Custom LDIF owns its recovery and write policy. All database changes, including
+overlay-maintained state, disappear on rebuild unless represented in the next
+snapshot. The runtime does not export those changes back into your source.
 
 
 ## Development<a id="tests"></a>

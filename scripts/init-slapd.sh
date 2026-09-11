@@ -22,6 +22,7 @@ directory_dump=''
 group_memberships=''
 user_memberships=''
 normalized_memberships=''
+input_type=''
 
 remove_build_artifacts() {
   for build_artifact in \
@@ -71,6 +72,22 @@ validate_compatibility_inputs() {
     return "${EXIT_USAGE}"
   fi
 
+  return 0
+}
+
+validate_custom_inputs() {
+  if [ "${runtime_dir}" != /run/openldap ]; then
+    log_error 'Custom LDIF requires LDAP_RUNTIME_DIR=/run/openldap'
+    return "${EXIT_USAGE}"
+  fi
+  for setting in LDAP_SEARCH_SIZE_LIMIT LDAP_SEARCH_TIME_LIMIT \
+    LDAP_TLS_CERT_FILE LDAP_TLS_KEY_FILE LDAP_TLS_CA_FILE \
+    LDAP_ADMIN_PASSWORD_FILE LDAP_ADMIN_PASSWORD; do
+    if printenv "${setting}" >/dev/null 2>&1; then
+      log_error "${setting} conflicts with administrator-owned custom LDIF configuration"
+      return "${EXIT_USAGE}"
+    fi
+  done
   return 0
 }
 
@@ -293,11 +310,11 @@ reset_runtime_database() {
 import_directory_data() {
   while IFS= read -r relative_path; do
     file_kind=$(jq -r --arg path "${relative_path}" '.files[] | select(.path == $path) | .kind' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
-    if [ "${file_kind}" = schema ]; then
+    if [ "${file_kind}" != data ]; then
       continue
     fi
     log_info "Importing signed LDIF file ${relative_path}"
-    if ! slapadd -F "${config_dir}" -n 1 -o value-check=yes -l "${verified_snapshot_dir}/${relative_path}"; then
+    if ! slapadd -F "${config_dir}" -b "${base_dn}" -o value-check=yes -l "${verified_snapshot_dir}/${relative_path}"; then
       log_error "Offline import failed for ${relative_path}"
       return "${EXIT_SNAPSHOT}"
     fi
@@ -308,13 +325,20 @@ import_directory_data() {
 
 validate_directory_inputs() {
   set -- --base-dn "${1}"
+  if [ "${input_type}" = ldif ]; then
+    set -- "$@" --native
+  fi
   while IFS= read -r relative_path; do
     file_kind=$(jq -r --arg path "${relative_path}" '.files[] | select(.path == $path) | .kind' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
-    if [ "${file_kind}" = schema ]; then
-      set -- "$@" --schema "${verified_snapshot_dir}/${relative_path}"
-    else
-      set -- "$@" "${verified_snapshot_dir}/${relative_path}"
-    fi
+    case "${file_kind}" in
+      schema) set -- "$@" --schema "${verified_snapshot_dir}/${relative_path}" ;;
+      data) set -- "$@" "${verified_snapshot_dir}/${relative_path}" ;;
+      config)
+        config_file=${verified_snapshot_dir}/${relative_path}
+        python3 "${script_dir}/server_config.py" --base-dn "${base_dn}" "${config_file}" || return $?
+        ;;
+      *) return "${EXIT_SNAPSHOT}" ;;
+    esac
   done <"${verified_files_file}"
   python3 "${script_dir}/directory_data.py" "$@"
 }
@@ -336,12 +360,15 @@ verify_built_database() {
     return "${EXIT_INTERNAL}"
   fi
 
-  if ! python3 "${script_dir}/directory_data.py" --base-dn "${base_dn}" "${directory_dump}"; then
+  set -- --base-dn "${base_dn}"
+  if [ "${input_type}" = ldif ]; then
+    set -- "$@" --native
+  fi
+  if ! python3 "${script_dir}/directory_data.py" "$@" "${directory_dump}"; then
     log_error 'Generated directory failed data validation'
     return "${EXIT_SNAPSHOT}"
   fi
 
-  input_type=$(jq -r '.input_type' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
   if [ "${input_type}" = ldif ]; then
     return 0
   fi
@@ -376,33 +403,45 @@ verify_built_database() {
 main() {
   trap cleanup_initialization 0
   trap 'exit 70' HUP INT TERM
-  validate_search_limits || exit $?
-
   if [ ! -f "${verified_manifest_file}" ] || [ ! -f "${verified_files_file}" ]; then
     die "${EXIT_INTERNAL}" 'Snapshot verification output is missing'
   fi
 
   base_dn=$(jq -r '.base_dn' "${verified_manifest_file}") || die "${EXIT_INTERNAL}" 'Cannot read the verified base DN'
+  input_type=$(jq -r '.input_type' "${verified_manifest_file}") || exit "${EXIT_INTERNAL}"
+  if [ "${input_type}" = ldif ]; then
+    validate_custom_inputs || exit $?
+  else
+    validate_search_limits || exit $?
+  fi
   validate_compatibility_inputs "${base_dn}" || exit $?
   validate_directory_inputs "${base_dn}" || exit $?
   reset_runtime_database || exit $?
   root_password_hash=''
-  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] || [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
-    prepare_root_password || exit $?
-    root_password_hash=$(hash_root_password) || exit $?
+  if [ "${input_type}" = users-groups ]; then
+    if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] || [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+      prepare_root_password || exit $?
+      root_password_hash=$(hash_root_password) || exit $?
+    fi
+    config_file=$(mktemp "${runtime_dir}/config.XXXXXX") || die "${EXIT_INTERNAL}" 'Cannot create the configuration input'
+    write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}" || exit $?
   fi
-  config_file=$(mktemp "${runtime_dir}/config.XXXXXX") || die "${EXIT_INTERNAL}" 'Cannot create the configuration input'
-
-  write_base_configuration "${base_dn}" "${root_password_hash}" "${config_file}" || exit $?
 
   if ! slapadd -F "${config_dir}" -n 0 -l "${config_file}"; then
     die "${EXIT_SNAPSHOT}" 'Cannot create the slapd configuration database from the snapshot policy'
   fi
-  unlink "${config_file}" || die "${EXIT_INTERNAL}" 'Cannot remove the configuration input'
+  if [ "${input_type}" = users-groups ]; then
+    unlink "${config_file}" || die "${EXIT_INTERNAL}" 'Cannot remove the configuration input'
+  fi
 
   import_directory_data || exit $?
-  slapindex -F "${config_dir}" -n 1 || die "${EXIT_INTERNAL}" 'Cannot build directory indexes'
+  slapindex -F "${config_dir}" -b "${base_dn}" || die "${EXIT_INTERNAL}" 'Cannot build directory indexes'
   verify_built_database "${base_dn}" || exit $?
+  if [ "${input_type}" = ldif ]; then
+    python3 "${script_dir}/server_config.py" --base-dn "${base_dn}" \
+      --check-health "${config_dir}" --ldapi-uri "${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}" \
+      "${config_file}" || exit $?
+  fi
   remove_build_artifacts || die "${EXIT_INTERNAL}" 'Cannot remove initialization artifacts'
   remove_verified_snapshot "${runtime_dir}" \
     || die "${EXIT_INTERNAL}" 'Cannot remove verified snapshot data after import'

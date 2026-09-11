@@ -1,0 +1,30 @@
+# Local peer credentials permit health checks for any supported container UID.
+# The LDAPI socket is inside the private /run/openldap directory.
+dn: olcDatabase={-1}frontend,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcFrontendConfig
+olcDatabase: {-1}frontend
+olcSizeLimit: 500
+olcTimeLimit: 10
+olcAccess: {0}to * by dn.regex="^gidNumber=[0-9]+[+]uidNumber=[0-9]+,cn=peercred,cn=external,cn=auth$" read by * break
+
+dn: olcDatabase={0}config,cn=config
+objectClass: olcDatabaseConfig
+olcDatabase: {0}config
+olcAccess: {0}to * by dn.regex="^gidNumber=[0-9]+[+]uidNumber=[0-9]+,cn=peercred,cn=external,cn=auth$" read by * none
+
+dn: olcDatabase={1}mdb,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcMdbConfig
+olcDatabase: {1}mdb
+olcDbDirectory: /run/openldap/data
+olcSuffix: o=Example
+olcDbMaxSize: 67108864
+olcDbIndex: objectClass eq
+olcDbIndex: cn,entryUUID eq
+olcDbIndex: deviceLabel eq,sub
+olcReadOnly: TRUE
+olcAccess: {0}to * by dn.regex="^gidNumber=[0-9]+[+]uidNumber=[0-9]+,cn=peercred,cn=external,cn=auth$" read by * break
+olcAccess: {1}to attrs=userPassword by anonymous auth by self auth by * none
+olcAccess: {2}to attrs=entry,children,objectClass,entryUUID,o,ou,cn,deviceLabel by users read by * none
+olcAccess: {3}to * by * none

@@ -6,5 +6,11 @@ soft_ttl_seconds: 21600
 hard_ttl_seconds: 43200
 input_type: "ldif"
 ldif_files: ["native.ldif"]
-schema_files: ["device-schema.ldif"]
-read_attributes: ["objectClass", "entryUUID", "o", "ou", "cn", "deviceLabel"]
+config_files:
+  - "native-server.ldif"
+  - "/usr/local/share/openldap-declarative/schema/available/core.ldif"
+  - "/usr/local/share/openldap-declarative/schema/available/cosine.ldif"
+  - "/usr/local/share/openldap-declarative/schema/available/inetorgperson.ldif"
+  - "/usr/local/share/openldap-declarative/schema/available/nis.ldif"
+  - "device-schema.ldif"
+  - "native-database.ldif"

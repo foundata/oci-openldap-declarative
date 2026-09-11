@@ -19,6 +19,7 @@ import testinfra
 from ldif import LDIFRecordList, LDIFWriter
 
 from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
+from scripts.server_config import MODULES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import (
     OWNER_LABEL,
@@ -690,9 +691,7 @@ def test_image_contents_match_the_production_boundary(
         "/usr/local/share/openldap-declarative/package-versions.txt",
         "/usr/local/share/openldap-declarative/LICENSE.txt",
         "/usr/share/doc/slapd/copyright",
-        "/usr/lib/ldap/back_mdb.so",
-        "/usr/lib/ldap/argon2.so",
-        "/usr/lib/ldap/memberof.so",
+        *(f"/usr/lib/ldap/{module}.so" for module in sorted(MODULES)),
     ):
         assert host.file(path).size > 0, path
     for path in ("/ARCHITECTURE.md", "/TEMP-Notes"):
@@ -718,13 +717,8 @@ def test_image_contents_match_the_production_boundary(
             expected_mode,
         ), script
         assert host.run(f"chmod u+w {LIB}/{script}").rc != 0, script
-    assert (
-        host.check_output(
-            'find /usr/lib/ldap -mindepth 1 ! -name "back_mdb.*" '
-            '! -name "argon2.*" ! -name "memberof.*"'
-        )
-        == ""
-    )
+    module_files = host.check_output("find /usr/lib/ldap -mindepth 1 -printf '%f\\n'")
+    assert {name.split(".", 1)[0] for name in module_files.splitlines()} == MODULES
     for tool in (
         "cc",
         "gcc",
@@ -745,6 +739,19 @@ def test_valid_snapshot_serves_and_stops_cleanly(
     container = runtime.create("valid", "valid")
     runtime.start_healthy(container)
     runtime.assert_valid(container)
+    configuration = runtime.podman.exec_output(
+        container.name, "slapcat", "-F", "/run/openldap/slapd.d", "-n", "0"
+    )
+    parser = LDIFRecordList(BytesIO(configuration.encode()))
+    parser.parse()
+    loaded_modules = {
+        value.decode().split("}", 1)[-1].removesuffix(".la")
+        for _, attributes in parser.all_records
+        for name, values in attributes.items()
+        if name.lower() == "olcmoduleload"
+        for value in values
+    }
+    assert loaded_modules == {"back_mdb", "argon2", "memberof"}
     runtime.run_backstop(container, workspace.path / "valid")
 
     large = workspace.copy_snapshot("valid", "valid-large")
@@ -1297,15 +1304,13 @@ def test_signed_password_hash_contract(
         "unknown-class",
     ],
 )
-def test_signed_native_policy_is_validated_before_listening(
+def test_signed_managed_policy_is_validated_before_listening(
     runtime: Runtime, workspace: RuntimeWorkspace, mutation: str
 ) -> None:
-    name = "native-policy-" + mutation
+    name = "managed-policy-" + mutation
     candidate = workspace.create_snapshot(name, 2, 30 * MINUTES, 60 * MINUTES)
     manifest_path = candidate / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    manifest["input_type"] = "ldif"
-    manifest["uuid_namespace"] = None
     if mutation.startswith("read-"):
         manifest["read_attributes"] = [
             {

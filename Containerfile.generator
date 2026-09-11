@@ -9,6 +9,8 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
   && apt-get update \
   && apt-get install -y --no-install-recommends python3 python3-ldap slapd \
   && install -d -m 0755 /export/schema \
+  && install -d -m 0755 /export/available \
+  && install -m 0444 /etc/ldap/schema/*.ldif /export/available/ \
   && python3 /tmp/export_schema.py /export/schema \
   && install -m 0444 /usr/share/doc/slapd/copyright /export/copyright \
   && dpkg-query -W -f='${Version}\n' slapd > /export/schema/openldap-version \
@@ -73,10 +75,12 @@ COPY --chown=0:0 --chmod=0444 generator/generate.py /usr/local/lib/openldap-decl
 COPY --chown=0:0 --chmod=0444 generator/extensions.py /usr/local/lib/openldap-declarative/generator/extensions.py
 COPY --chown=0:0 --chmod=0444 schema/application-user.ldif /usr/local/share/openldap-declarative/schema/application-user.ldif
 COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/schema/ /usr/local/share/openldap-declarative/schema/
+COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/available/ /usr/local/share/openldap-declarative/schema/available/
 COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/copyright /usr/share/doc/slapd-schema/copyright
 COPY --chown=0:0 --chmod=0555 generator/password.py /usr/local/bin/openldap-password
 COPY --chown=0:0 --chmod=0444 generator/vault.py /usr/local/lib/openldap-declarative/generator/vault.py
 COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/scripts/directory_data.py
+COPY --chown=0:0 --chmod=0444 scripts/server_config.py /usr/local/lib/openldap-declarative/scripts/server_config.py
 COPY --chown=0:0 --chmod=0444 LICENSES/GPL-3.0-or-later.txt /usr/local/share/openldap-declarative/LICENSE.txt
 
 USER 1001:1001

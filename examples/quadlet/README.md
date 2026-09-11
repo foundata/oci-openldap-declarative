@@ -97,6 +97,11 @@ and `runtime`. Set `revision` to the staged revision. Run deployments one at a
 time. The subshell stops at the first error; a rejected preflight leaves the
 active service unchanged.
 
+For [custom LDIF](../../docs/custom-ldif.md), keep the separate preflight
+container and fresh scratch mount below. Do not run preflight inside the LDAP
+service container. Adapt the directory ID and client queries, and provide any
+TLS mounts referenced by the custom configuration to both containers.
+
 ```bash
 revision=1
 (
@@ -201,6 +206,8 @@ For LDAPS, add read-only certificate/key mounts and `LDAP_TRANSPORT=ldaps` or
 `both` to the container unit. Match those settings in preflight. Clients must
 validate the server name and CA; restart after certificate renewal. See
 [runtime inputs](../../README.md#runtime-inputs) for paths and ports.
+Custom LDIF must declare certificate paths and TLS policy in its signed
+`config_files`; do not set the YAML-only `LDAP_TLS_*` file inputs.
 
 ### Signing-key rotation (admin/CI and LDAP host)<a id="signing-key-rotation"></a>
 

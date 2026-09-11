@@ -40,6 +40,7 @@ from scripts.directory_data import (
     validate_schema,
     write_ldif,
 )
+from scripts.server_config import validate_config
 
 DIRECTORY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
@@ -152,6 +153,7 @@ class Directory:
     schema_files: tuple[Path, ...]
     read_attributes: tuple[str, ...]
     schema_contents: tuple[bytes, ...] | None = field(default=None, repr=False)
+    config_files: tuple[Path, ...] = ()
 
 
 def error(message: str) -> NoReturn:
@@ -435,13 +437,17 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
     specific = (
         {"uuid_namespace", "organization", "users", "groups", "bind_accounts"}
         if input_type == "users-groups"
-        else {"ldif_files", "read_attributes"}
+        else {"ldif_files", "config_files"}
     )
     strict_keys(
         root,
         required=required | specific,
-        optional={"expiry_offset_seconds", "schema_files"}
-        | ({"read_attributes"} if input_type == "users-groups" else set()),
+        optional={"expiry_offset_seconds"}
+        | (
+            {"read_attributes", "schema_files"}
+            if input_type == "users-groups"
+            else set()
+        ),
         context="directory YAML",
     )
     directory_id = text_value(root["directory_id"], context="directory_id", maximum=128)
@@ -479,6 +485,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
     groups: dict[str, Group] = {}
     bind_accounts: dict[str, BindAccount] = {}
     files: tuple[Path, ...] = ()
+    config_files: tuple[Path, ...] = ()
     if input_type == "users-groups":
         namespace_text = text_value(root["uuid_namespace"], context="uuid_namespace")
         if not UUID_NAMESPACE_PATTERN.fullmatch(namespace_text):
@@ -496,6 +503,9 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         files = source_files(root["ldif_files"], path, context="ldif_files")
         if not files:
             error("ldif_files must not be empty")
+        config_files = source_files(root["config_files"], path, context="config_files")
+        if not config_files:
+            error("config_files must not be empty")
     directory = Directory(
         directory_id,
         validate_base_dn(
@@ -516,6 +526,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         files,
         source_files(root.get("schema_files", []), path, context="schema_files"),
         read_attributes,
+        config_files=config_files,
     )
     return replace(directory, schema_contents=validate_extensions(directory))
 
@@ -786,7 +797,11 @@ def generate_snapshot(
         ldif_path,
         sorted(entries, key=lambda entry: (len(dn_key(entry[0])), dn_key(entry[0]))),
     )
-    validate_entries(parse_ldif(ldif_path.read_bytes()), directory.base_dn)
+    validate_entries(
+        parse_ldif(ldif_path.read_bytes()),
+        directory.base_dn,
+        application_policy=directory.input_type == "users-groups",
+    )
     files = [
         {
             "path": ldif_path.name,
@@ -812,6 +827,26 @@ def generate_snapshot(
                 "path": path.name,
                 "kind": "schema",
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    if directory.input_type == "ldif":
+        configuration: list[Entry] = []
+        for source in directory.config_files:
+            content = read_regular(
+                source, maximum=MAX_DATA_BYTES, context="configuration LDIF"
+            )
+            total += len(content)
+            if total > MAX_DATA_BYTES:
+                error("source LDIF exceeds the 16 MiB limit")
+            configuration.extend(parse_ldif(content))
+        validate_config(configuration, directory.base_dn)
+        config_path = destination / "config.ldif"
+        write_ldif(config_path, configuration)
+        files.append(
+            {
+                "path": config_path.name,
+                "kind": "config",
+                "sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
             }
         )
     if (
@@ -841,9 +876,10 @@ def generate_snapshot(
         if directory.namespace is not None
         else None,
         "input_type": directory.input_type,
-        "read_attributes": directory.read_attributes,
         "files": files,
     }
+    if directory.input_type == "users-groups":
+        manifest["read_attributes"] = directory.read_attributes
     manifest_path = destination / "manifest.json"
     manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"

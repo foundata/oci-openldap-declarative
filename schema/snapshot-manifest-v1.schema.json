@@ -14,8 +14,7 @@
     "expires_at",
     "uuid_namespace",
     "files",
-    "input_type",
-    "read_attributes"
+    "input_type"
   ],
   "properties": {
     "format_version": {
@@ -84,7 +83,8 @@
           "kind": {
             "enum": [
               "data",
-              "schema"
+              "schema",
+              "config"
             ]
           }
         }
@@ -129,14 +129,37 @@
         }
       },
       "then": {
+        "not": {"required": ["read_attributes"]},
         "properties": {
+          "files": {
+            "items": {
+              "properties": {
+                "kind": {"enum": ["data", "config"]}
+              }
+            },
+            "contains": {
+              "properties": {
+                "kind": {"const": "config"}
+              }
+            },
+            "minContains": 1,
+            "maxContains": 1
+          },
           "uuid_namespace": {
             "type": "null"
           }
         }
       },
       "else": {
+        "required": ["read_attributes"],
         "properties": {
+          "files": {
+            "items": {
+              "properties": {
+                "kind": {"enum": ["data", "schema"]}
+              }
+            }
+          },
           "uuid_namespace": {
             "type": "string"
           }

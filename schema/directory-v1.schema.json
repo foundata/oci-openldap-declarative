@@ -110,6 +110,19 @@
       "maxItems": 31,
       "uniqueItems": true
     },
+    "config_files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 31,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^[^\\u0000\\r\\n]+$"
+      },
+      "description": "Complete custom cn=config entries, including schemas, in import order."
+    },
     "bind_accounts": {
       "type": "array",
       "minItems": 1,
@@ -133,8 +146,9 @@
         "bind_accounts"
       ],
       "not": {
-        "required": [
-          "ldif_files"
+        "anyOf": [
+          {"required": ["ldif_files"]},
+          {"required": ["config_files"]}
         ]
       }
     },
@@ -146,10 +160,12 @@
       },
       "required": [
         "ldif_files",
-        "read_attributes"
+        "config_files"
       ],
       "not": {
         "anyOf": [
+          {"required": ["read_attributes"]},
+          {"required": ["schema_files"]},
           {
             "required": [
               "uuid_namespace"

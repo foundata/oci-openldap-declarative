@@ -1,0 +1,21 @@
+# Server configuration owned by the administrator. LDAP_LOG_LEVEL owns logging.
+dn: cn=config
+objectClass: olcGlobal
+cn: config
+olcPidFile: /run/openldap/slapd.pid
+olcArgsFile: /run/openldap/slapd.args
+olcThreads: 4
+olcToolThreads: 2
+olcIdleTimeout: 60
+
+dn: cn=schema,cn=config
+objectClass: olcSchemaConfig
+cn: schema
+
+dn: cn=module{0},cn=config
+objectClass: olcModuleList
+cn: module{0}
+olcModulePath: /usr/lib/ldap
+olcModuleLoad: back_mdb
+olcModuleLoad: argon2
+olcModuleLoad: memberof

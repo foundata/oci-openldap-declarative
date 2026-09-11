@@ -102,8 +102,9 @@ generation and deployment. The admin workflow needs only the generator image.
 
 The runtime image contains OpenLDAP, LDAP clients, signature tools and the
 startup scripts. Python and `python-ldap` validate LDIF before offline import;
-the same validator runs in the generator. Runtime does not contain PyYAML,
-Argon2 generation bindings or Ansible Vault.
+the same validators run in the generator. `server_config.py` checks the custom
+runtime envelope without interpreting arbitrary ACL policy. Runtime does not
+contain PyYAML, Argon2 generation bindings or Ansible Vault.
 
 The generator image contains source parsing, the `openldap-password` Argon2id
 helper, OpenSSL, [minisign](https://github.com/jedisct1/minisign) and
@@ -135,6 +136,7 @@ generator/password.py            # stdin-only openldap-password command
 generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
 scripts/directory_data.py        # shared LDIF, schema and verifier validation
+scripts/server_config.py         # custom configuration import/runtime envelope
 schema/                          # JSON contracts and bundled LDAP schema
 examples/                        # deployment and input examples
 tests/                           # schema, policy and behavioral tests
@@ -176,6 +178,14 @@ Extension unit tests use small schema fixtures and do not need host OpenLDAP
 schema files. Container tests exercise the actual packaged schemas, custom
 auxiliary classes, Vault-encrypted attribute values, read access and offline
 rejection of invalid extended entries.
+
+Custom LDIF tests supply complete configuration, including selected package
+schemas. They exercise administrator-owned ACLs and credentials, optional
+modules, disposable writes, runtime-setting conflicts and preflight isolation.
+The generator image also ships the package's schema LDIF files for explicit
+selection; no schemas or policy are implicitly inserted in this path.
+Use separate fresh containers for custom preflight. Never mount an active
+service's runtime volume or writable revision state into that preflight container.
 
 ```sh
 sh hack/check.sh
