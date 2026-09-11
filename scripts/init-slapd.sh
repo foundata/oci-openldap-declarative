@@ -297,7 +297,7 @@ import_directory_data() {
       continue
     fi
     log_info "Importing signed LDIF file ${relative_path}"
-    if ! slapadd -F "${config_dir}" -n 1 -l "${verified_snapshot_dir}/${relative_path}"; then
+    if ! slapadd -F "${config_dir}" -n 1 -o value-check=yes -l "${verified_snapshot_dir}/${relative_path}"; then
       log_error "Offline import failed for ${relative_path}"
       return "${EXIT_SNAPSHOT}"
     fi

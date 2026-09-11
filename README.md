@@ -7,8 +7,8 @@ identities and memberships. One definition produces one directory.
 
 |                   Input                   | Use it for |
 | ----------------------------------------- | ---------- |
-| [Users/groups YAML](#usage-prepare-yaml)  | Application logins, identities, groups and bind accounts. The generator supplies the layout and membership attributes. |
-| [Native LDIF](#usage-prepare-native-ldif) | Explicit DNs, other object classes, additional attributes or a different directory structure. You supply entries and any extra schemas. |
+| [Users/groups YAML](#usage-prepare-yaml)  | Application logins, identities, groups and bind accounts, with optional extra attributes and auxiliary classes. The generator supplies the layout and membership attributes. |
+| [Native LDIF](#usage-prepare-native-ldif) | Explicit DNs, different structural classes, binary data or a different directory structure. You supply entries and any extra schemas. |
 
 Both routes use YAML for snapshot settings. Native LDIF is general-purpose
 directory data input, not unrestricted OpenLDAP server configuration.
@@ -57,6 +57,7 @@ The project provides two images:
     - [Directory administration](#usage-admin)
       - [IDs, names and renames](#usage-admin-identities)
       - [User profile fields](#usage-admin-profile-fields)
+      - [Extra LDAP attributes and classes](#usage-admin-extensions)
       - [Bind accounts](#usage-admin-bind-accounts)
       - [Membership and access](#usage-admin-membership)
       - [Credential sources](#usage-admin-credentials)
@@ -358,8 +359,70 @@ Up to 64 values of 1123 characters are accepted.
 
 All these fields are readable by authenticated accounts by default.
 Set `read_attributes` to an explicit list to narrow access; that list replaces
-the defaults. Native LDIF can use other schema-valid attributes without this
-YAML field mapping.
+the defaults.
+
+##### Extra LDAP attributes and classes<a id="usage-admin-extensions"></a>
+
+Users, groups and bind accounts accept optional `attributes` and
+`object_classes`. For example, add this to Alice's user definition:
+
+```yaml
+object_classes: ["posixAccount"]
+attributes:
+  employeeNumber: ["E-0001"]
+  preferredLanguage: ["en"]
+  uidNumber: ["10001"]
+  gidNumber: ["10000"]
+  homeDirectory: ["/home/alice"]
+```
+
+`inetOrgPerson` remains Alice's structural class; `posixAccount` adds the
+POSIX account attributes. This stores data only, without configuring host
+login or creating a home directory.
+
+- Attribute values are non-empty lists of strings, including quoted numbers.
+  Each string may use [`!vault`](#usage-vault). Limits: 128 attributes per
+  entry, 64 values per attribute, 4096 characters per value; no NUL or newlines.
+- Class lists add up to 16 auxiliary classes. Attribute/class names and numeric
+  OIDs are accepted; attribute options such as `;binary` are not. Duplicate
+  names, aliases and generated classes are rejected. `extensibleObject` is
+  not allowed.
+- Generated identities, naming attributes, passwords and memberships cannot
+  be overridden. Users must use the dedicated profile fields where available,
+  even if the field was previously omitted. A group or bind account can use
+  `attributes.description`, since neither has a dedicated description field.
+
+Extras do not expand read access. Attributes already in the default allowlist
+remain readable; others need an explicit `read_attributes` list. For example,
+this top-level setting selects identity, membership and POSIX fields, but omits
+`mail` and `preferredLanguage`:
+
+```yaml
+read_attributes:
+  - "objectClass"
+  - "entryUUID"
+  - "uid"
+  - "cn"
+  - "member"
+  - "memberOf"
+  - "employeeNumber"
+  - "uidNumber"
+  - "gidNumber"
+  - "homeDirectory"
+```
+
+The list replaces all defaults and applies to every authenticated account.
+For a custom class, add its schema to top-level `schema_files`. The
+[example employee schema](examples/generator/employee-schema.ldif) defines
+`exampleEmployee` with a `costCenter` attribute. Put it beside your directory
+YAML, set `schema_files: ["employee-schema.ldif"]`, then add the class and
+attribute to the relevant entries. Allocate your own OIDs for production.
+
+Generation checks names, class kinds and reserved fields against the schemas.
+Always preflight before activation: OpenLDAP checks required attributes,
+allowed attributes and their syntax during offline import. Use native LDIF
+for binary values, other structural classes, custom DNs or replacements for
+the dedicated profile mappings.
 
 ##### Bind accounts<a id="usage-admin-bind-accounts"></a>
 

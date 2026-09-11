@@ -13,11 +13,14 @@ from pathlib import Path
 import pytest
 import yaml
 from argon2 import PasswordHasher
+from ldap.schema import SubSchema
+from ldap.schema.models import AttributeType, ObjectClass
 from ldif import LDIFRecordList
 
+from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
-from tests.integration.lifecycle import LDAP_URI, wait_until_healthy
+from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
 from tests.namespace_cases import NAMESPACE_CASES
 from tests.validate_snapshot_manifest import validate_manifest
 
@@ -179,7 +182,7 @@ def generated(generator: Generator) -> Path:
 def test_generator_image_boundary(generator: Generator) -> None:
     result = generator.container(
         "-c",
-        "id -u; id -g; command -v ansible-vault; command -v openldap-password; command -v openssl; test ! -e /usr/sbin/slapd; test ! -e /TEMP-Notes; test -s /usr/share/doc/ansible-core/copyright; test -s /usr/local/share/openldap-declarative/LICENSE.txt",
+        "id -u; id -g; command -v ansible-vault; command -v openldap-password; command -v openssl; test ! -e /usr/sbin/slapd; test ! -e /tmp/export_schema.py; test ! -e /usr/local/lib/openldap-declarative/generator/export_schema.py; test ! -e /TEMP-Notes; test -s /usr/share/doc/ansible-core/copyright; test -s /usr/local/share/openldap-declarative/LICENSE.txt",
         entrypoint="sh",
     )
     assert result.returncode == 0, result.stderr
@@ -336,6 +339,328 @@ def test_profile_fields_are_readable_and_policy_can_hide_them(
         "proxyAddresses:" not in result.stdout and "description:" not in result.stdout
     )
     assert "userPassword:" not in result.stdout
+    podman.stop(running.name)
+
+
+def test_yaml_extensions_preserve_identity_and_obey_read_policy(
+    generator: Generator, generated: Path, podman: Podman, images: Images, store: Store
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0]["object_classes"] = ["posixAccount"]
+    document["users"][0]["attributes"] = {
+        "employeeNumber": ["E-0001"],
+        "preferredLanguage": ["en"],
+        "uidNumber": ["10001"],
+        "gidNumber": ["10000"],
+        "homeDirectory": ["/home/alice"],
+        "mobile": ["+49 123", "+49 456"],
+    }
+    document["groups"][0]["attributes"] = {"description": ["Staff group"]}
+    document["bind_accounts"][0]["attributes"] = {"description": ["Application reader"]}
+    result = generator.variant("extensions-default", document)
+    assert result.returncode == 0, result.stderr
+    snapshot = generator.output / "extensions-default"
+    original = records(generated / "directory.ldif")
+    extended = records(snapshot / "directory.ldif")
+    assert original.keys() == extended.keys()
+    for dn, attributes in original.items():
+        for name in ("entryUUID", "uid", "cn", "member", "memberOf"):
+            assert extended[dn].get(name) == attributes.get(name)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-extensions"
+    )
+    running.start(snapshot)
+    before_uuid = running.alice_uuid()
+    search = running.search("-b", APP_BASE, "(objectClass=*)", "*", "+")
+    assert search.returncode == 0, search.stderr
+    assert "description: Staff group" in search.stdout
+    assert "description: Application reader" in search.stdout
+    assert "employeeNumber:" not in search.stdout and "uidNumber:" not in search.stdout
+    assert "userPassword:" not in search.stdout
+    document["revision"] = 2
+    document["read_attributes"] = [
+        *DEFAULT_READ_ATTRIBUTES,
+        "employeeNumber",
+        "uidNumber",
+        "gidNumber",
+        "homeDirectory",
+        "mobile",
+    ]
+    result = generator.variant("extensions-readable", document)
+    assert result.returncode == 0, result.stderr
+    running.start(generator.output / "extensions-readable")
+    assert running.alice_uuid() == before_uuid
+    assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
+    assert running.bind(ALICE_DN, "TEST-ONLY-wrong-password").returncode == 49
+    search = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
+    for expected in (
+        "objectClass: posixAccount",
+        "employeeNumber: E-0001",
+        "uidNumber: 10001",
+        "gidNumber: 10000",
+        "homeDirectory: /home/alice",
+        "mobile: +49 123",
+        "mobile: +49 456",
+        f"memberOf: cn=staff,ou=groups,{APP_BASE}",
+    ):
+        assert expected in search.stdout
+    assert (
+        "preferredLanguage:" not in search.stdout
+        and "userPassword:" not in search.stdout
+    )
+    write = podman.exec(
+        running.name,
+        "ldapmodify",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        APPLICATION_DN,
+        "-w",
+        "TEST-ONLY-app-bind",
+        check=False,
+        stdin=f"dn: {ALICE_DN}\nchangetype: modify\nreplace: employeeNumber\nemployeeNumber: changed\n\n",
+    )
+    assert write.returncode == 50, write.stderr
+    podman.stop(running.name)
+
+
+def test_yaml_custom_classes_and_vault_values_on_all_entities(
+    generator: Generator, podman: Podman, images: Images, store: Store
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["schema_files"] = ["employee-schema.ldif"]
+    document["read_attributes"] = [*DEFAULT_READ_ATTRIBUTES, "costCenter"]
+    for kind in ("users", "groups", "bind_accounts"):
+        document[kind][0]["object_classes"] = ["exampleEmployee"]
+        document[kind][0]["attributes"] = {"costCenter": [f"center-{kind}"]}
+    document["users"][0]["attributes"]["costCenter"] = ["VAULT_PLACEHOLDER"]
+    encrypted = generator.encrypt("center-users")
+    source = yaml.safe_dump(document).replace(
+        "    - VAULT_PLACEHOLDER",
+        "    - !vault |\n"
+        + "\n".join("        " + line for line in encrypted.splitlines()),
+    )
+    assert "VAULT_PLACEHOLDER" not in source
+    result = generator.variant(
+        "custom-extensions",
+        source,
+        "--vault",
+        "directory@/run/credentials/vault-password",
+    )
+    assert result.returncode == 0, result.stderr
+    snapshot = generator.output / "custom-extensions"
+    assert "center-users" in (snapshot / "directory.ldif").read_text()
+    assert "center-users" not in result.stdout + result.stderr
+    validate_manifest(SCHEMA, snapshot / "manifest.json")
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-custom-extensions"
+    )
+    running.start(snapshot)
+    result = running.search(
+        "-b", APP_BASE, "(objectClass=exampleEmployee)", "costCenter"
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.count("dn: ") == 3
+    for kind in ("users", "groups", "bind_accounts"):
+        assert f"costCenter: center-{kind}" in result.stdout
+    assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    podman.stop(running.name)
+
+
+@pytest.mark.parametrize(
+    "extension",
+    [
+        {"attributes": {"commonName": ["PRIVATE-MARKER"]}},
+        {"attributes": {"2.5.4.35": ["PRIVATE-MARKER"]}},
+        {"attributes": {"memberOf": ["PRIVATE-MARKER"]}},
+        {"attributes": {"mail": ["PRIVATE-MARKER"]}},
+        {"attributes": {"creatorsName": ["PRIVATE-MARKER"]}},
+        {"attributes": {"unknownAttribute": ["PRIVATE-MARKER"]}},
+        {"attributes": {"employeeNumber": ["a"], "employeeNumber;lang-en": ["b"]}},
+        {"object_classes": ["organization"]},
+        {"object_classes": ["extensibleObject"]},
+        {"object_classes": ["unknownClass"]},
+        {"object_classes": ["openldapDeclarativeUser"]},
+    ],
+)
+def test_yaml_extension_rejections_before_signing(
+    generator: Generator, extension: dict[str, object], request: pytest.FixtureRequest
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0].update(extension)
+    name = f"extension-reject-{request.node.callspec.id}"
+    result = generator.variant(name, document)
+    assert result.returncode == 2, result.stderr
+    assert "PRIVATE-MARKER" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (generator.output / name).exists()
+
+
+@pytest.mark.parametrize(
+    "mutation", ["none", "missing-required", "invalid-integer", "missing-class"]
+)
+@pytest.mark.parametrize("input_type", ["users-groups", "ldif"])
+def test_yaml_extensions_offline_preflight(
+    generator: Generator, podman: Podman, images: Images, mutation: str, input_type: str
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0]["object_classes"] = ["posixAccount"]
+    attributes = {
+        "uidNumber": ["10001"],
+        "gidNumber": ["10000"],
+        "homeDirectory": ["/home/alice"],
+    }
+    document["users"][0]["attributes"] = attributes
+    if mutation == "missing-required":
+        del attributes["homeDirectory"]
+    elif mutation == "invalid-integer":
+        attributes["uidNumber"] = ["PRIVATE-MARKER"]
+    elif mutation == "missing-class":
+        del document["users"][0]["object_classes"]
+    name = f"extension-preflight-{input_type}-{mutation}"
+    result = generator.variant(name, document)
+    assert result.returncode == 0, result.stderr
+    if input_type == "ldif":
+        shutil.copyfile(
+            generator.output / name / "directory.ldif",
+            generator.inputs / f"{name}.ldif",
+        )
+        for key in (
+            "users",
+            "groups",
+            "bind_accounts",
+            "uuid_namespace",
+            "organization",
+        ):
+            del document[key]
+        document.update(
+            input_type="ldif",
+            ldif_files=[f"{name}.ldif"],
+            read_attributes=list(DEFAULT_READ_ATTRIBUTES),
+        )
+        name += "-native"
+        result = generator.variant(name, document)
+        assert result.returncode == 0, result.stderr
+    state = generator.path / f"{name}-state"
+    state.mkdir(mode=0o700)
+    result = podman.run_container(
+        "--rm",
+        "--network=none",
+        "--read-only",
+        "--read-only-tmpfs=false",
+        "--userns=keep-id:uid=1001,gid=1001",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "--memory=256m",
+        "--pids-limit=128",
+        "--tmpfs",
+        "/run/openldap:rw,noexec,nosuid,nodev,mode=1777",
+        "--volume",
+        f"{generator.output / name}:/snapshot:ro,Z",
+        "--volume",
+        f"{generator.credentials}:/keys:ro,Z",
+        "--volume",
+        f"{state}:/state:ro,Z",
+        "--entrypoint",
+        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
+        images.require_runtime(),
+        "/snapshot",
+        "/keys/snapshot.pub",
+        "example-app",
+        "/state/highest-revision",
+        check=False,
+    )
+    assert result.returncode == (0 if mutation == "none" else 65), (
+        result.stdout + result.stderr
+    )
+    assert "PRIVATE-MARKER" not in result.stdout + result.stderr
+    assert not list(state.iterdir())
+
+
+def test_generator_schema_definitions_match_runtime_package(
+    generator: Generator, podman: Podman, images: Images
+) -> None:
+    version = generator.container(
+        "/usr/local/share/openldap-declarative/schema/openldap-version",
+        entrypoint="cat",
+    )
+    runtime_version = podman.run_container(
+        "--rm",
+        "--network=none",
+        "--entrypoint=dpkg-query",
+        images.require_runtime(),
+        "-W",
+        "-f=${Version}",
+        "slapd",
+    )
+    assert version.returncode == 0
+    assert version.stdout.strip() == runtime_version.stdout.strip()
+    checksums = generator.container(
+        "/usr/local/share/openldap-declarative/schema/source-checksums.json",
+        entrypoint="cat",
+    )
+    assert checksums.returncode == 0
+    source_checksums = json.loads(checksums.stdout)
+    assert set(source_checksums) == {
+        f"{name}.ldif" for name in ("core", "cosine", "inetorgperson", "nis")
+    }
+    for schema, checksum in source_checksums.items():
+        runtime_hash = podman.run_container(
+            "--rm",
+            "--network=none",
+            "--entrypoint=sha256sum",
+            images.require_runtime(),
+            f"/etc/ldap/schema/{schema}",
+        )
+        assert checksum == runtime_hash.stdout.split()[0]
+    result = generator.container(
+        "-c",
+        "test ! -e /tmp/openldap-schema && test -s /usr/share/doc/slapd-schema/copyright",
+        entrypoint="sh",
+    )
+    assert result.returncode == 0
+
+
+def test_generator_catalog_matches_the_effective_runtime_schema(
+    generator: Generator, generated: Path, podman: Podman, images: Images, store: Store
+) -> None:
+    catalog = generator.container(
+        "-c",
+        "import json; from generator.extensions import SchemaCatalog; "
+        "print(json.dumps(SchemaCatalog(()).schema.ldap_entry()))",
+        entrypoint="python3",
+    )
+    assert catalog.returncode == 0, catalog.stderr
+    expected = SubSchema(json.loads(catalog.stdout), check_uniqueness=2)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-schema-parity"
+    )
+    running.start(generated)
+    result = podman.exec(
+        running.name,
+        "ldapsearch",
+        "-LLL",
+        "-Y",
+        "EXTERNAL",
+        "-H",
+        LDAPI_URI,
+        "-b",
+        "cn=Subschema",
+        "-s",
+        "base",
+        "(objectClass=subschema)",
+        "attributeTypes",
+        "objectClasses",
+    )
+    parser = LDIFRecordList(BytesIO(result.stdout.encode()))
+    parser.parse()
+    assert len(parser.all_records) == 1
+    actual = SubSchema(parser.all_records[0][1], check_uniqueness=2)
+    for kind in (AttributeType, ObjectClass):
+        for oid in expected.listall(kind):
+            assert str(expected.get_obj(kind, oid)) == str(actual.get_obj(kind, oid))
     podman.stop(running.name)
 
 

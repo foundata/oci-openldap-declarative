@@ -20,6 +20,7 @@ implementation, tests and corresponding contract changes are merged together.
 - [Directory definitions](#definitions)
   - [General directory: native LDIF](#native-ldif)
   - [Application directory: users/groups YAML](#users-groups)
+    - [Additive attributes and classes](#extensions)
   - [Stable identifiers](#identifiers)
   - [Credentials and source encryption](#credentials)
 - [Snapshot contract](#snapshots)
@@ -88,7 +89,8 @@ Native LDIF is the general-purpose route for directory data. Administrators
 define DNs, object classes, attributes and stable entry identifiers explicitly.
 Users/groups YAML is a convenience model for application authentication,
 identities and group memberships. It generates a fixed layout containing users,
-groups and application bind accounts, with a limited set of configurable fields.
+groups and application bind accounts. Dedicated profile fields and additive
+attributes/classes extend those entries without changing the generated layout.
 
 Both routes produce the same signed snapshot format and use the same runtime.
 Native LDIF permits different directory structures; it does not bypass the
@@ -169,6 +171,49 @@ reject case-insensitive duplicates and add `openldapDeclarativeUser` when the
 list is non-empty. It MUST NOT infer a primary address or configure mail delivery.
 All supplied profile fields are included in the default readable-attribute list;
 an explicit `read_attributes` list replaces those defaults.
+
+#### Additive attributes and classes<a id="extensions"></a>
+
+Users, groups and bind accounts MAY supply `attributes` and `object_classes`.
+Omission, an empty attribute mapping or an empty class list means no extension.
+
+- `attributes` MUST map LDAP names or numeric OIDs to non-empty lists of strings.
+  Limits are 128 attributes per entry, 64 values per attribute and 4096
+  characters per value. Empty values, NUL/newlines, non-string values and exact
+  duplicate values MUST be rejected. Attribute options MUST NOT be accepted.
+- `object_classes` MUST contain at most 16 additional auxiliary class names or
+  OIDs. Structural/abstract additions, `extensibleObject` and inheritance from
+  structural classes or `extensibleObject` MUST be rejected. Class and attribute
+  identifiers MUST be at most 128 characters.
+- Generator-owned `objectClass`, `entryUUID`, `userPassword`, `member` and
+  `memberOf` MUST be reserved on every entry. Users MUST also reserve `uid`,
+  `cn`, `sn` and all dedicated profile mappings, even when omitted. Groups and
+  bind accounts MUST reserve `cn`. Operational, collective, non-user-modifiable
+  and server-configuration attributes MUST be rejected.
+- The generator MUST resolve aliases and OIDs against the bundled schemas and
+  optional `schema_files`. Attribute subtypes MUST NOT bypass reserved-field
+  restrictions. Unknown types/classes, duplicate aliases, repeated generated
+  classes, invalid inheritance and multiple values for a single-valued
+  attribute MUST fail generation. Inheritance checks are bounded to 128 steps.
+  Schema inputs used for these checks MUST be the same contents packaged in
+  the snapshot.
+- The generator MUST preserve existing DNs, UUID derivation, credentials,
+  membership generation and omission rules. It MUST NOT infer auxiliary
+  classes from extra attributes or merge them into dedicated profile fields.
+- Extensions MUST NOT expand the readable-attribute allowlist. Existing default
+  permissions still apply; an explicit `read_attributes` list replaces them
+  for all authenticated clients. Vault scalars MUST be decrypted before value
+  validation; exported attribute values are not encrypted.
+
+The generator uses `python-ldap` schema parsing and bundled definitions from
+the runtime's OpenLDAP package version. The final generator image MUST NOT
+contain slapd or the build-only schema exporter.
+Schema definitions and their package version MUST be checked against runtime
+during integration testing. OpenLDAP offline import remains the authority for
+required/allowed attributes and value syntax; preflight is mandatory before
+activation. Offline data import MUST enable OpenLDAP value checking for both
+input routes. Native LDIF remains the route for arbitrary layouts, structural
+classes, binary values and attributes reserved by the simplified model.
 
 ### Stable identifiers<a id="identifiers"></a>
 
@@ -338,7 +383,8 @@ SHOULD be restricted to a trusted host-local connection or isolated network.
 
 Snapshot signatures provide authenticity and integrity, not encryption.
 Vault protects source values at rest; the generated snapshot still contains
-password verifiers. Native LDAP attributes can contain other secrets.
+password verifiers. LDAP attributes from either input route can contain other
+secrets.
 
 Administrators MUST protect definitions, snapshots, clones, backups and signing
 infrastructure from unauthorized access or modification. Production directory
@@ -360,6 +406,7 @@ Restores MUST use a current signed snapshot and verify identity and authenticati
 
 Tests MUST cover both source routes through generation and real LDAP use,
 including Vault success/failure, credential forms, custom schema boundaries,
+additive YAML fields, alias/subtype restrictions and read-attribute policy,
 stable identities, read policy, write rejection, signatures, expiry and replay.
 A successful image build alone is insufficient.
 

@@ -37,6 +37,8 @@ def copy_sources(containerfile: Path) -> set[str]:
         if not line.startswith("COPY "):
             continue
         fields = shlex.split(line)
+        if any(field.startswith("--from=") for field in fields):
+            continue
         positional = [field for field in fields[1:] if not field.startswith("--")]
         sources.update(positional[:-1])
     return sources

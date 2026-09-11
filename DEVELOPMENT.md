@@ -113,11 +113,24 @@ boundary between the images; no generator process or source-decryption key is
 needed on the LDAP host. Debian package installation uses
 `--no-install-recommends` to exclude the full Ansible collection bundle.
 
+For additive YAML fields, the generator parses schema definitions with
+`python-ldap`. A build-only stage exports the loaded schema through a temporary
+slapd process listening only on a private Unix socket. It includes the built-in
+definitions and core, cosine, inetOrgPerson and NIS schemas. Only schema data,
+source checksums, the package version and copyright information enter the
+final generator image; the server is not installed there. The application
+schema is copied into both images. Integration tests compare the package
+version and source checksums with runtime. Keep both builds on the same
+OpenLDAP package version. Final validation still runs in runtime's offline
+preflight.
+
 ```text
 Containerfile                    # runtime image
 Containerfile.generator          # LDIF snapshot-generator image
 conclear.toml                    # image, runtime and test declarations
 generator/                       # snapshot generator, Python, offline only
+generator/extensions.py          # additive YAML fields and schema-aware checks
+generator/export_schema.py       # build-only export of slapd's built-in schema
 generator/password.py            # stdin-only openldap-password command
 generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
@@ -158,6 +171,11 @@ exercise the generator image's actual Vault CLI, both input routes, custom
 schema imports, authentication, access policy and snapshot lifecycle.
 Input-schema checks apply after Vault decryption; OpenLDAP's offline import is
 the schema authority.
+
+Extension unit tests use small schema fixtures and do not need host OpenLDAP
+schema files. Container tests exercise the actual packaged schemas, custom
+auxiliary classes, Vault-encrypted attribute values, read access and offline
+rejection of invalid extended entries.
 
 ```sh
 sh hack/check.sh

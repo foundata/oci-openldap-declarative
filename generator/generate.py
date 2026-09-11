@@ -14,7 +14,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
@@ -24,6 +24,7 @@ import yaml
 from argon2 import PasswordHasher, Type
 from yaml.events import AliasEvent
 
+from generator.extensions import Extensions, SchemaCatalog, parse_extensions
 from generator.vault import DecryptedString, Vault, VaultScalar
 from scripts.directory_data import (
     ATTRIBUTE_PATTERN,
@@ -114,6 +115,7 @@ class User:
     attributes: dict[str, tuple[str, ...]]
     active: bool
     credential: CredentialSource | None
+    extensions: Extensions = field(default_factory=Extensions)
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ class Group:
     source_id: str
     common_name: str
     members: tuple[str, ...]
+    extensions: Extensions = field(default_factory=Extensions)
 
 
 @dataclass(frozen=True)
@@ -128,6 +131,7 @@ class BindAccount:
     source_id: str
     common_name: str
     credential: CredentialSource
+    extensions: Extensions = field(default_factory=Extensions)
 
 
 @dataclass(frozen=True)
@@ -147,6 +151,7 @@ class Directory:
     ldif_files: tuple[Path, ...]
     schema_files: tuple[Path, ...]
     read_attributes: tuple[str, ...]
+    schema_contents: tuple[bytes, ...] | None = field(default=None, repr=False)
 
 
 def error(message: str) -> NoReturn:
@@ -292,7 +297,9 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
         item = strict_keys(
             raw,
             required={"id", "uid", "common_name", "surname", "active"},
-            optional=set(USER_TEXT_FIELDS) | {"proxy_addresses"} | set(PASSWORD_FIELDS),
+            optional=set(USER_TEXT_FIELDS)
+            | {"proxy_addresses", "attributes", "object_classes"}
+            | set(PASSWORD_FIELDS),
             context=context,
         )
         source_id = validate_source_id(item["id"], context=f"{context}.id")
@@ -340,6 +347,7 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
             attributes,
             item["active"],
             credential,
+            parse_extensions(item, context=context),
         )
         uids.add(uid.casefold())
     return users
@@ -355,7 +363,7 @@ def parse_groups(root: dict[str, Any], users: dict[str, User]) -> dict[str, Grou
         item = strict_keys(
             raw,
             required={"id", "common_name", "members"},
-            optional=set(),
+            optional={"attributes", "object_classes"},
             context=context,
         )
         source_id = validate_source_id(item["id"], context=f"{context}.id")
@@ -365,7 +373,9 @@ def parse_groups(root: dict[str, Any], users: dict[str, User]) -> dict[str, Grou
             error("duplicate group id or case-insensitive common_name")
         if set(members) - users.keys():
             error(f"{context} references unknown users")
-        groups[source_id] = Group(source_id, name, members)
+        groups[source_id] = Group(
+            source_id, name, members, parse_extensions(item, context=context)
+        )
         names.add(name.casefold())
     return groups
 
@@ -380,7 +390,7 @@ def parse_bind_accounts(root: dict[str, Any], path: Path) -> dict[str, BindAccou
         item = strict_keys(
             raw,
             required={"id", "common_name"},
-            optional=set(PASSWORD_FIELDS),
+            optional=set(PASSWORD_FIELDS) | {"attributes", "object_classes"},
             context=context,
         )
         source_id = validate_source_id(item["id"], context=f"{context}.id")
@@ -390,7 +400,9 @@ def parse_bind_accounts(root: dict[str, Any], path: Path) -> dict[str, BindAccou
         credential = default_credential_source(item, context=context, path=path)
         if credential is None:
             error(f"{context} requires one password source")
-        accounts[source_id] = BindAccount(source_id, name, credential)
+        accounts[source_id] = BindAccount(
+            source_id, name, credential, parse_extensions(item, context=context)
+        )
         names.add(name.casefold())
     return accounts
 
@@ -484,7 +496,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         files = source_files(root["ldif_files"], path, context="ldif_files")
         if not files:
             error("ldif_files must not be empty")
-    return Directory(
+    directory = Directory(
         directory_id,
         validate_base_dn(
             root["base_dn"], context="base_dn", simplified=input_type == "users-groups"
@@ -505,6 +517,46 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         source_files(root.get("schema_files", []), path, context="schema_files"),
         read_attributes,
     )
+    return replace(directory, schema_contents=validate_extensions(directory))
+
+
+def validate_extensions(directory: Directory) -> tuple[bytes, ...] | None:
+    entities: list[User | Group | BindAccount] = [
+        *directory.users.values(),
+        *directory.groups.values(),
+        *directory.bind_accounts.values(),
+    ]
+    if not any(entity.extensions for entity in entities):
+        return None
+    catalog = SchemaCatalog(directory.schema_files)
+    for index, user in enumerate(directory.users.values()):
+        catalog.validate(
+            user.extensions,
+            reserved={"uid", "cn", "sn", "proxyAddresses"}
+            | {attribute for attribute, _ in USER_TEXT_FIELDS.values()},
+            base_classes=("top", "inetOrgPerson")
+            + (
+                ("openldapDeclarativeUser",)
+                if "proxyAddresses" in user.attributes
+                else ()
+            ),
+            context=f"users[{index}]",
+        )
+    for index, group in enumerate(directory.groups.values()):
+        catalog.validate(
+            group.extensions,
+            reserved={"cn"},
+            base_classes=("top", "groupOfNames"),
+            context=f"groups[{index}]",
+        )
+    for index, bind in enumerate(directory.bind_accounts.values()):
+        catalog.validate(
+            bind.extensions,
+            reserved={"cn"},
+            base_classes=("top", "organizationalRole", "simpleSecurityObject"),
+            context=f"bind_accounts[{index}]",
+        )
+    return catalog.source_contents
 
 
 def read_credential_file(path_value: str, *, context: str) -> str:
@@ -605,15 +657,17 @@ def simplified_entries(directory: Directory) -> list[Entry]:
             memberships[key].append(dn)
         add(
             dn,
-            {
-                "objectClass": ["top", "groupOfNames"],
-                "cn": [group.common_name],
-                "entryUUID": [stable_uuid(namespace, "group", group.source_id)],
-                "member": sorted(
-                    f"uid={ldap.dn.escape_dn_chars(users[key].uid)},ou=people,{base}"
-                    for key in members
-                ),
-            },
+            group.extensions.merge(
+                {
+                    "objectClass": ["top", "groupOfNames"],
+                    "cn": [group.common_name],
+                    "entryUUID": [stable_uuid(namespace, "group", group.source_id)],
+                    "member": sorted(
+                        f"uid={ldap.dn.escape_dn_chars(users[key].uid)},ou=people,{base}"
+                        for key in members
+                    ),
+                }
+            ),
         )
     for key, user in users.items():
         assert user.credential is not None
@@ -634,18 +688,27 @@ def simplified_entries(directory: Directory) -> list[Entry]:
             attributes["objectClass"].append("openldapDeclarativeUser")
         if memberships[key]:
             attributes["memberOf"] = sorted(memberships[key])
-        add(f"uid={ldap.dn.escape_dn_chars(user.uid)},ou=people,{base}", attributes)
+        add(
+            f"uid={ldap.dn.escape_dn_chars(user.uid)},ou=people,{base}",
+            user.extensions.merge(attributes),
+        )
     for bind in directory.bind_accounts.values():
         add(
             f"cn={ldap.dn.escape_dn_chars(bind.common_name)},ou=services,{base}",
-            {
-                "objectClass": ["top", "organizationalRole", "simpleSecurityObject"],
-                "cn": [bind.common_name],
-                "entryUUID": [stable_uuid(namespace, "bind", bind.source_id)],
-                "userPassword": [
-                    password_verifier(bind.credential, context="bind credential")
-                ],
-            },
+            bind.extensions.merge(
+                {
+                    "objectClass": [
+                        "top",
+                        "organizationalRole",
+                        "simpleSecurityObject",
+                    ],
+                    "cn": [bind.common_name],
+                    "entryUUID": [stable_uuid(namespace, "bind", bind.source_id)],
+                    "userPassword": [
+                        password_verifier(bind.credential, context="bind credential")
+                    ],
+                }
+            ),
         )
     return entries
 
@@ -732,7 +795,11 @@ def generate_snapshot(
         }
     ]
     for index, source in enumerate(directory.schema_files):
-        content = read_regular(source, maximum=MAX_DATA_BYTES, context="schema LDIF")
+        content = (
+            directory.schema_contents[index]
+            if directory.schema_contents is not None
+            else read_regular(source, maximum=MAX_DATA_BYTES, context="schema LDIF")
+        )
         total += len(content)
         if total > MAX_DATA_BYTES:
             error("source LDIF exceeds the 16 MiB limit")
