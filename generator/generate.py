@@ -56,6 +56,17 @@ PASSWORD_FIELDS: dict[str, CredentialKind] = {
     "password_hash_file": "hash-file",
     "password_hash": "hash",
 }
+USER_TEXT_FIELDS = {
+    "mail": ("mail", 320),
+    "given_name": ("givenName", 256),
+    "initials": ("initials", 64),
+    "display_name": ("displayName", 256),
+    "description": ("description", 1024),
+    "office": ("physicalDeliveryOfficeName", 256),
+    "telephone_number": ("telephoneNumber", 64),
+    "department": ("ou", 256),
+    "job_title": ("title", 256),
+}
 
 
 class StrictLoader(yaml.SafeLoader):
@@ -100,7 +111,7 @@ class User:
     uid: str
     common_name: str
     surname: str
-    mail: str | None
+    attributes: dict[str, tuple[str, ...]]
     active: bool
     credential: CredentialSource | None
 
@@ -132,7 +143,7 @@ class Directory:
     organization: str | None
     users: dict[str, User]
     groups: dict[str, Group]
-    bind_account: BindAccount | None
+    bind_accounts: dict[str, BindAccount]
     ldif_files: tuple[Path, ...]
     schema_files: tuple[Path, ...]
     read_attributes: tuple[str, ...]
@@ -281,7 +292,7 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
         item = strict_keys(
             raw,
             required={"id", "uid", "common_name", "surname", "active"},
-            optional={"mail"} | set(PASSWORD_FIELDS),
+            optional=set(USER_TEXT_FIELDS) | {"proxy_addresses"} | set(PASSWORD_FIELDS),
             context=context,
         )
         source_id = validate_source_id(item["id"], context=f"{context}.id")
@@ -293,6 +304,32 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
         credential = default_credential_source(item, context=context, path=path)
         if item["active"] and credential is None:
             error(f"{context} requires one password source when active")
+        attributes: dict[str, tuple[str, ...]] = {
+            attribute: (
+                text_value(item[name], context=f"{context}.{name}", maximum=maximum),
+            )
+            for name, (attribute, maximum) in USER_TEXT_FIELDS.items()
+            if name in item
+        }
+        if "proxy_addresses" in item:
+            proxies = string_list(
+                item["proxy_addresses"],
+                context=f"{context}.proxy_addresses",
+                maximum=1123,
+            )
+            if len(proxies) > 64 or any(
+                not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*:\S(?:.*\S)?", value)
+                for value in proxies
+            ):
+                error(
+                    f"{context}.proxy_addresses requires at most 64 TYPE:address values"
+                )
+            if len({value.casefold() for value in proxies}) != len(proxies):
+                error(
+                    f"{context}.proxy_addresses must not repeat case-insensitive values"
+                )
+            if proxies:
+                attributes["proxyAddresses"] = proxies
         users[source_id] = User(
             source_id,
             uid,
@@ -300,9 +337,7 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
                 item["common_name"], context=f"{context}.common_name", maximum=256
             ),
             text_value(item["surname"], context=f"{context}.surname", maximum=256),
-            text_value(item["mail"], context=f"{context}.mail", maximum=320)
-            if "mail" in item
-            else None,
+            attributes,
             item["active"],
             credential,
         )
@@ -335,6 +370,31 @@ def parse_groups(root: dict[str, Any], users: dict[str, User]) -> dict[str, Grou
     return groups
 
 
+def parse_bind_accounts(root: dict[str, Any], path: Path) -> dict[str, BindAccount]:
+    if not isinstance(root["bind_accounts"], list) or not root["bind_accounts"]:
+        error("bind_accounts must be a non-empty list")
+    accounts: dict[str, BindAccount] = {}
+    names: set[str] = set()
+    for index, raw in enumerate(root["bind_accounts"]):
+        context = f"bind_accounts[{index}]"
+        item = strict_keys(
+            raw,
+            required={"id", "common_name"},
+            optional=set(PASSWORD_FIELDS),
+            context=context,
+        )
+        source_id = validate_source_id(item["id"], context=f"{context}.id")
+        name = validate_uid(item["common_name"], context=f"{context}.common_name")
+        if source_id in accounts or name.casefold() in names:
+            error("duplicate bind account id or case-insensitive common_name")
+        credential = default_credential_source(item, context=context, path=path)
+        if credential is None:
+            error(f"{context} requires one password source")
+        accounts[source_id] = BindAccount(source_id, name, credential)
+        names.add(name.casefold())
+    return accounts
+
+
 def source_files(value: Any, path: Path, *, context: str) -> tuple[Path, ...]:
     names = string_list(value, context=context, maximum=4096)
     if len(names) > 31:
@@ -361,7 +421,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         "input_type",
     }
     specific = (
-        {"uuid_namespace", "organization", "users", "groups", "bind_account"}
+        {"uuid_namespace", "organization", "users", "groups", "bind_accounts"}
         if input_type == "users-groups"
         else {"ldif_files", "read_attributes"}
     )
@@ -405,7 +465,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
     organization = None
     users: dict[str, User] = {}
     groups: dict[str, Group] = {}
-    bind = None
+    bind_accounts: dict[str, BindAccount] = {}
     files: tuple[Path, ...] = ()
     if input_type == "users-groups":
         namespace_text = text_value(root["uuid_namespace"], context="uuid_namespace")
@@ -419,20 +479,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         )
         users = parse_users(root, path)
         groups = parse_groups(root, users)
-        item = strict_keys(
-            root["bind_account"],
-            required={"id", "common_name"},
-            optional=set(PASSWORD_FIELDS),
-            context="bind_account",
-        )
-        credential = default_credential_source(item, context="bind_account", path=path)
-        if credential is None:
-            error("bind_account requires one password source")
-        bind = BindAccount(
-            validate_source_id(item["id"], context="bind_account.id"),
-            validate_uid(item["common_name"], context="bind_account.common_name"),
-            credential,
-        )
+        bind_accounts = parse_bind_accounts(root, path)
     else:
         files = source_files(root["ldif_files"], path, context="ldif_files")
         if not files:
@@ -453,7 +500,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         organization,
         users,
         groups,
-        bind,
+        bind_accounts,
         files,
         source_files(root.get("schema_files", []), path, context="schema_files"),
         read_attributes,
@@ -501,7 +548,7 @@ def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
 
 
 def simplified_entries(directory: Directory) -> list[Entry]:
-    assert directory.namespace is not None and directory.bind_account is not None
+    assert directory.namespace is not None
     namespace = directory.namespace
     base = directory.base_dn
     entries: list[Entry] = []
@@ -574,23 +621,26 @@ def simplified_entries(directory: Directory) -> list[Entry]:
                 password_verifier(user.credential, context="user credential")
             ],
         }
-        if user.mail is not None:
-            attributes["mail"] = [user.mail]
+        attributes.update(
+            {name: list(values) for name, values in user.attributes.items()}
+        )
+        if "proxyAddresses" in user.attributes:
+            attributes["objectClass"].append("openldapDeclarativeUser")
         if memberships[key]:
             attributes["memberOf"] = sorted(memberships[key])
         add(f"uid={ldap.dn.escape_dn_chars(user.uid)},ou=people,{base}", attributes)
-    bind = directory.bind_account
-    add(
-        f"cn={ldap.dn.escape_dn_chars(bind.common_name)},ou=services,{base}",
-        {
-            "objectClass": ["top", "organizationalRole", "simpleSecurityObject"],
-            "cn": [bind.common_name],
-            "entryUUID": [stable_uuid(namespace, "bind", bind.source_id)],
-            "userPassword": [
-                password_verifier(bind.credential, context="bind credential")
-            ],
-        },
-    )
+    for bind in directory.bind_accounts.values():
+        add(
+            f"cn={ldap.dn.escape_dn_chars(bind.common_name)},ou=services,{base}",
+            {
+                "objectClass": ["top", "organizationalRole", "simpleSecurityObject"],
+                "cn": [bind.common_name],
+                "entryUUID": [stable_uuid(namespace, "bind", bind.source_id)],
+                "userPassword": [
+                    password_verifier(bind.credential, context="bind credential")
+                ],
+            },
+        )
     return entries
 
 

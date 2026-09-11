@@ -37,6 +37,28 @@ die() {
   exit "${exit_code}"
 }
 
+validate_search_limits() {
+  for limit_name in LDAP_SEARCH_SIZE_LIMIT LDAP_SEARCH_TIME_LIMIT; do
+    case "${limit_name}" in
+      LDAP_SEARCH_SIZE_LIMIT) limit_value=${LDAP_SEARCH_SIZE_LIMIT-500} ;;
+      LDAP_SEARCH_TIME_LIMIT) limit_value=${LDAP_SEARCH_TIME_LIMIT-10} ;;
+      *) return "${EXIT_INTERNAL}" ;;
+    esac
+    case "${limit_value}" in
+      unlimited) continue ;;
+      '' | 0* | *[!0-9]*) ;;
+      *)
+        if [ "${#limit_value}" -le 10 ] && [ "${limit_value}" -le 2147483647 ]; then
+          continue
+        fi
+        ;;
+    esac
+    log_error "${limit_name} must be an integer from 1 through 2147483647 or unlimited"
+    return "${EXIT_USAGE}"
+  done
+  return 0
+}
+
 ldap_is_available() {
   # A successful base-scope lookup proves DN equivalence, regardless of LDIF spelling.
   ldap_base_result=$(ldapsearch -LLL -Q -Y EXTERNAL \

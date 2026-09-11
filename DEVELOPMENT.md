@@ -67,8 +67,7 @@ podman build --format oci --pull=always --file Containerfile.generator \
 ```
 
 To test the README workflow locally, use these tags for `runtime` and
-`generator` and skip its pull/digest-resolution commands. These images are for
-development, not qualified releases.
+`generator`. These images are for development, not qualified releases.
 
 
 ## Project structure<a id="project-structure"></a>
@@ -92,7 +91,7 @@ generator/                       # snapshot generator, Python, offline only
 generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
 scripts/directory_data.py        # shared LDIF, schema and verifier validation
-schema/                          # public JSON Schema contracts
+schema/                          # JSON contracts and bundled LDAP schema
 examples/                        # deployment and input examples
 tests/                           # schema, policy and behavioral tests
 hack/check.sh                    # direct repository check

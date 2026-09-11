@@ -7,3 +7,5 @@
 !generator/**
 !scripts
 !scripts/**
+!schema
+!schema/application-user.ldif

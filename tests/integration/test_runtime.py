@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
@@ -181,7 +182,10 @@ class RuntimeWorkspace:
         manifest = {
             "format_version": 1,
             "input_type": "users-groups",
-            "read_attributes": list(DEFAULT_READ_ATTRIBUTES),
+            # Keep fixture metadata private even though applications may expose descriptions.
+            "read_attributes": [
+                name for name in DEFAULT_READ_ATTRIBUTES if name != "description"
+            ],
             "directory_id": "test-service",
             "base_dn": BASE_DN,
             "revision": revision,
@@ -760,6 +764,103 @@ def test_valid_snapshot_serves_and_stops_cleanly(
     key_directory = runtime.create("key-directory", "valid", key_mode="directory")
     runtime.start_healthy(key_directory)
     assert runtime.stop(key_directory) == 0
+
+
+@pytest.mark.parametrize(
+    ("size", "time_limit", "expected_count", "exit_code"),
+    [(None, None, 500, 4), ("1000", "3", 601, 0), ("unlimited", "unlimited", 601, 0)],
+)
+def test_configurable_search_limits(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    size: str | None,
+    time_limit: str | None,
+    expected_count: int,
+    exit_code: int,
+) -> None:
+    name = f"search-limits-{size or 'default'}"
+    snapshot = workspace.copy_snapshot("valid", name)
+    entries = "\n".join(
+        f"dn: uid=limit-{index},ou=people,{BASE_DN}\nobjectClass: inetOrgPerson\nuid: limit-{index}\ncn: Limit {index}\nsn: Limit\nentryUUID: {uuid.uuid5(uuid.NAMESPACE_OID, 'limit:' + str(index))}\n"
+        for index in range(601)
+    )
+    workspace.modify_ldif(snapshot, lambda content: content + "\n" + entries + "\n")
+    args = (
+        ()
+        if size is None
+        else (
+            "--env",
+            f"LDAP_SEARCH_SIZE_LIMIT={size}",
+            "--env",
+            f"LDAP_SEARCH_TIME_LIMIT={time_limit}",
+        )
+    )
+    container = runtime.create(name, name, extra_arguments=args)
+    runtime.start_healthy(container)
+    config = runtime.podman.exec_output(
+        container.name,
+        "ldapsearch",
+        "-LLL",
+        "-Q",
+        "-Y",
+        "EXTERNAL",
+        "-H",
+        LDAPI_URI,
+        "-b",
+        "olcDatabase={-1}frontend,cn=config",
+        "-s",
+        "base",
+        "olcSizeLimit",
+        "olcTimeLimit",
+    )
+    assert f"olcSizeLimit: {size or '500'}" in config
+    assert f"olcTimeLimit: {time_limit or '10'}" in config
+    search = runtime.podman.exec(
+        container.name,
+        "ldapsearch",
+        "-LLL",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        APP_DN,
+        "-w",
+        "test-bind-password",
+        "-b",
+        BASE_DN,
+        "(uid=limit-*)",
+        "uid",
+        check=False,
+    )
+    assert search.returncode == exit_code, search.stderr
+    assert search.stdout.count("\nuid: limit-") == expected_count
+    assert runtime.stop(container) == 0
+
+
+@pytest.mark.parametrize("name", ["LDAP_SEARCH_SIZE_LIMIT", "LDAP_SEARCH_TIME_LIMIT"])
+def test_invalid_search_limits_fail_startup_and_preflight(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    name: str,
+) -> None:
+    value = f"{name}=1\nolcAccess: to * by * write"
+    container = runtime.create(
+        f"invalid-{name.lower()}", "valid", extra_environment=value
+    )
+    runtime.expect_exit(container, 64, name)
+    assert "Starting slapd" not in runtime.podman.logs(container.name)
+    state_dir = workspace.path / f"state-{name}"
+    runtime_dir = workspace.path / f"preflight-{name}"
+    state_dir.mkdir(mode=0o700)
+    runtime_dir.mkdir(mode=0o700)
+    result = runtime.preflight(
+        workspace.path / "valid",
+        state_dir,
+        runtime_dir,
+        extra_arguments=("--env", value),
+    )
+    assert result.returncode == 64 and name in result.stderr
+    assert not list(state_dir.iterdir()) and not list(runtime_dir.iterdir())
 
 
 @pytest.mark.parametrize("missing", ["snapshot", "public-key"])

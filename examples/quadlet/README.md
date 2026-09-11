@@ -126,9 +126,15 @@ revision=1
 ```
 
 Preflight verifies and imports offline without opening a listener or updating
-revision state. Exit codes: `0` accepted, `65` invalid data/replay, `66` invalid
+revision state. Exit codes: `0` accepted, `64` invalid runtime settings, `65` invalid data/replay, `66` invalid
 input/state, `70` internal failure, `78` expired. For LDAPS, include the target
 TLS settings and certificate mounts in preflight too.
+
+Search limits default to 500 results and 10 seconds. Set
+`Environment=LDAP_SEARCH_SIZE_LIMIT=1000` and
+`Environment=LDAP_SEARCH_TIME_LIMIT=30` in the container unit to change them;
+pass matching `--env` values to preflight. Each accepts a positive integer up
+to 2147483647 or `unlimited`. Restart after changing a unit setting.
 
 Activation briefly stops LDAP while replacing the snapshot directory. Do not
 use a symlink for the active snapshot: the host backstop rejects it. A failed

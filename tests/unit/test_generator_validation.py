@@ -327,7 +327,7 @@ def test_inline_credentials_and_schema_agree(
     generate: ModuleType, tmp_path: Path, seeded_hash: str, field: str, bind: bool
 ) -> None:
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
-    item = document["bind_account"] if bind else document["users"][0]
+    item = document["bind_accounts"][0] if bind else document["users"][0]
     del item["password_file"]
     item[field] = (
         seeded_hash
@@ -343,7 +343,7 @@ def test_inline_credentials_and_schema_agree(
     Draft202012Validator(schema).validate(document)
     directory = generate.parse_directory(source)
     credential = (
-        directory.bind_account.credential
+        directory.bind_accounts["bind-example-app"].credential
         if bind
         else directory.users["person-0001"].credential
     )
@@ -370,8 +370,8 @@ def test_inline_unencrypted_credentials_require_private_yaml(
     generate: ModuleType, tmp_path: Path, seeded_hash: str
 ) -> None:
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
-    del document["bind_account"]["password_file"]
-    document["bind_account"]["password_hash"] = seeded_hash
+    del document["bind_accounts"][0]["password_file"]
+    document["bind_accounts"][0]["password_hash"] = seeded_hash
     source = write_secret(
         tmp_path / "directory.yaml", yaml.safe_dump(document).encode(), 0o644
     )
@@ -391,6 +391,119 @@ def test_one_directory_includes_all_active_users(
     assert directory.revision == 1  # type: ignore[attr-defined]
     assert set(directory.users) == {"person-0001", "person-0002", "person-0003"}  # type: ignore[attr-defined]
     assert directory.users["person-0003"].active  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "given_name",
+        "initials",
+        "display_name",
+        "description",
+        "office",
+        "telephone_number",
+        "mail",
+        "department",
+        "job_title",
+    ],
+)
+@pytest.mark.parametrize(
+    "value", ["Example", "", None, 42, "bad\nvalue", "bad\x00value", "x" * 1124]
+)
+def test_profile_fields_and_schema_agree(
+    generate: ModuleType, tmp_path: Path, field: str, value: object
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0][field] = value
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    valid = value == "Example"
+    assert Draft202012Validator(schema).is_valid(document) is valid
+    if valid:
+        assert generate.parse_directory(source).users["person-0001"].attributes[
+            generate.USER_TEXT_FIELDS[field][0]
+        ] == (value,)
+    else:
+        with pytest.raises(generate.ConfigurationError):
+            generate.parse_directory(source)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [],
+        ["smtp:old@example.org", "SMTP:primary@example.org"],
+        "smtp:a@example.org",
+        ["missing-prefix"],
+        ["smtp:"],
+        [" smtp:a@example.org"],
+        ["smtp:a@example.org\n"],
+        ["smtp:a@example.org"] * 2,
+        ["smtp:a@example.org", "SMTP:A@example.org"],
+        [f"smtp:a{i}@example.org" for i in range(65)],
+    ],
+)
+def test_proxy_addresses_are_bounded_typed_values(
+    generate: ModuleType, tmp_path: Path, value: object
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0]["proxy_addresses"] = value
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    valid = value in ([], ["smtp:old@example.org", "SMTP:primary@example.org"])
+    if valid:
+        user = generate.parse_directory(source).users["person-0001"]
+        assert isinstance(value, list)
+        assert user.attributes.get("proxyAddresses", ()) == tuple(value)
+    else:
+        with pytest.raises(generate.ConfigurationError):
+            generate.parse_directory(source)
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "empty",
+        "mapping",
+        "missing-secret",
+        "duplicate-id",
+        "duplicate-name",
+        "case-name",
+        "old-key",
+    ],
+)
+def test_bind_accounts_reject_invalid_lists(
+    generate: ModuleType, tmp_path: Path, damage: str
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    account = document["bind_accounts"][0]
+    if damage == "empty":
+        document["bind_accounts"] = []
+    elif damage == "mapping":
+        document["bind_accounts"] = account
+    elif damage == "missing-secret":
+        del account["password_file"]
+    elif damage == "old-key":
+        document["bind_account"] = document.pop("bind_accounts")[0]
+    else:
+        second = {**account, "id": "second", "common_name": "second"}
+        if damage == "duplicate-id":
+            second["id"] = account["id"]
+        else:
+            second["common_name"] = (
+                account["common_name"].upper()
+                if damage == "case-name"
+                else account["common_name"]
+            )
+        document["bind_accounts"].append(second)
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    with pytest.raises(generate.ConfigurationError):
+        generate.parse_directory(source)
 
 
 @pytest.mark.parametrize(

@@ -17,13 +17,17 @@ ALLOWLIST = (
     "!generator/**",
     "!scripts",
     "!scripts/**",
+    "!schema",
+    "!schema/application-user.ldif",
 )
 
 
 def included_by_project_allowlist(path: str) -> bool:
-    return path in {"Containerfile", "Containerfile.generator"} or path.startswith(
-        ("LICENSES/", "generator/", "scripts/")
-    )
+    return path in {
+        "Containerfile",
+        "Containerfile.generator",
+        "schema/application-user.ldif",
+    } or path.startswith(("LICENSES/", "generator/", "scripts/"))
 
 
 def copy_sources(containerfile: Path) -> set[str]:
@@ -66,6 +70,7 @@ def test_dangerous_tracked_and_untracked_inputs_are_excluded() -> None:
         "test-runs/retained/credentials.yaml",
         "tests/fixtures/plaintext-password",
         "untracked-secret.env",
+        "schema/private-directory.ldif",
     )
     assert not any(included_by_project_allowlist(path) for path in dangerous_inputs)
 

@@ -15,6 +15,15 @@ users:
     common_name: "Alice Example"
     surname: "Example"
     mail: "alice@example.org"
+    given_name: "Alice"
+    initials: "AE"
+    display_name: "Alice Example"
+    description: "Application directory user"
+    office: "Main office"
+    telephone_number: "+49 721 5550100"
+    department: "Operations"
+    job_title: "Engineer"
+    proxy_addresses: ["smtp:alice.old@example.org", "smtp:a.example@example.org"]
     active: true
     password_file: "/run/credentials/person-0001-example-app"
   - id: "person-0002"
@@ -37,7 +46,7 @@ groups:
       - "person-0001"
       - "person-0002"
 
-bind_account:
-  id: "bind-example-app"
-  common_name: "application"
-  password_file: "/run/credentials/bind-example-app"
+bind_accounts:
+  - id: "bind-example-app"
+    common_name: "application"
+    password_file: "/run/credentials/bind-example-app"

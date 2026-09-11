@@ -1,8 +1,17 @@
 # OpenLDAP Declarative
 
-Read-only OpenLDAP from a static directory definition: users/groups YAML or
-native LDIF. Generate a signed, expiring snapshot, then mount it beside the LDAP
-container. One definition produces one directory.
+OpenLDAP Declarative serves a read-only LDAP directory from a signed, expiring
+snapshot. Use native LDIF to define directory structures and entries, or
+users/groups YAML for application authentication, identities and memberships.
+One definition produces one directory.
+
+| Input | Use it for |
+| ----- | ---------- |
+| [Users/groups YAML](#usage-yaml) | Application logins, identities, groups and bind accounts. The generator supplies the layout and membership attributes. |
+| [Native LDIF](#usage-native-ldif) | Explicit DNs, other object classes, additional attributes or a different directory structure. You supply entries and any extra schemas. |
+
+Both routes use YAML for snapshot settings. Native LDIF is general-purpose
+directory data input, not unrestricted OpenLDAP server configuration.
 
 Refresh snapshots before expiry. Removing an account takes effect after
 deployment or expiry; application sessions and caches have their own lifetime.
@@ -26,19 +35,21 @@ deployment or expiry; application sessions and caches have their own lifetime.
 
 - [Where actions run](#usage-hosts)
 - [Images (admin/CI)](#installation)
-- [Quick start](#usage)
-  - [1. Prepare files and passwords (admin)](#usage-credentials-setup)
-  - [2. Define the directory (admin/CI)](#usage-yaml)
-  - [3. Create signing keys (admin)](#usage-signing-keys)
-  - [4. Generate a snapshot (admin/CI)](#usage-generate-snapshot)
-  - [5. Deploy and query LDAP (LDAP host)](#usage-rootless-podman)
+- [Prepare directory data (admin/CI)](#usage)
+  - [Application directory: users/groups YAML](#usage-yaml)
+  - [General directory: native LDIF](#usage-native-ldif)
+- [Sign and generate a snapshot (admin/CI)](#usage-sign-and-generate)
+  - [Create signing keys](#usage-signing-keys)
+  - [Generate a snapshot](#usage-generate-snapshot)
+- [Deploy and verify LDAP (LDAP host)](#usage-rootless-podman)
 - [Directory administration (admin/CI)](#usage-maintenance)
   - [IDs, names and renames](#usage-identities)
+  - [User profile fields](#usage-profile-fields)
+  - [Bind accounts](#usage-bind-accounts)
   - [Membership and access](#usage-membership)
   - [Credential sources](#usage-credentials)
     - [Inline encryption with Ansible Vault](#usage-vault)
     - [Source and snapshot confidentiality](#usage-hashes-in-git)
-  - [Native LDIF and custom schemas](#usage-native-ldif)
 - [Operations](#usage-ops)
   - [Renew and deploy (admin/CI and LDAP host)](#snapshot-lifecycle)
   - [Status and logs (LDAP host)](#usage-status)
@@ -83,11 +94,10 @@ their immutable digests from `quay.io/foundata/openldap-declarative` and
 policy; a digest alone does not authenticate its publisher.
 
 
-## Quick start<a id="usage"></a><a id="usage-quick-start"></a>
+## Prepare directory data (admin/CI)<a id="usage"></a><a id="usage-quick-start"></a><a id="usage-credentials-setup"></a>
 
-Run steps 1-4 in the admin terminal, then use the LDAP-host deployment guide.
-
-### 1. Prepare files and passwords (admin)<a id="usage-credentials-setup"></a>
+Prepare these paths and the password-hashing helper in the admin Bash terminal.
+Then choose one input route below.
 
 ```bash
 set +x
@@ -110,17 +120,20 @@ hash_password() (
       -o 'module-load=argon2 m=19456 t=2 p=1' \
       -h '{ARGON2}' -T /dev/stdin
 )
-user_hash=$(hash_password "Alice password")
-bind_hash=$(hash_password "Application bind password")
 ```
 
-Use distinct passwords. The function passes original passwords through stdin;
-the returned values are salted Argon2id hashes. Keep tracing disabled while
-handling credentials.
+The helper reads an original password without echoing it, passes it through
+stdin and returns a salted Argon2id hash. Keep tracing disabled while handling
+credentials.
 
-### 2. Define the directory (admin/CI)<a id="usage-yaml"></a>
+### Application directory: users/groups YAML<a id="usage-yaml"></a>
+
+Use this fixed-layout model for application logins, identities and groups.
+Each application can have a separate bind account. Start with one:
 
 ```bash
+user_hash=$(hash_password "Alice password")
+bind_hash=$(hash_password "Application bind password")
 namespace=$(podman run --rm --network none --entrypoint python3 "${generator}" \
   -c 'import uuid; print(uuid.uuid4())')
 cat > "${data}/directory.yaml" <<YAML
@@ -145,20 +158,66 @@ groups:
   - id: "group-staff"
     common_name: "staff"
     members: ["person-0001"]
-bind_account:
-  id: "bind-example-app"
-  common_name: "application"
-  password_hash: '${bind_hash}'
+bind_accounts:
+  - id: "bind-example-app"
+    common_name: "application"
+    password_hash: '${bind_hash}'
 YAML
 unset user_hash bind_hash
 chmod 0600 "${data}/directory.yaml"
 ```
 
-Generate `uuid_namespace` once and preserve it. All active users are included;
-there is no service-selection list. See the [larger example](examples/generator/directory.yaml)
-for inactive users and credential files.
+Generate `uuid_namespace` once and preserve it. All active users are included.
+See the [larger example](examples/generator/directory.yaml) for profile fields,
+inactive users and credential files. Continue with [signing and generation](#usage-sign-and-generate).
 
-### 3. Create signing keys (admin)<a id="usage-signing-keys"></a>
+### General directory: native LDIF<a id="usage-native-ldif"></a>
+
+Write `${data}/directory.yaml` with snapshot settings and paths to your entry
+LDIF and optional schemas:
+
+```yaml
+format_version: 1
+directory_id: "inventory"
+base_dn: "o=Example"
+revision: 1
+soft_ttl_seconds: 21600
+hard_ttl_seconds: 43200
+input_type: "ldif"
+ldif_files: ["directory.ldif"]
+schema_files: ["device-schema.ldif"]
+read_attributes: ["objectClass", "entryUUID", "o", "ou", "cn", "deviceLabel"]
+```
+
+Paths are relative to that YAML file unless absolute. See the runnable
+[native definition](examples/generator/native.yaml),
+[entry LDIF](examples/generator/native.ldif) and
+[schema example](examples/generator/device-schema.ldif).
+Their bind password is test-only; replace its verifier before deployment.
+
+Supply the base entry, all parents and a unique lowercase `entryUUID` for
+every entry. Generate UUIDs once and keep them on renames. All `userPassword`
+values must already be Argon2id verifiers. Memberships, including `memberOf`,
+are your responsibility.
+
+Core, cosine, inetOrgPerson, NIS and the bundled
+[application-user schema](schema/application-user.ldif) are loaded. Extra schema
+files may only define `olcAttributeTypes` and `olcObjectClasses` in `olcSchemaConfig`
+entries directly below `cn=schema,cn=config`. Use your own OIDs in production.
+
+Only the explicit `read_attributes` list is readable by authenticated clients.
+Password attributes cannot be added. Data cannot configure ACLs, modules or
+`cn=config`; changes, includes and URL values are rejected. Preflight is
+required: OpenLDAP checks schema validity during offline import.
+
+Continue with [signing and generation](#usage-sign-and-generate).
+
+
+## Sign and generate a snapshot (admin/CI)<a id="usage-sign-and-generate"></a>
+
+Both input routes use the following commands with `${data}/directory.yaml`.
+
+### Create signing keys<a id="usage-signing-keys"></a>
 
 Run once:
 
@@ -172,7 +231,7 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 `-W` creates an unencrypted private key for unattended signing. Keep
 `snapshot.key` private and backed up. Deploy only `snapshot.pub`.
 
-### 4. Generate a snapshot (admin/CI)<a id="usage-generate-snapshot"></a>
+### Generate a snapshot<a id="usage-generate-snapshot"></a>
 
 ```bash
 revision=1
@@ -191,11 +250,12 @@ The output directory must be new. Its files are `directory.ldif`,
 `manifest.json`, `manifest.json.minisig`, and any declared schemas.
 The signed revision comes from YAML; the shell variable only names the output.
 
-### 5. Deploy and query LDAP (LDAP host)<a id="usage-rootless-podman"></a>
+## Deploy and verify LDAP (LDAP host)<a id="usage-rootless-podman"></a>
 
 Follow the [rootless Quadlet guide](examples/quadlet/README.md) to transfer the
 snapshot, preflight it, start LDAP and verify searches and password binds.
-It includes the host expiry backstop and renewal commands.
+It includes the host expiry backstop and renewal commands. Its names and queries
+match the users/groups example; adjust them for another directory definition.
 
 
 ## Directory administration (admin/CI)<a id="usage-maintenance"></a>
@@ -223,6 +283,63 @@ To rename a user, change `uid`, keep `id` and `uuid_namespace`, increase
 `revision`, then regenerate and deploy. DNs and membership references update;
 `entryUUID` stays unchanged. Applications keyed by username or DN may need
 their own migration. Never recycle IDs.
+
+### User profile fields<a id="usage-profile-fields"></a>
+
+Users/groups YAML accepts these optional strings in each user:
+
+| YAML field | LDAP attribute |
+| ---------- | -------------- |
+| `given_name` | `givenName` (first name) |
+| `initials` | `initials` |
+| `display_name` | `displayName` |
+| `description` | `description` |
+| `office` | `physicalDeliveryOfficeName` |
+| `telephone_number` | `telephoneNumber` |
+| `mail` | `mail` (email) |
+| `department` | `ou` (user metadata; does not change the DN) |
+| `job_title` | `title` |
+
+Omit unset fields rather than supplying empty strings. For old email aliases,
+add a list of typed values:
+
+```yaml
+proxy_addresses:
+  - "smtp:alice.old@example.org"
+  - "smtp:a.example@example.org"
+```
+
+The generator stores these as multivalued `proxyAddresses` and adds the bundled
+`openldapDeclarativeUser` auxiliary object class. Values retain their spelling;
+case-insensitive duplicates are rejected. This stores addresses only: it does
+not configure mail delivery or interpret `SMTP:` as a primary-address directive.
+Up to 64 values of 1123 characters are accepted.
+
+All these fields are readable by authenticated accounts by default.
+Set `read_attributes` to an explicit list to narrow access; that list replaces
+the defaults. Native LDIF can use other schema-valid attributes without this
+YAML field mapping.
+
+### Bind accounts<a id="usage-bind-accounts"></a>
+
+`bind_accounts` is a non-empty list. Each item has a unique permanent `id`,
+a case-insensitively unique `common_name`, and one credential source:
+
+```yaml
+bind_accounts:
+  - id: "bind-app-a"
+    common_name: "app-a"
+    password_file: "/run/credentials/app-a"
+  - id: "bind-app-b"
+    common_name: "app-b"
+    password_hash_file: "/run/credentials/app-b.hash"
+```
+
+Use distinct passwords. Rotate one account's credential or remove its item,
+increment the revision and deploy. Other accounts keep working. Keeping `id`
+and `uuid_namespace` preserves its UUID when changing `common_name`.
+All bind accounts share the directory's read policy; separate credentials do
+not create per-application access restrictions.
 
 ### Membership and access<a id="usage-membership"></a>
 
@@ -256,7 +373,7 @@ inline credentials must also be owner-only (`chmod 0600` after Git checkout).
 
 Accepted verifiers: `{ARGON2}$argon2id$v=19$...`, memory at least 19,456 KiB,
 two iterations, one lane, 16 salt bytes and 32 digest bytes, canonical unpadded
-base64. [Step 1](#usage-credentials-setup) generates these hashes.
+base64. The [password helper](#usage-credentials-setup) generates these hashes.
 Test stronger parameters against bind load and container memory limits.
 
 #### Inline encryption with Ansible Vault<a id="usage-vault"></a>
@@ -296,7 +413,7 @@ Create and back up `vault-password` once per key; do not overwrite an existing
 key when encrypting another field. Replace the user's `password_hash` field
 with the generated block, indented at the same level as its other fields.
 
-Add this to the generator arguments in step 4:
+Add this to the [generator arguments](#usage-generate-snapshot):
 
 ```text
 --vault directory@/run/credentials/vault-password
@@ -327,43 +444,6 @@ and may contain other confidential LDAP attributes. Keep production definitions
 and snapshots out of public repositories, image layers and logs.
 Never commit original passwords, Vault passwords or private signing keys.
 
-### Native LDIF and custom schemas<a id="usage-native-ldif"></a>
-
-Use this route for your own LDAP layout and object classes:
-
-```yaml
-format_version: 1
-directory_id: "inventory"
-base_dn: "o=Example"
-revision: 1
-soft_ttl_seconds: 21600
-hard_ttl_seconds: 43200
-input_type: "ldif"
-ldif_files: ["directory.ldif"]
-schema_files: ["device-schema.ldif"]
-read_attributes: ["objectClass", "entryUUID", "o", "ou", "cn", "deviceLabel"]
-```
-
-Generate with the same command, pointing `--directory` at this YAML.
-Paths are relative to that file unless absolute. See the runnable
-[native definition](examples/generator/native.yaml),
-[entry LDIF](examples/generator/native.ldif) and
-[schema example](examples/generator/device-schema.ldif).
-Their bind password is test-only; replace its verifier before deployment.
-
-Supply the base entry, all parents and a unique lowercase `entryUUID` for
-every entry. Generate UUIDs once and keep them on renames. All `userPassword`
-values must already be Argon2id verifiers. Memberships, including `memberOf`,
-are your responsibility.
-
-Core, cosine, inetOrgPerson and NIS schemas are loaded. Extra schema files may
-only define `olcAttributeTypes` and `olcObjectClasses` in `olcSchemaConfig`
-entries directly below `cn=schema,cn=config`. Use your own OIDs in production.
-
-Only the explicit `read_attributes` list is readable by authenticated clients.
-Password attributes cannot be added. Data cannot configure ACLs, modules or
-`cn=config`; changes, includes and URL values are rejected. Preflight is
-required: OpenLDAP checks schema validity during offline import.
 
 
 ## Operations<a id="usage-ops"></a>
@@ -425,6 +505,8 @@ lasting changes, then remove the recovery input and restart.
 | `LDAP_TRANSPORT` | `ldap` | `ldap`, `ldaps` or `both`. |
 | `LDAP_LISTEN_HOST` | `127.0.0.1` | `127.0.0.1` or `0.0.0.0`. |
 | `LDAP_PORT` / `LDAP_LDAPS_PORT` | `1389` / `1636` | Unprivileged ports; distinct for `both`. |
+| `LDAP_SEARCH_SIZE_LIMIT` | `500` | Maximum results per search, including the total across pages. |
+| `LDAP_SEARCH_TIME_LIMIT` | `10` | Maximum search duration in seconds. |
 | `LDAP_LOG_LEVEL` | `256` | Numeric slapd log mask. |
 | `LDAP_TLS_CERT_FILE` / `LDAP_TLS_KEY_FILE` | `/tls/cert.pem` / `/tls/cert.key` | Required for LDAPS. |
 | `LDAP_TLS_CA_FILE` | `/tls/ca.pem` | Optional server trust bundle. |
@@ -436,9 +518,14 @@ lasting changes, then remove the recovery input and restart.
 | `LDAP_ADMIN_PASSWORD` | none | Deprecated; conflicts with the file input. |
 | `LDAP_BASE_DN` / `LDAP_DOMAIN` | none | Compatibility checks; must agree with the manifest. |
 
+Search limits accept integers from `1` through `2147483647`, or `unlimited`.
+Set them as container environment variables (Quadlet `Environment=`); use the
+same settings during preflight and restart after changing them. They do not
+change the number of entries the directory can contain.
+
 <a id="limitations"></a>
 Limits: 1 MiB source YAML; 256 Vault values of 32 KiB each; 32 snapshot LDIF files,
-16 MiB combined LDIF, 1 MiB manifest and 16 KiB signature.
+16 MiB combined LDIF, a 64 MiB MDB maximum, 1 MiB manifest and 16 KiB signature.
 No unsigned mode or expiry bypass.
 
 

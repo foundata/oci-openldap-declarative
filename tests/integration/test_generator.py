@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -200,6 +201,151 @@ def test_one_directory_exports_all_active_users(generated: Path) -> None:
     for path in generated.iterdir():
         assert path.stat().st_mode & 0o777 == 0o600
         assert not any(secret in path.read_text() for secret in PASSWORDS.values())
+
+
+def test_profile_fields_are_readable_and_policy_can_hide_them(
+    generator: Generator, generated: Path, podman: Podman, images: Images, store: Store
+) -> None:
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-profile"
+    )
+    running.start(generated)
+    result = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
+    assert result.returncode == 0, result.stderr
+    parser = LDIFRecordList(BytesIO(result.stdout.encode()))
+    parser.parse()
+    entry = parser.all_records[0][1]
+    expected = {
+        "givenName": [b"Alice"],
+        "initials": [b"AE"],
+        "displayName": [b"Alice Example"],
+        "description": [b"Application directory user"],
+        "physicalDeliveryOfficeName": [b"Main office"],
+        "telephoneNumber": [b"+49 721 5550100"],
+        "mail": [b"alice@example.org"],
+        "ou": [b"Operations"],
+        "title": [b"Engineer"],
+        "proxyAddresses": [
+            b"smtp:alice.old@example.org",
+            b"smtp:a.example@example.org",
+        ],
+    }
+    for name, values in expected.items():
+        assert set(entry[name]) == set(values), name
+    assert "userPassword" not in entry
+    assert b"openldapDeclarativeUser" in entry["objectClass"]
+    assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
+    lookup = running.search(
+        "-b", APP_BASE, "(proxyAddresses=SMTP:ALICE.OLD@example.org)", "uid"
+    )
+    assert lookup.returncode == 0 and "uid: alice" in lookup.stdout
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["revision"] = 2
+    document["read_attributes"] = ["objectClass", "entryUUID", "uid", "cn", "mail"]
+    generated_result = generator.variant("profile-restricted", document)
+    assert generated_result.returncode == 0, generated_result.stderr
+    running.start(generator.output / "profile-restricted")
+    result = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
+    assert "mail: alice@example.org" in result.stdout
+    assert (
+        "proxyAddresses:" not in result.stdout and "description:" not in result.stdout
+    )
+    assert "userPassword:" not in result.stdout
+    podman.stop(running.name)
+
+
+def test_bind_accounts_rotate_rename_and_revoke_independently(
+    generator: Generator, podman: Podman, images: Images, store: Store
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    secondary = {
+        "id": "bind-secondary",
+        "common_name": "secondary",
+        "password": "SECONDARY_PLACEHOLDER",
+    }
+    document["bind_accounts"].append(secondary)
+    encrypted = generator.encrypt("TEST-ONLY-secondary")
+    source = yaml.safe_dump(document).replace(
+        "password: SECONDARY_PLACEHOLDER",
+        "password: !vault |\n"
+        + "\n".join("    " + line for line in encrypted.splitlines()),
+    )
+    result = generator.variant(
+        "multi-bind-1", source, "--vault", "directory@/run/credentials/vault-password"
+    )
+    assert result.returncode == 0, result.stderr
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-multi-bind"
+    )
+    running.start(generator.output / "multi-bind-1")
+    secondary_dn = f"cn=secondary,ou=services,{APP_BASE}"
+    original_uuid = records(generator.output / "multi-bind-1/directory.ldif")[
+        secondary_dn
+    ]["entryUUID"]
+    assert running.bind(secondary_dn, "TEST-ONLY-secondary").returncode == 0
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    search = podman.exec(
+        running.name,
+        "ldapsearch",
+        "-LLL",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        secondary_dn,
+        "-w",
+        "TEST-ONLY-secondary",
+        "-b",
+        ALICE_DN,
+        "-s",
+        "base",
+        "uid",
+        "userPassword",
+        check=False,
+    )
+    assert (
+        search.returncode == 0
+        and "uid: alice" in search.stdout
+        and "userPassword:" not in search.stdout
+    )
+    write = podman.exec(
+        running.name,
+        "ldapmodify",
+        "-x",
+        "-H",
+        LDAP_URI,
+        "-D",
+        secondary_dn,
+        "-w",
+        "TEST-ONLY-secondary",
+        check=False,
+        stdin=f"dn: {ALICE_DN}\nchangetype: modify\nreplace: description\ndescription: forbidden\n",
+    )
+    assert write.returncode == 50
+    document["revision"] = 2
+    secondary.update(common_name="renamed", password="TEST-ONLY-rotated")
+    result = generator.variant("multi-bind-2", document)
+    assert result.returncode == 0, result.stderr
+    renamed_dn = f"cn=renamed,ou=services,{APP_BASE}"
+    assert (
+        records(generator.output / "multi-bind-2/directory.ldif")[renamed_dn][
+            "entryUUID"
+        ]
+        == original_uuid
+    )
+    running.start(generator.output / "multi-bind-2")
+    assert running.bind(secondary_dn, "TEST-ONLY-secondary").returncode == 49
+    assert running.bind(renamed_dn, "TEST-ONLY-secondary").returncode == 49
+    assert running.bind(renamed_dn, "TEST-ONLY-rotated").returncode == 0
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    document["revision"] = 3
+    document["bind_accounts"].pop()
+    result = generator.variant("multi-bind-3", document)
+    assert result.returncode == 0, result.stderr
+    running.start(generator.output / "multi-bind-3")
+    assert running.bind(renamed_dn, "TEST-ONLY-rotated").returncode == 49
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    podman.stop(running.name)
 
 
 def test_expiry_policy_and_controlled_generation(generator: Generator) -> None:
@@ -606,7 +752,7 @@ def test_vault_snapshot_authenticates(
     document = document.replace(
         'password_file: "/run/credentials/bind-example-app"',
         "password: !vault |\n"
-        + "\n".join("    " + line for line in encrypted.splitlines()),
+        + "\n".join("      " + line for line in encrypted.splitlines()),
     )
     result = generator.variant(
         "vault-bind", document, "--vault", "directory@/run/credentials/vault-password"

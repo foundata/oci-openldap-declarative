@@ -71,6 +71,7 @@ ENV LDAP_RUNTIME_DIR="/run/openldap" \
 
 COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
 COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/directory_data.py
+COPY --chown=0:0 --chmod=0444 schema/application-user.ldif /usr/local/share/openldap-declarative/schema/application-user.ldif
 COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh
 COPY --chown=0:0 --chmod=0555 scripts/init-slapd.sh /usr/local/lib/openldap-declarative/init-slapd.sh

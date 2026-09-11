@@ -221,6 +221,7 @@ write_base_configuration() {
       'include: file:///etc/ldap/schema/cosine.ldif' \
       'include: file:///etc/ldap/schema/inetorgperson.ldif' \
       'include: file:///etc/ldap/schema/nis.ldif' \
+      'include: file:///usr/local/share/openldap-declarative/schema/application-user.ldif' \
       ''
     printf '%s\n' \
       'dn: cn=module{0},cn=config' \
@@ -242,8 +243,8 @@ write_base_configuration() {
       'objectClass: olcDatabaseConfig' \
       'objectClass: olcFrontendConfig' \
       'olcDatabase: {-1}frontend' \
-      'olcSizeLimit: 500' \
-      'olcTimeLimit: 10' \
+      "olcSizeLimit: ${LDAP_SEARCH_SIZE_LIMIT-500}" \
+      "olcTimeLimit: ${LDAP_SEARCH_TIME_LIMIT-10}" \
       "olcAccess: {0}to * by dn.exact=${external_identity} read by * break" \
       '' \
       'dn: olcDatabase={0}config,cn=config' \
@@ -375,6 +376,7 @@ verify_built_database() {
 main() {
   trap cleanup_initialization 0
   trap 'exit 70' HUP INT TERM
+  validate_search_limits || exit $?
 
   if [ ! -f "${verified_manifest_file}" ] || [ ! -f "${verified_files_file}" ]; then
     die "${EXIT_INTERNAL}" 'Snapshot verification output is missing'

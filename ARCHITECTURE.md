@@ -1,24 +1,25 @@
 # Architecture
 
 This document defines the architecture and required behavioral contract of
-OpenLDAP Declarative. Implementation and tests MUST conform to this contract.
+OpenLDAP Declarative. The terms MUST, SHOULD and MAY are used as defined in
+[RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119) and
+[RFC 8174](https://datatracker.ietf.org/doc/html/rfc8174).
+
+Implementation and tests MUST conform to this contract.
 Discrepancies MUST be investigated; an approved correction changes either the
 implementation or the contract. This document contains no planned or speculative
 behavior. Proposals and future changes are tracked separately, preferably as
 [issues](https://github.com/foundata/oci-openldap-declarative/issues), until the
 implementation, tests and corresponding contract changes are merged together.
 
-The terms MUST, SHOULD and MAY are used as defined in
-[RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119) and
-[RFC 8174](https://datatracker.ietf.org/doc/html/rfc8174).
 
 ## Table of contents
 
 - [Scope](#scope)
 - [Components and data flow](#components)
 - [Directory definitions](#definitions)
-  - [Users and groups](#users-groups)
-  - [Native LDIF](#native-ldif)
+  - [General directory: native LDIF](#native-ldif)
+  - [Application directory: users/groups YAML](#users-groups)
   - [Stable identifiers](#identifiers)
   - [Credentials and source encryption](#credentials)
 - [Snapshot contract](#snapshots)
@@ -80,31 +81,22 @@ The [directory schema](schema/directory-v1.schema.json) describes format 1.
 A definition MUST select exactly one `input_type`: `users-groups` or `ldif`.
 Both routes share `directory_id`, `base_dn`, revision and expiry settings.
 
+Native LDIF is the general-purpose route for directory data. Administrators
+define DNs, object classes, attributes and stable entry identifiers explicitly.
+Users/groups YAML is a convenience model for application authentication,
+identities and group memberships. It generates a fixed layout containing users,
+groups and application bind accounts, with a limited set of configurable fields.
+
+Both routes produce the same signed snapshot format and use the same runtime.
+Native LDIF permits different directory structures; it does not bypass the
+snapshot lifecycle, access policy or server-configuration restrictions.
+
 YAML MUST use one top-level mapping with string keys. Duplicate keys, aliases,
 unknown fields and unsupported tags MUST be rejected. Decrypted strings are
 validated as values; they MUST NOT be reparsed as YAML or evaluated as templates.
 Schema validation describes the document after decryption.
 
-### Users and groups<a id="users-groups"></a>
-
-- Every active user MUST appear in the snapshot, regardless of group membership.
-  Inactive users MUST be omitted.
-- Group members MUST reference existing user IDs. Groups with no active members
-  MUST be omitted because `groupOfNames` requires a member.
-- The generator MUST emit reciprocal `member` and `memberOf` values.
-- Users MUST be `inetOrgPerson` entries at
-  `uid=<uid>,ou=people,<base_dn>`. Their `common_name` is the LDAP `cn`
-  attribute, not their naming RDN.
-- Groups MUST be `groupOfNames` entries at
-  `cn=<common_name>,ou=groups,<base_dn>`.
-- The required bind account MUST be an `organizationalRole` with
-  `simpleSecurityObject` at `cn=<common_name>,ou=services,<base_dn>`.
-- The base entry MUST use `dcObject` and `organization`; this route therefore
-  requires an ASCII base DN beginning with a single `dc` RDN.
-- A default group is not required. Group names such as `ALLOW` and `DENY`
-  have no special meaning to the generator or runtime.
-
-### Native LDIF<a id="native-ldif"></a>
+### General directory: native LDIF<a id="native-ldif"></a>
 
 - `ldif_files` MUST contain desired-state entry records, including the base and
   every parent entry. Change records, controls, includes and URL-valued
@@ -112,7 +104,9 @@ Schema validation describes the document after decryption.
 - Entries MUST be under `base_dn` and MUST NOT target `cn=config` or contain
   server-configuration attributes.
 - Entries MAY use other layouts, object classes, binary attributes and
-  multivalued attributes. Core, cosine, inetOrgPerson and NIS schemas are loaded.
+  multivalued attributes. Core, cosine, inetOrgPerson, NIS and the bundled
+  `application-user` schemas are loaded. The latter defines `proxyAddresses`
+  and the `openldapDeclarativeUser` auxiliary class for either input route.
 - Optional `schema_files` MUST contain only direct children of
   `cn=schema,cn=config`, using `olcSchemaConfig` and the attributes `cn`,
   `objectClass`, `olcAttributeTypes` and `olcObjectClasses`. They MUST NOT
@@ -128,6 +122,50 @@ Schema validation describes the document after decryption.
 Relative LDIF and schema paths resolve against the definition file's directory.
 The generator combines and orders data entries into one LDIF. It retains schema
 file order for dependencies. Input files MUST be regular files, not symlinks.
+
+### Application directory: users/groups YAML<a id="users-groups"></a>
+
+- Every active user MUST appear in the snapshot, regardless of group membership.
+  Inactive users MUST be omitted.
+- Group members MUST reference existing user IDs. Groups with no active members
+  MUST be omitted because `groupOfNames` requires a member.
+- The generator MUST emit reciprocal `member` and `memberOf` values.
+- Users MUST be `inetOrgPerson` entries at
+  `uid=<uid>,ou=people,<base_dn>`. Their `common_name` is the LDAP `cn`
+  attribute, not their naming RDN.
+- Groups MUST be `groupOfNames` entries at
+  `cn=<common_name>,ou=groups,<base_dn>`.
+- `bind_accounts` MUST be a non-empty list. Each account MUST be an
+  `organizationalRole` with `simpleSecurityObject` at
+  `cn=<common_name>,ou=services,<base_dn>`.
+  Account IDs and case-insensitive common names MUST be unique within the list.
+  Accounts have independent credentials and identities but share the read policy.
+- The base entry MUST use `dcObject` and `organization`; this route therefore
+  requires an ASCII base DN beginning with a single `dc` RDN.
+- A default group is not required. Group names such as `ALLOW` and `DENY`
+  have no special meaning to the generator or runtime.
+
+Optional user profile fields MUST map as follows. They are strings; omission
+means no attribute value. Empty strings and NUL/newline characters are rejected.
+
+| YAML field | LDAP attribute |
+| ---------- | -------------- |
+| `given_name` | `givenName` |
+| `initials` | `initials` |
+| `display_name` | `displayName` |
+| `description` | `description` |
+| `office` | `physicalDeliveryOfficeName` |
+| `telephone_number` | `telephoneNumber` |
+| `mail` | `mail` |
+| `department` | `ou` (metadata, not directory placement) |
+| `job_title` | `title` |
+
+`proxy_addresses` MAY contain up to 64 `TYPE:address` strings of at most 1123
+characters. The generator MUST preserve them as multivalued `proxyAddresses`,
+reject case-insensitive duplicates and add `openldapDeclarativeUser` when the
+list is non-empty. It MUST NOT infer a primary address or configure mail delivery.
+All supplied profile fields are included in the default readable-attribute list;
+an explicit `read_attributes` list replaces those defaults.
 
 ### Stable identifiers<a id="identifiers"></a>
 
@@ -157,7 +195,7 @@ NOT derive identity from a mutable DN. Native snapshots have no UUID namespace.
 
 ### Credentials and source encryption<a id="credentials"></a>
 
-Every active simplified user and the bind account MUST have exactly one source:
+Every active simplified user and each bind account MUST have exactly one source:
 
 | Field | Meaning after optional Vault decryption |
 | ----- | --------------------------------------- |
@@ -240,6 +278,14 @@ Ordinary accounts MUST NOT write directory entries, read password hashes or
 access `cn=config`. Anonymous directory searches MUST be denied. Authenticated
 accounts MAY read the signed attribute allowlist throughout the directory;
 `entry` and `children` access are included for traversal.
+
+`LDAP_SEARCH_SIZE_LIMIT` and `LDAP_SEARCH_TIME_LIMIT` MUST configure the global
+search result and duration limits, defaulting to 500 results and 10 seconds.
+Each accepts integers from 1 through 2,147,483,647 or `unlimited`. Empty values,
+other spellings and invalid numbers MUST fail startup and preflight with exit
+code 64. These are operator-controlled runtime settings, not signed directory
+data; preflight SHOULD use the same settings as the target runtime. Size limits
+apply to the total search result, including paged searches, not directory capacity.
 
 Users/groups snapshots default to identity and membership attributes. Native
 snapshots require an explicit allowlist. Password ACLs MUST precede this list.
