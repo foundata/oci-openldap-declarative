@@ -65,7 +65,7 @@ ports. The runtime volume is disposable; the state volume must persist.
 ## Transfer a snapshot (admin/CI)<a id="transfer-a-snapshot"></a>
 
 Switch to the admin/CI terminal and use the variables from the
-[README generation steps](../../README.md#usage-generate-snapshot).
+[README generation steps](../../README.md#usage-snapshot-generate).
 Set `ldap_host` to the dedicated SSH account on the LDAP host:
 
 ```bash

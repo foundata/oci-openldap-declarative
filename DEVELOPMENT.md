@@ -8,6 +8,8 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - [Prerequisites](#prerequisites)
 - [Getting started](#getting-started)
+- [How to build](#build)
+  - [Try the README workflow locally](#local-readme)
 - [Project structure](#project-structure)
 - [Development standards](#development-standards)
 - [Testing](#testing)
@@ -50,7 +52,13 @@ This is enough to run `hack/check.sh` and the unit suite; see
 [Testing](#testing). ConClear is not required until you touch pins,
 qualification or a release.
 
-Build local images from the repository root with rootless Podman:
+## How to build<a id="build"></a>
+
+Image builds need Git and rootless Podman; Python and uv are only needed for
+the repository tests. Build both images from the same checkout, on the admin
+host or in CI. The LDAP host only needs the resulting runtime image.
+
+From the repository root, run:
 
 ```sh
 created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -66,8 +74,28 @@ podman build --format oci --pull=always --file Containerfile.generator \
   --tag localhost/openldap-declarative-generator:dev .
 ```
 
-To test the README workflow locally, use these tags for `runtime` and
-`generator`. These images are for development, not qualified releases.
+These images are for development only. Never deploy `:dev` images in production;
+follow [qualification and releases](#qualification-and-releases) instead.
+
+### Try the README workflow locally<a id="local-readme"></a>
+
+On the admin host, select the generator you built:
+
+```bash
+generator=localhost/openldap-declarative-generator:dev
+```
+
+On the LDAP host, select the runtime you built:
+
+```bash
+runtime=localhost/openldap-declarative:dev
+```
+
+For a single-host test, set both variables in the same Bash terminal. Skip the
+registry pull/digest-resolution blocks in the README and Quadlet guide, keeping
+these local references throughout. Start with
+[directory preparation](README.md#usage-prepare), then follow signing,
+generation and deployment. The admin workflow needs only the generator image.
 
 
 ## Project structure<a id="project-structure"></a>
@@ -77,17 +105,20 @@ startup scripts. Python and `python-ldap` validate LDIF before offline import;
 the same validator runs in the generator. Runtime does not contain PyYAML,
 Argon2 generation bindings or Ansible Vault.
 
-The generator image contains source parsing, Argon2id generation and
-`ansible-core` for its official `ansible-vault` CLI. Its dependency boundary is
-the signed snapshot; no generator process or source-decryption key is needed
-on the LDAP host. Debian package installation uses `--no-install-recommends`
-to exclude the full Ansible collection bundle.
+The generator image contains source parsing, the `openldap-password` Argon2id
+helper, OpenSSL, [minisign](https://github.com/jedisct1/minisign) and
+`ansible-core` for its official `ansible-vault` CLI. The password helper and
+snapshot generation share the hashing implementation. The signed snapshot is the
+boundary between the images; no generator process or source-decryption key is
+needed on the LDAP host. Debian package installation uses
+`--no-install-recommends` to exclude the full Ansible collection bundle.
 
 ```text
 Containerfile                    # runtime image
 Containerfile.generator          # LDIF snapshot-generator image
 conclear.toml                    # image, runtime and test declarations
 generator/                       # snapshot generator, Python, offline only
+generator/password.py            # stdin-only openldap-password command
 generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
 scripts/directory_data.py        # shared LDIF, schema and verifier validation
@@ -122,10 +153,11 @@ hack/check.sh                    # direct repository check
 Python formatting/lint/type checks, plus the unit tests below `tests/unit`.
 None of this needs ConClear.
 
-Unit tests do not require a host Ansible installation. Integration tests exercise
-the generator image's actual Vault CLI, both input routes, custom schema imports,
-authentication, access policy and snapshot lifecycle. Input-schema checks apply
-after Vault decryption; OpenLDAP's offline import is the schema authority.
+Unit tests do not require a host Ansible installation. Integration tests
+exercise the generator image's actual Vault CLI, both input routes, custom
+schema imports, authentication, access policy and snapshot lifecycle.
+Input-schema checks apply after Vault decryption; OpenLDAP's offline import is
+the schema authority.
 
 ```sh
 sh hack/check.sh

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 import subprocess
@@ -178,11 +179,95 @@ def generated(generator: Generator) -> Path:
 def test_generator_image_boundary(generator: Generator) -> None:
     result = generator.container(
         "-c",
-        "id -u; id -g; command -v ansible-vault; test ! -e /usr/sbin/slapd; test ! -e /TEMP-Notes; test -s /usr/share/doc/ansible-core/copyright; test -s /usr/local/share/openldap-declarative/LICENSE.txt",
+        "id -u; id -g; command -v ansible-vault; command -v openldap-password; command -v openssl; test ! -e /usr/sbin/slapd; test ! -e /TEMP-Notes; test -s /usr/share/doc/ansible-core/copyright; test -s /usr/local/share/openldap-declarative/LICENSE.txt",
         entrypoint="sh",
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("1001\n1001\n/usr/bin/ansible-vault\n")
+    assert "/usr/local/bin/openldap-password\n/usr/bin/openssl\n" in result.stdout
+
+
+@pytest.fixture(scope="module")
+def admin_generated(generator: Generator) -> Path:
+    hashed = generator.container(
+        entrypoint="openldap-password", stdin="TEST-ONLY-admin-workflow\n"
+    )
+    assert hashed.returncode == 0 and not hashed.stderr
+    verifier = hashed.stdout.strip()
+    assert verifier.startswith("{ARGON2}$argon2id$v=19$m=19456,t=2,p=1$")
+    assert PasswordHasher().verify(
+        verifier.removeprefix("{ARGON2}"), "TEST-ONLY-admin-workflow"
+    )
+    key = generator.container("rand", "-base64", "32", entrypoint="openssl")
+    assert key.returncode == 0 and not key.stderr
+    assert len(base64.b64decode(key.stdout.strip(), validate=True)) == 32
+    key_file = generator.credentials / "admin-vault-password"
+    key_file.write_text(key.stdout, encoding="utf-8")
+    key_file.chmod(0o600)
+    encrypted = generator.container(
+        "encrypt_string",
+        "--vault-id",
+        "directory@/run/credentials/admin-vault-password",
+        "--stdin-name",
+        "password_hash",
+        entrypoint="ansible-vault",
+        stdin=verifier,
+    )
+    assert encrypted.returncode == 0, encrypted.stderr
+    assert "$ANSIBLE_VAULT;1.2;AES256;directory" in encrypted.stdout
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    del document["users"][0]["password_file"]
+    document["users"][0]["password_hash"] = "HASH_PLACEHOLDER"
+    source = yaml.safe_dump(document).replace(
+        "password_hash: HASH_PLACEHOLDER",
+        "\n".join(
+            ("  " if index else "") + line
+            for index, line in enumerate(encrypted.stdout.rstrip().splitlines())
+        ),
+    )
+    result = generator.variant(
+        "admin-workflow",
+        source,
+        "--vault",
+        "directory@/run/credentials/admin-vault-password",
+    )
+    assert result.returncode == 0, result.stderr
+    return generator.output / "admin-workflow"
+
+
+def test_generator_only_admin_tools_create_a_snapshot(admin_generated: Path) -> None:
+    assert (admin_generated / "manifest.json.minisig").is_file()
+    assert (
+        b"TEST-ONLY-admin-workflow"
+        not in (admin_generated / "directory.ldif").read_bytes()
+    )
+    validate_manifest(SCHEMA, admin_generated / "manifest.json")
+
+
+def test_admin_generated_hash_authenticates(
+    generator: Generator,
+    admin_generated: Path,
+    podman: Podman,
+    images: Images,
+    store: Store,
+) -> None:
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-admin-tools"
+    )
+    running.start(admin_generated)
+    assert running.bind(ALICE_DN, "TEST-ONLY-admin-workflow").returncode == 0
+    assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 49
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    podman.stop(running.name)
+
+
+@pytest.mark.parametrize("value", ["", "TEST-ONLY\nsecond", "x" * 4097])
+def test_password_helper_rejects_bad_input_in_container(
+    generator: Generator, value: str
+) -> None:
+    result = generator.container(entrypoint="openldap-password", stdin=value)
+    assert result.returncode == 2 and not result.stdout
+    assert "TEST-ONLY" not in result.stderr
 
 
 def test_one_directory_exports_all_active_users(generated: Path) -> None:

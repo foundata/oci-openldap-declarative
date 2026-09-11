@@ -509,6 +509,12 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
 
 def read_credential_file(path_value: str, *, context: str) -> str:
     value = read_regular(Path(path_value), maximum=4096, context=context, private=True)
+    return decode_credential(value, context=context)
+
+
+def decode_credential(value: bytes, *, context: str) -> str:
+    if len(value) > 4096:
+        error(f"{context} exceeds the 4096-byte limit")
     if value.endswith(b"\r\n"):
         value = value[:-2]
     elif value.endswith(b"\n"):

@@ -68,6 +68,9 @@ LDAP clients       LDAP clients       LDAP clients
 - The generator and runtime MUST remain separate images. Source parsing,
   password generation and Ansible Vault tooling belong only in the generator.
   Both images use the same entry-LDIF validator.
+- The generator image MUST contain all tooling needed for the documented admin
+  workflow, including password hashing, Vault-key generation and snapshot signing.
+  Admin operations MUST NOT require the runtime image.
 - Schema definitions and readable-attribute policy MUST remain distinct from
   directory entries. They are explicit, signed snapshot inputs.
 
@@ -214,6 +217,12 @@ Both input routes and the runtime MUST reject `userPassword` values that are
 not valid `{ARGON2}` Argon2id verifiers. Seeded verifiers MUST meet those minimum
 memory, iteration, salt and digest sizes and use canonical unpadded base64.
 Parameter bounds MUST also fit the Argon2 implementation.
+
+The generator's `openldap-password` command MUST use the same hashing parameters.
+It MUST read one non-empty UTF-8 password from stdin, at most 4096 bytes with an
+optional LF or CRLF terminator, and output only its verifier on success. Invalid
+input MUST fail without echoing the supplied value. Password arguments and
+terminal input MUST be rejected.
 
 YAML string values MAY use labeled Ansible Vault scalars:
 `!vault` with the standard `$ANSIBLE_VAULT;1.2;AES256;KEYID` header.

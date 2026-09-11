@@ -140,6 +140,6 @@ memory = "256MiB"
 cpus = 1.0
 pids = 64
 nofile = 512
-immutable_paths = ["/usr/local/lib/openldap-declarative", "/usr/local/share/openldap-declarative"]
+immutable_paths = ["/usr/local/lib/openldap-declarative", "/usr/local/share/openldap-declarative", "/usr/local/bin/openldap-password"]
 startup_timeout_seconds = 180
 shutdown_timeout_seconds = 10
