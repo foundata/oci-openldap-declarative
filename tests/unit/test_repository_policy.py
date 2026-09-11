@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,3 +94,12 @@ def test_deployment_policy_rejects_by_default_and_scopes_both_repositories() -> 
                 "signedIdentity": {"type": "matchRepository"},
             }
         ]
+
+
+def test_release_tags_publish_exact_versions_and_latest() -> None:
+    with (ROOT / "conclear.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    assert {image["id"] for image in config["images"]} == {"runtime", "generator"}
+    for image in config["images"]:
+        assert image["release"]["version_tags"] == ["{version}"]
+        assert image["release"]["moving_tags"] == ["latest"]

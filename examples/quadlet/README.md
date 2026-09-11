@@ -33,7 +33,7 @@ sudo loginctl enable-linger "${USER}"
 Pull the approved runtime image and set `runtime` to its immutable reference:
 
 ```bash
-runtime=quay.io/foundata/openldap-declarative:stable
+runtime=quay.io/foundata/openldap-declarative:latest
 podman pull "${runtime}"
 runtime=$(podman image inspect --format '{{index .RepoDigests 0}}' "${runtime}")
 ```

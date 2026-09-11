@@ -69,7 +69,7 @@ tag_intent = "moving-release-line"
 
 [images.release]
 version_tags = ["{version}"]
-moving_tags = ["stable", "latest"]
+moving_tags = ["latest"]
 
 [images.runtime]
 profile = "service"
@@ -130,7 +130,7 @@ tag_intent = "moving-release-line"
 
 [images.release]
 version_tags = ["{version}"]
-moving_tags = ["stable", "latest"]
+moving_tags = ["latest"]
 
 [images.runtime]
 profile = "one-shot"

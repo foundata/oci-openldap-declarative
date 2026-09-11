@@ -112,7 +112,7 @@ host: it reads your definition, writes a signed snapshot and exits.
 
 ### Tags<a id="tags-generator"></a>
 
-- `latest`, `stable`: moving tags updated by the release process.
+- `latest`: a moving tag updated by the release process.
 - `<version>`: a specific release version.
 
 ### How to use<a id="usage-generator"></a>
@@ -501,7 +501,7 @@ Vault passwords and the private signing key stay on the
 
 ### Tags<a id="tags-ldap"></a>
 
-- `latest`, `stable`: moving tags updated by the release process.
+- `latest`: a moving tag updated by the release process.
 - `<version>`: a specific release version.
 
 ### How to use<a id="usage-ldap"></a>
