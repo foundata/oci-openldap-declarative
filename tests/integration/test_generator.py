@@ -311,12 +311,16 @@ def test_profile_fields_are_readable_and_policy_can_hide_them(
     parser.parse()
     entry = parser.all_records[0][1]
     expected = {
+        "sn": [b"Example"],
         "givenName": [b"Alice"],
         "initials": [b"AE"],
         "displayName": [b"Alice Example"],
         "description": [b"Application directory user"],
         "physicalDeliveryOfficeName": [b"Main office"],
         "telephoneNumber": [b"+49 721 5550100"],
+        "mobile": [b"+49 170 5550100"],
+        "o": [b"Example Company"],
+        "employeeNumber": [b"E-0001"],
         "mail": [b"alice@example.org"],
         "ou": [b"Operations"],
         "title": [b"Engineer"],
@@ -342,10 +346,70 @@ def test_profile_fields_are_readable_and_policy_can_hide_them(
     running.start(generator.output / "profile-restricted")
     result = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
     assert "mail: alice@example.org" in result.stdout
-    assert (
-        "proxyAddresses:" not in result.stdout and "description:" not in result.stdout
-    )
+    for name in expected.keys() - {"mail"}:
+        assert f"{name}:" not in result.stdout
     assert "userPassword:" not in result.stdout
+    podman.stop(running.name)
+
+
+def test_profile_updates_and_vault_preserve_directory_identity(
+    generator: Generator, generated: Path, podman: Podman, images: Images, store: Store
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["revision"] = 2
+    document["users"][0].update(
+        first_name="Alicia",
+        last_name="Renamed",
+        email="alicia@example.org",
+        phone="+49 721 5550200",
+        mobile="+49 170 5550200",
+        company="VAULT_COMPANY",
+        employee_number="VAULT_EMPLOYEE",
+    )
+    source = yaml.safe_dump(document)
+    for marker, value in (
+        ("VAULT_COMPANY", "Another Company"),
+        ("VAULT_EMPLOYEE", "00042"),
+    ):
+        encrypted = generator.encrypt(value)
+        source = source.replace(
+            marker,
+            "!vault |\n" + "\n".join("    " + line for line in encrypted.splitlines()),
+        )
+    result = generator.variant(
+        "profile-updated",
+        source,
+        "--vault",
+        "directory@/run/credentials/vault-password",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Another Company" not in result.stdout + result.stderr
+    snapshot = generator.output / "profile-updated"
+    original = records(generated / "directory.ldif")
+    updated = records(snapshot / "directory.ldif")
+    assert updated.keys() == original.keys()
+    assert updated[APP_BASE] == original[APP_BASE]
+    for dn, attributes in original.items():
+        for name in ("entryUUID", "uid", "cn", "member", "memberOf"):
+            assert updated[dn].get(name) == attributes.get(name)
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-profile-updated"
+    )
+    running.start(snapshot)
+    result = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
+    assert result.returncode == 0, result.stderr
+    for expected in (
+        "givenName: Alicia",
+        "sn: Renamed",
+        "mail: alicia@example.org",
+        "telephoneNumber: +49 721 5550200",
+        "mobile: +49 170 5550200",
+        "o: Another Company",
+        "employeeNumber: 00042",
+    ):
+        assert expected in result.stdout
+    assert "userPassword:" not in result.stdout
+    assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
     podman.stop(running.name)
 
 
@@ -355,12 +419,12 @@ def test_yaml_extensions_preserve_identity_and_obey_read_policy(
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
     document["users"][0]["object_classes"] = ["posixAccount"]
     document["users"][0]["attributes"] = {
-        "employeeNumber": ["E-0001"],
+        "employeeType": ["Employee"],
         "preferredLanguage": ["en"],
         "uidNumber": ["10001"],
         "gidNumber": ["10000"],
         "homeDirectory": ["/home/alice"],
-        "mobile": ["+49 123", "+49 456"],
+        "pager": ["+49 123", "+49 456"],
     }
     document["groups"][0]["attributes"] = {"description": ["Staff group"]}
     document["bind_accounts"][0]["attributes"] = {"description": ["Application reader"]}
@@ -382,16 +446,17 @@ def test_yaml_extensions_preserve_identity_and_obey_read_policy(
     assert search.returncode == 0, search.stderr
     assert "description: Staff group" in search.stdout
     assert "description: Application reader" in search.stdout
-    assert "employeeNumber:" not in search.stdout and "uidNumber:" not in search.stdout
+    assert "employeeType:" not in search.stdout and "uidNumber:" not in search.stdout
+    assert "pager:" not in search.stdout
     assert "userPassword:" not in search.stdout
     document["revision"] = 2
     document["read_attributes"] = [
         *DEFAULT_READ_ATTRIBUTES,
-        "employeeNumber",
+        "employeeType",
         "uidNumber",
         "gidNumber",
         "homeDirectory",
-        "mobile",
+        "pager",
     ]
     result = generator.variant("extensions-readable", document)
     assert result.returncode == 0, result.stderr
@@ -402,12 +467,12 @@ def test_yaml_extensions_preserve_identity_and_obey_read_policy(
     search = running.search("-b", ALICE_DN, "-s", "base", "*", "+")
     for expected in (
         "objectClass: posixAccount",
-        "employeeNumber: E-0001",
+        "employeeType: Employee",
         "uidNumber: 10001",
         "gidNumber: 10000",
         "homeDirectory: /home/alice",
-        "mobile: +49 123",
-        "mobile: +49 456",
+        "pager: +49 123",
+        "pager: +49 456",
         f"memberOf: cn=staff,ou=groups,{APP_BASE}",
     ):
         assert expected in search.stdout
@@ -426,7 +491,7 @@ def test_yaml_extensions_preserve_identity_and_obey_read_policy(
         "-w",
         "TEST-ONLY-app-bind",
         check=False,
-        stdin=f"dn: {ALICE_DN}\nchangetype: modify\nreplace: employeeNumber\nemployeeNumber: changed\n\n",
+        stdin=f"dn: {ALICE_DN}\nchangetype: modify\nreplace: employeeType\nemployeeType: changed\n\n",
     )
     assert write.returncode == 50, write.stderr
     podman.stop(running.name)
@@ -483,6 +548,9 @@ def test_yaml_custom_classes_and_vault_values_on_all_entities(
         {"attributes": {"2.5.4.35": ["PRIVATE-MARKER"]}},
         {"attributes": {"memberOf": ["PRIVATE-MARKER"]}},
         {"attributes": {"mail": ["PRIVATE-MARKER"]}},
+        {"attributes": {"employeeNumber": ["PRIVATE-MARKER"]}},
+        {"attributes": {"mobileTelephoneNumber": ["PRIVATE-MARKER"]}},
+        {"attributes": {"organizationName": ["PRIVATE-MARKER"]}},
         {"attributes": {"creatorsName": ["PRIVATE-MARKER"]}},
         {"attributes": {"unknownAttribute": ["PRIVATE-MARKER"]}},
         {"attributes": {"employeeNumber": ["a"], "employeeNumber;lang-en": ["b"]}},

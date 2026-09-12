@@ -203,8 +203,8 @@ users:
   - id: "user-0001"
     uid: "alice"
     common_name: "Alice Example"
-    surname: "Example"
-    mail: "alice@example.org"
+    last_name: "Example"
+    email: "alice@example.org"
     active: true
     password_hash: '${user_hash}'
 groups:
@@ -356,22 +356,30 @@ their own migration. Never recycle IDs.
 
 ##### User profile fields<a id="usage-admin-profile-fields"></a>
 
-Users/groups YAML accepts these optional strings in each user:
+Each user requires `last_name`, mapped to LDAP `sn` (surname).
+Users/groups YAML also accepts these optional strings:
 
 |     YAML field     | LDAP attribute |
 | ------------------ | -------------- |
-| `given_name`       | `givenName` (first name) |
+| `first_name`       | `givenName` (first name) |
 | `initials`         | `initials`     |
 | `display_name`     | `displayName`  |
 | `description`      | `description`  |
 | `office`           | `physicalDeliveryOfficeName` |
-| `telephone_number` | `telephoneNumber` |
-| `mail`             | `mail` (email) |
-| `department`       | `ou` (user metadata; does not change the DN) |
+| `phone`            | `telephoneNumber` |
+| `mobile`           | `mobile` (mobile phone number) |
+| `email`            | `mail` (email) |
+| `company`          | `o` (organization name) |
+| `employee_number`  | `employeeNumber` |
+| `department`       | `ou` (department) |
 | `job_title`        | `title`        |
 
-Omit unset fields rather than supplying empty strings. For old email aliases,
-add a list of typed values:
+`company` and `department` describe the user without changing the DN or the
+directory's top-level `organization`. `employee_number` is independent of `id`
+and `entryUUID`; quote numeric values to preserve leading zeros.
+
+Omit unset optional fields rather than supplying empty strings. For old email
+aliases, add a list of typed values:
 
 ```yaml
 proxy_addresses:
@@ -398,7 +406,6 @@ Users, groups and bind accounts accept optional `attributes` and
 ```yaml
 object_classes: ["posixAccount"]
 attributes:
-  employeeNumber: ["E-0001"]
   preferredLanguage: ["en"]
   uidNumber: ["10001"]
   gidNumber: ["10000"]
@@ -434,7 +441,6 @@ read_attributes:
   - "cn"
   - "member"
   - "memberOf"
-  - "employeeNumber"
   - "uidNumber"
   - "gidNumber"
   - "homeDirectory"

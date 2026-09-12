@@ -154,7 +154,7 @@ MUST be rejected on this path.
 - The generator MUST emit reciprocal `member` and `memberOf` values.
 - Users MUST be `inetOrgPerson` entries at
   `uid=<uid>,ou=people,<base_dn>`. Their `common_name` is the LDAP `cn`
-  attribute, not their naming RDN.
+  attribute, not their naming RDN. Their required `last_name` MUST map to `sn`.
 - Groups MUST be `groupOfNames` entries at
   `cn=<common_name>,ou=groups,<base_dn>`.
 - `bind_accounts` MUST be a non-empty list. Each account MUST be an
@@ -172,15 +172,21 @@ means no attribute value. Empty strings and NUL/newline characters are rejected.
 
 | YAML field | LDAP attribute |
 | ---------- | -------------- |
-| `given_name` | `givenName` |
+| `first_name` | `givenName` |
 | `initials` | `initials` |
 | `display_name` | `displayName` |
 | `description` | `description` |
 | `office` | `physicalDeliveryOfficeName` |
-| `telephone_number` | `telephoneNumber` |
-| `mail` | `mail` |
+| `phone` | `telephoneNumber` |
+| `mobile` | `mobile` |
+| `email` | `mail` |
+| `company` | `o` (metadata, not directory placement) |
+| `employee_number` | `employeeNumber` |
 | `department` | `ou` (metadata, not directory placement) |
 | `job_title` | `title` |
+
+`employee_number` MUST NOT affect source IDs or generated identities.
+User `company` MUST NOT change the base entry's `organization` value.
 
 `proxy_addresses` MAY contain up to 64 `TYPE:address` strings of at most 1123
 characters. The generator MUST preserve them as multivalued `proxyAddresses`,

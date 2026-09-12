@@ -394,24 +394,40 @@ def test_one_directory_includes_all_active_users(
 
 
 @pytest.mark.parametrize(
-    "field",
+    ("field", "attribute"),
     [
-        "given_name",
-        "initials",
-        "display_name",
-        "description",
-        "office",
-        "telephone_number",
-        "mail",
-        "department",
-        "job_title",
+        ("first_name", "givenName"),
+        ("last_name", "sn"),
+        ("initials", "initials"),
+        ("display_name", "displayName"),
+        ("description", "description"),
+        ("office", "physicalDeliveryOfficeName"),
+        ("phone", "telephoneNumber"),
+        ("mobile", "mobile"),
+        ("email", "mail"),
+        ("company", "o"),
+        ("employee_number", "employeeNumber"),
+        ("department", "ou"),
+        ("job_title", "title"),
     ],
 )
 @pytest.mark.parametrize(
-    "value", ["Example", "", None, 42, "bad\nvalue", "bad\x00value", "x" * 1124]
+    "value",
+    [
+        "Example",
+        "",
+        None,
+        42,
+        True,
+        ["Example"],
+        "bad\nvalue",
+        "bad\rvalue",
+        "bad\x00value",
+        "x" * 1124,
+    ],
 )
 def test_profile_fields_and_schema_agree(
-    generate: ModuleType, tmp_path: Path, field: str, value: object
+    generate: ModuleType, tmp_path: Path, field: str, attribute: str, value: object
 ) -> None:
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
     document["users"][0][field] = value
@@ -422,12 +438,92 @@ def test_profile_fields_and_schema_agree(
     valid = value == "Example"
     assert Draft202012Validator(schema).is_valid(document) is valid
     if valid:
-        assert generate.parse_directory(source).users["person-0001"].attributes[
-            generate.USER_TEXT_FIELDS[field][0]
-        ] == (value,)
+        user = generate.parse_directory(source).users["person-0001"]
+        if field == "last_name":
+            assert user.last_name == value
+        else:
+            assert generate.USER_TEXT_FIELDS[field][0] == attribute
+            assert user.attributes[attribute] == (value,)
+        assert attribute in generate.DEFAULT_READ_ATTRIBUTES
     else:
         with pytest.raises(generate.ConfigurationError):
             generate.parse_directory(source)
+
+
+@pytest.mark.parametrize(
+    ("field", "maximum"),
+    [
+        ("first_name", 256),
+        ("last_name", 256),
+        ("email", 320),
+        ("phone", 64),
+        ("mobile", 64),
+        ("company", 256),
+        ("employee_number", 256),
+    ],
+)
+@pytest.mark.parametrize("excess", [0, 1])
+def test_profile_length_boundaries(
+    generate: ModuleType, tmp_path: Path, field: str, maximum: int, excess: int
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    document["users"][0][field] = "x" * (maximum + excess)
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    assert Draft202012Validator(schema).is_valid(document) is (excess == 0)
+    if excess:
+        with pytest.raises(generate.ConfigurationError):
+            generate.parse_directory(source)
+    else:
+        generate.parse_directory(source)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("surname", "last_name"),
+        ("given_name", "first_name"),
+        ("mail", "email"),
+        ("telephone_number", "phone"),
+    ],
+)
+@pytest.mark.parametrize("keep_new", [False, True])
+def test_old_profile_keys_are_rejected(
+    generate: ModuleType, tmp_path: Path, old: str, new: str, keep_new: bool
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    user = document["users"][0]
+    user[old] = user[new] if keep_new else user.pop(new)
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    assert not Draft202012Validator(schema).is_valid(document)
+    with pytest.raises(generate.ConfigurationError):
+        generate.parse_directory(source)
+
+
+def test_only_last_name_is_required_among_profile_fields(
+    generate: ModuleType, tmp_path: Path
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    for user in document["users"]:
+        for field in (*generate.USER_TEXT_FIELDS, "proxy_addresses"):
+            user.pop(field, None)
+    source = write_secret(
+        tmp_path / "directory.yaml", yaml.safe_dump(document).encode()
+    )
+    schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
+    assert Draft202012Validator(schema).is_valid(document)
+    parsed = generate.parse_directory(source)
+    assert all(not user.attributes for user in parsed.users.values())
+    del document["users"][0]["last_name"]
+    source.write_text(yaml.safe_dump(document))
+    assert not Draft202012Validator(schema).is_valid(document)
+    with pytest.raises(generate.ConfigurationError, match="last_name"):
+        generate.parse_directory(source)
 
 
 @pytest.mark.parametrize(

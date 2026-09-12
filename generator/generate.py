@@ -59,13 +59,16 @@ PASSWORD_FIELDS: dict[str, CredentialKind] = {
     "password_hash": "hash",
 }
 USER_TEXT_FIELDS = {
-    "mail": ("mail", 320),
-    "given_name": ("givenName", 256),
+    "email": ("mail", 320),
+    "first_name": ("givenName", 256),
     "initials": ("initials", 64),
     "display_name": ("displayName", 256),
     "description": ("description", 1024),
     "office": ("physicalDeliveryOfficeName", 256),
-    "telephone_number": ("telephoneNumber", 64),
+    "phone": ("telephoneNumber", 64),
+    "mobile": ("mobile", 64),
+    "company": ("o", 256),
+    "employee_number": ("employeeNumber", 256),
     "department": ("ou", 256),
     "job_title": ("title", 256),
 }
@@ -112,7 +115,7 @@ class User:
     source_id: str
     uid: str
     common_name: str
-    surname: str
+    last_name: str
     attributes: dict[str, tuple[str, ...]]
     active: bool
     credential: CredentialSource | None
@@ -298,7 +301,7 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
         context = f"users[{index}]"
         item = strict_keys(
             raw,
-            required={"id", "uid", "common_name", "surname", "active"},
+            required={"id", "uid", "common_name", "last_name", "active"},
             optional=set(USER_TEXT_FIELDS)
             | {"proxy_addresses", "attributes", "object_classes"}
             | set(PASSWORD_FIELDS),
@@ -345,7 +348,7 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
             text_value(
                 item["common_name"], context=f"{context}.common_name", maximum=256
             ),
-            text_value(item["surname"], context=f"{context}.surname", maximum=256),
+            text_value(item["last_name"], context=f"{context}.last_name", maximum=256),
             attributes,
             item["active"],
             credential,
@@ -686,7 +689,7 @@ def simplified_entries(directory: Directory) -> list[Entry]:
             "objectClass": ["top", "inetOrgPerson"],
             "uid": [user.uid],
             "cn": [user.common_name],
-            "sn": [user.surname],
+            "sn": [user.last_name],
             "entryUUID": [stable_uuid(namespace, "user", key)],
             "userPassword": [
                 password_verifier(user.credential, context="user credential")

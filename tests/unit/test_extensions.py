@@ -34,7 +34,9 @@ BASE_ATTRIBUTES = (
     "( 2.5.4.13 NAME 'description' )",
     "( 2.16.840.1.113730.3.1.3 NAME ( 'employeeNumber' 'employeeId' ) SINGLE-VALUE )",
     "( 2.16.840.1.113730.3.1.39 NAME 'preferredLanguage' SINGLE-VALUE )",
-    "( 0.9.2342.19200300.100.1.41 NAME 'mobile' )",
+    "( 0.9.2342.19200300.100.1.41 NAME ( 'mobile' 'mobileTelephoneNumber' ) )",
+    "( 2.5.4.10 NAME ( 'o' 'organizationName' ) SUP name )",
+    "( 0.9.2342.19200300.100.1.42 NAME 'pager' )",
     "( 1.3.6.1.1.1.1.0 NAME 'uidNumber' SINGLE-VALUE )",
     "( 1.3.6.1.1.1.1.1 NAME 'gidNumber' SINGLE-VALUE )",
     "( 1.3.6.1.1.1.1.3 NAME 'homeDirectory' SINGLE-VALUE )",
@@ -94,7 +96,7 @@ def test_extensions_work_on_each_entity(
     catalog: SchemaCatalog, tmp_path: Path, kind: str
 ) -> None:
     value = document()
-    value[kind][0]["attributes"] = {"mobile": ["+49 123", "+49 456"]}
+    value[kind][0]["attributes"] = {"pager": ["+49 123", "+49 456"]}
     value[kind][0]["object_classes"] = ["posixAccount"]
     validator = Draft202012Validator(
         json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
@@ -102,9 +104,9 @@ def test_extensions_work_on_each_entity(
     validator.validate(value)
     parsed = parse_document(tmp_path / "directory.yaml", value)
     generated = generate.simplified_entries(parsed)
-    matches = [attributes for _, attributes in generated if "mobile" in attributes]
+    matches = [attributes for _, attributes in generated if "pager" in attributes]
     assert len(matches) == 1
-    assert matches[0]["mobile"] == [b"+49 123", b"+49 456"]
+    assert matches[0]["pager"] == [b"+49 123", b"+49 456"]
     assert b"posixAccount" in matches[0]["objectClass"]
 
 
@@ -174,13 +176,23 @@ def test_invalid_shapes_fail_parser_and_json_schema(value: dict[str, Any]) -> No
         "proxyAddresses",
         "telephoneNumber",
         "givenName",
+        "employeeNumber",
+        "employeeId",
+        "2.16.840.1.113730.3.1.3",
+        "mobile",
+        "mobileTelephoneNumber",
+        "0.9.2342.19200300.100.1.41",
+        "o",
+        "organizationName",
+        "2.5.4.10",
     ],
 )
 def test_reserved_attributes_and_aliases_are_rejected(
     catalog: SchemaCatalog, tmp_path: Path, name: str
 ) -> None:
     value = document()
-    value["users"][0].pop("mail")
+    for field in generate.USER_TEXT_FIELDS:
+        value["users"][0].pop(field, None)
     value["users"][0]["attributes"] = {name: ["PRIVATE-MARKER"]}
     with pytest.raises(ConfigurationError, match="reserved") as failure:
         parse_document(tmp_path / "directory.yaml", value)
@@ -262,12 +274,28 @@ def test_invalid_auxiliary_class_ancestry(
         )
 
 
+@pytest.mark.parametrize("superior", ["employeeNumber", "mobile", "o"])
+def test_managed_profile_subtypes_are_reserved(
+    catalog: SchemaCatalog, tmp_path: Path, superior: str
+) -> None:
+    schema_file(
+        tmp_path / "custom.ldif",
+        (f"( 1.2.3 NAME 'customAttribute' SUP {superior} )",),
+    )
+    value = document()
+    value["schema_files"] = ["custom.ldif"]
+    value["users"][0]["attributes"] = {"customAttribute": ["PRIVATE-MARKER"]}
+    with pytest.raises(ConfigurationError, match="reserved") as failure:
+        parse_document(tmp_path / "directory.yaml", value)
+    assert "PRIVATE-MARKER" not in str(failure.value)
+
+
 def test_custom_schema_paths_and_inherited_attributes(
     catalog: SchemaCatalog, tmp_path: Path
 ) -> None:
     schema_file(
         tmp_path / "custom.ldif",
-        ("( 1.2.3 NAME 'customAttribute' SUP mobile )",),
+        ("( 1.2.3 NAME 'customAttribute' SUP pager )",),
         ("( 1.2.4 NAME 'customClass' SUP top AUXILIARY MAY customAttribute )",),
     )
     value = document()
@@ -287,14 +315,14 @@ def test_vault_values_are_decrypted_before_extension_validation(
         Vault, "decrypt", lambda *_: DecryptedString("private employee")
     )
     value = document()
-    value["users"][0]["attributes"] = {"employeeNumber": ["PLACEHOLDER"]}
+    value["users"][0]["attributes"] = {"preferredLanguage": ["PLACEHOLDER"]}
     path = tmp_path / "directory.yaml"
     path.write_text(
         yaml.safe_dump(value).replace("- PLACEHOLDER", "- !vault encrypted")
     )
     path.chmod(0o600)
     parsed = generate.parse_directory(path)
-    assert parsed.users["person-0001"].extensions.attributes["employeeNumber"] == (
+    assert parsed.users["person-0001"].extensions.attributes["preferredLanguage"] == (
         "private employee",
     )
 
@@ -367,7 +395,7 @@ def test_snapshot_uses_the_schema_contents_that_were_validated(
 ) -> None:
     path = schema_file(
         tmp_path / "custom.ldif",
-        ("( 1.2.3 NAME 'customAttribute' SUP mobile )",),
+        ("( 1.2.3 NAME 'customAttribute' SUP pager )",),
         ("( 1.2.4 NAME 'customClass' SUP top AUXILIARY MAY customAttribute )",),
     )
     original = path.read_bytes()

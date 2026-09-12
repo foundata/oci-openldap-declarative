@@ -349,7 +349,7 @@
         "id",
         "uid",
         "common_name",
-        "surname",
+        "last_name",
         "active"
       ],
       "properties": {
@@ -375,17 +375,19 @@
           "maxLength": 256,
           "pattern": "^[^\\u0000\\r\\n]+$"
         },
-        "surname": {
+        "last_name": {
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
-          "pattern": "^[^\\u0000\\r\\n]+$"
+          "pattern": "^[^\\u0000\\r\\n]+$",
+          "description": "LDAP sn (surname) attribute."
         },
-        "mail": {
+        "email": {
           "type": "string",
           "minLength": 1,
           "maxLength": 320,
-          "pattern": "^[^\\u0000\\r\\n]+$"
+          "pattern": "^[^\\u0000\\r\\n]+$",
+          "description": "LDAP mail attribute."
         },
         "active": {
           "type": "boolean"
@@ -402,7 +404,7 @@
         "password_hash_file": {
           "$ref": "#/$defs/credentialPath"
         },
-        "given_name": {
+        "first_name": {
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
@@ -437,12 +439,33 @@
           "pattern": "^[^\\u0000\\r\\n]+$",
           "description": "LDAP physicalDeliveryOfficeName attribute."
         },
-        "telephone_number": {
+        "phone": {
           "type": "string",
           "minLength": 1,
           "maxLength": 64,
           "pattern": "^[^\\u0000\\r\\n]+$",
           "description": "LDAP telephoneNumber attribute."
+        },
+        "mobile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[^\\u0000\\r\\n]+$",
+          "description": "LDAP mobile attribute."
+        },
+        "company": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000\\r\\n]+$",
+          "description": "LDAP o attribute on the user; does not change the DN."
+        },
+        "employee_number": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[^\\u0000\\r\\n]+$",
+          "description": "LDAP employeeNumber attribute; independent of id and entryUUID."
         },
         "department": {
           "type": "string",

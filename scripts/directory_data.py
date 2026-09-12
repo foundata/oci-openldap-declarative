@@ -40,6 +40,8 @@ DEFAULT_READ_ATTRIBUTES = (
     "description",
     "physicalDeliveryOfficeName",
     "telephoneNumber",
+    "mobile",
+    "employeeNumber",
     "title",
     "proxyAddresses",
     "mail",
