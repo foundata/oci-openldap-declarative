@@ -443,8 +443,10 @@ be used by applications. Its modifications disappear on rebuild.
 - The runtime supervisor MUST check expiry while running. The provided host
   backstop independently checks the active snapshot and can stop a suspended
   or unhealthy container.
-- Operators MUST preserve revision state and reliable host time. Deleting state
-  weakens rollback protection.
+- Operators MUST preserve revision state across routine container restarts and
+  updates, and maintain reliable host time. A replacement host without revision
+  state MUST bootstrap from a known-current signed snapshot supplied by the
+  trusted deployment process; startup establishes its new revision baseline.
 
 Expiry bounds LDAP availability, not existing application sessions or caches.
 Consumers need their own revocation and session policies.
@@ -488,7 +490,7 @@ beside the runtime for read-only mounting. It MUST NOT deliver source-decryption
 keys or the private signing key. Renewals SHOULD arrive before soft expiry.
 
 Backups MUST include source definitions, stable identifiers, required secret
-material, signing keys, deployment settings and accepted revision state.
+material, signing keys and deployment settings.
 Restores MUST use a current signed snapshot and verify identity and authentication.
 
 ## Verification<a id="verification"></a>

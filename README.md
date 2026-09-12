@@ -1,9 +1,9 @@
 # OpenLDAP Declarative
 
 **"OpenLDAP Declarative" serves an LDAP directory from a signed, expiring
-snapshot using OCI containers.** Users/groups YAML provides a read-only application
-directory. Custom LDIF gives administrators control of the server configuration
-and entries. One definition produces one directory.
+snapshot using OCI containers.** Users/groups YAML provides a read-only
+application directory. Custom LDIF gives administrators control of the server
+configuration and entries. One definition produces one directory.
 
 |                   Input                   | Use it for |
 | ----------------------------------------- | ---------- |
@@ -11,8 +11,8 @@ and entries. One definition produces one directory.
 | [Custom LDIF](#usage-prepare-native-ldif) | Administrator-owned server configuration and entries, including schemas, ACLs, indexes and packaged overlays. You own the access and credential policies. |
 
 Both routes use YAML for snapshot settings and retain signature verification,
-revision checks and expiry supervision. Custom LDIF has no generated-policy mode.
-Refresh snapshots before expiry. Removing an account takes effect after
+revision checks and expiry supervision. Custom LDIF has no generated-policy
+mode. Refresh snapshots before expiry. Removing an account takes effect after
 deployment or expiry; application sessions and caches have their own lifetime.
 
 The project provides two images:
@@ -61,7 +61,7 @@ The project provides two images:
       - [Bind accounts](#usage-admin-bind-accounts)
       - [Membership and access](#usage-admin-membership)
       - [Credential sources](#usage-admin-credentials)
-        - [Inline encryption with Ansible Vault](#usage-vault)
+        - [Inline encryption](#usage-vault)
         - [Source and snapshot confidentiality](#usage-hashes-in-git)
 - [Image: `quay.io/foundata/openldap-declarative` (LDAP host)](#image-ldap)
   - [Tags](#tags-ldap)
@@ -73,6 +73,7 @@ The project provides two images:
       - [Status and logs (LDAP host)](#usage-ops-status)
       - [TLS and key rotation (admin/CI and LDAP host)](#usage-ops-tls)
       - [Backup and recovery (admin/CI and LDAP host)](#usage-ops-backup-and-recovery)
+      - [Temporary administrator access (LDAP host)](#usage-ops-admin)
 - [Development](#tests)
 - [Licensing, copyright](#licensing-copyright)
 - [Author information](#author-information)
@@ -102,7 +103,9 @@ or the current one expires.
 | LDAP host       | Serve the directory via LDAP(S). Holds public verification keys, snapshot files and persistent revision state. |
 
 The same machine can fill both roles for testing. Both images support Linux
-amd64 and arm64. Local builds and testing are covered in
+[amd64](https://www.kernel.org/doc/html/latest/arch/x86/x86_64/index.html) and
+[arm64](https://www.kernel.org/doc/html/latest/arch/arm64/). Local builds and
+testing are covered in
 [`DEVELOPMENT.md`](DEVELOPMENT.md#build).
 
 
@@ -111,10 +114,12 @@ amd64 and arm64. Local builds and testing are covered in
 The generator is a one-shot command so no tools installation is needed on your
 host: it reads your definition, writes a signed snapshot and exits.
 
+
 ### Tags<a id="tags-generator"></a>
 
 - `latest`: a moving tag updated by the release process.
 - `<version>`: a specific release version.
+
 
 ### How to use<a id="usage-generator"></a>
 
@@ -127,13 +132,11 @@ Run these steps in Bash on the admin host or in CI:
 
    ```bash
    podman pull quay.io/foundata/openldap-declarative-generator:latest
-   generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
-     quay.io/foundata/openldap-declarative-generator:latest)
    ```
 
 3. [Prepare directory data](#usage-prepare), then
-   [sign and generate a snapshot](#usage-snapshot). Keep these variables in the
-   same terminal for the commands below.
+   [sign and generate a snapshot](#usage-snapshot).
+
 
 #### Prepare directory data<a id="usage-prepare"></a>
 
@@ -143,12 +146,14 @@ Then choose one input route below.
 ```bash
 set +x
 umask 077
-data="${HOME}/directory-data"
-private="${HOME}/.config/openldap-declarative"
-output="${HOME}/.local/share/openldap-declarative/generated"
+data="${HOME}/directory-data" # good idea to put under version control (e.g. git)
+private="${HOME}/.config/openldap-declarative" # contains secrets
+output="${HOME}/.local/share/openldap-declarative/generated" # to be shipped later
 install -d -m 0700 "${data}" "${private}" "${output}"
 
 hash_password() (
+  generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
+    quay.io/foundata/openldap-declarative-generator:latest)
   set +x
   set -euo pipefail
   read -r -s -p "$1: " password
@@ -179,6 +184,8 @@ more separate [bind accounts](#usage-admin-bind-accounts). Start with one:
 user_hash=$(hash_password "Alice password")
 bind_hash=$(hash_password "Application bind password")
 
+generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
+  quay.io/foundata/openldap-declarative-generator:latest)
 namespace=$(podman run --rm --network none --entrypoint python3 "${generator}" \
   -c 'import uuid; print(uuid.uuid4())')
 
@@ -193,7 +200,7 @@ input_type: "users-groups"
 uuid_namespace: "${namespace}"
 organization: "Example Company"
 users:
-  - id: "person-0001"
+  - id: "user-0001"
     uid: "alice"
     common_name: "Alice Example"
     surname: "Example"
@@ -201,9 +208,9 @@ users:
     active: true
     password_hash: '${user_hash}'
 groups:
-  - id: "group-staff"
+  - id: "group-0001"
     common_name: "staff"
-    members: ["person-0001"]
+    members: ["user-0001"]
 bind_accounts:
   - id: "bind-example-app"
     common_name: "application"
@@ -217,6 +224,7 @@ Generate `uuid_namespace` once and preserve it. All active users are included.
 See the [larger example](examples/generator/directory.yaml) for profile fields,
 inactive users and credential files. Continue with
 [signing and generation](#usage-snapshot).
+
 
 ##### Custom directory: LDIF<a id="usage-prepare-native-ldif"></a>
 
@@ -266,11 +274,17 @@ Continue with [signing and generation](#usage-snapshot).
 
 Both input routes use the following commands with `${data}/directory.yaml`.
 
+
 ##### Create signing keys<a id="usage-snapshot-keys"></a>
 
 Run once:
 
 ```bash
+private="${HOME}/.config/openldap-declarative"
+
+generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
+  quay.io/foundata/openldap-declarative-generator:latest)
+
 podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
   --network none --volume "${private}:/run/credentials:Z" \
   --entrypoint minisign "${generator}" \
@@ -280,9 +294,17 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 `-W` creates an unencrypted private key for unattended signing. Keep
 `snapshot.key` private and backed up. Deploy only `snapshot.pub`.
 
+
 ##### Generate a snapshot<a id="usage-snapshot-generate"></a>
 
 ```bash
+data="${HOME}/directory-data"
+private="${HOME}/.config/openldap-declarative"
+output="${HOME}/.local/share/openldap-declarative/generated"
+
+generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
+  quay.io/foundata/openldap-declarative-generator:latest)
+
 revision=1
 podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
   --network none --read-only --read-only-tmpfs=false \
@@ -306,6 +328,7 @@ The signed revision comes from YAML; the shell variable only names the output.
 The model-specific settings below apply to users/groups YAML. Custom LDIF
 administration is covered in [its guide](docs/custom-ldif.md).
 
+
 ##### IDs, names and renames<a id="usage-admin-identities"></a>
 
 |           Field            | Meaning |
@@ -326,9 +349,10 @@ An ID can be a UUID string or another unique, permanent string. It is still an
 input to the calculation, not the resulting LDAP UUID.
 
 To rename a user, change `uid`, keep `id` and `uuid_namespace`, increase
-`revision`, then regenerate and deploy. DNs and membership references update;
-`entryUUID` stays unchanged. Applications keyed by username or DN may need
+`revision`, then regenerate and deploy (DNs and membership references update;
+`entryUUID` stays unchanged). Applications keyed by username or DN may need
 their own migration. Never recycle IDs.
+
 
 ##### User profile fields<a id="usage-admin-profile-fields"></a>
 
@@ -364,6 +388,7 @@ Up to 64 values of 1123 characters are accepted.
 All these fields are readable by authenticated accounts by default.
 Set `read_attributes` to an explicit list to narrow access; that list replaces
 the defaults.
+
 
 ##### Extra LDAP attributes and classes<a id="usage-admin-extensions"></a>
 
@@ -428,6 +453,7 @@ allowed attributes and their syntax during offline import. Use native LDIF
 for binary values, other structural classes, custom DNs or replacements for
 the dedicated profile mappings.
 
+
 ##### Bind accounts<a id="usage-admin-bind-accounts"></a>
 
 `bind_accounts` is a non-empty list. Each item has a unique permanent `id`,
@@ -449,6 +475,7 @@ and `uuid_namespace` preserves its UUID when changing `common_name`.
 All bind accounts share the directory's read policy; separate credentials do
 not create per-application access restrictions.
 
+
 ##### Membership and access<a id="usage-admin-membership"></a>
 
 Active users need no group. Inactive users and groups without active members
@@ -460,6 +487,7 @@ their own group rules.
 Ordinary accounts cannot write, read password hashes or access `cn=config`.
 Authenticated accounts can read approved attributes across the directory;
 anonymous directory searches are denied.
+
 
 ##### Credential sources<a id="usage-admin-credentials"></a>
 
@@ -487,24 +515,28 @@ two iterations, one lane, 16 salt bytes and 32 digest bytes, canonical unpadded
 base64. The [password helper](#usage-prepare) generates these hashes.
 Test stronger parameters against bind load and container memory limits.
 
-###### Inline encryption with Ansible Vault<a id="usage-vault"></a>
+
+###### Inline encryption<a id="usage-vault"></a>
 
 The generator accepts standard labeled
 [Ansible Vault scalars](https://docs.ansible.com/projects/ansible/latest/vault_guide/vault_encrypting_content.html):
 
 ```yaml
 password_hash: !vault |
-  $ANSIBLE_VAULT;1.2;AES256;directory
+  $ANSIBLE_VAULT;1.2;AES256;ldapvault
   ...encrypted payload...
 ```
 
-`ansible-vault` is included in the generator image. You do not need Ansible
-on the host or as your configuration-management tool.
+`$ANSIBLE_VAULT` is fixed; `ldapvault` is your key ID and you can chose it
+freely. The bundled `ansible-vault` CLI handles encryption and decryption. You
+do *not* need Ansible on the host or as your configuration-management tool.
 
-`$ANSIBLE_VAULT` is fixed; `directory` is your key ID. To encrypt a freshly
+To encrypt a freshly
 generated hash on the admin host:
 
 ```bash
+private="${HOME}/.config/openldap-declarative"
+
 set +x
 umask 077
 if [ ! -e "${private}/vault-password" ]; then
@@ -544,6 +576,13 @@ Vault applies to YAML string values, not mapping keys. Decrypted values remain
 strings, so encrypted `active` or `revision` values are not accepted.
 Whole encrypted files and encrypted text inside LDIF are not supported.
 
+A bit of reasoning: We chose Ansible Vault because each encrypted YAML value is
+self-contained and carries its key ID. The well known alternative
+[SOPS](https://getsops.io/docs/reference/#encryption-protocol) was not chosen as
+it requires document-level key and integrity metadata, adding useless extra
+structure for this per-value workflow.
+
+
 ###### Source and snapshot confidentiality<a id="usage-hashes-in-git"></a>
 
 Encrypted definitions or hash-only YAML can live in an access-controlled private
@@ -566,11 +605,15 @@ serves LDAP. It includes OpenLDAP, LDAP client tools and minisign. Source files,
 Vault passwords and the private signing key stay on the
 [admin host](#image-generator).
 
+
+<!-- rumdl-disable-next-line MD080 -->
 ### Tags<a id="tags-ldap"></a>
 
 - `latest`: a moving tag updated by the release process.
 - `<version>`: a specific release version.
 
+
+<!-- rumdl-disable-next-line MD080 -->
 ### How to use<a id="usage-ldap"></a>
 
 Run these steps in Bash as the service account on the LDAP host:
@@ -583,8 +626,6 @@ Run these steps in Bash as the service account on the LDAP host:
 
    ```bash
    podman pull quay.io/foundata/openldap-declarative:latest
-   runtime=$(podman image inspect --format '{{index .RepoDigests 0}}' \
-     quay.io/foundata/openldap-declarative:latest)
    ```
 
 3. [Deploy and verify LDAP](#usage-rootless-podman) with the snapshot and public
@@ -644,8 +685,9 @@ memory budget. The ceiling does not reserve memory or guarantee capacity.
 
 For custom LDIF, configure search limits, TLS certificates and any administrator
 credentials in LDIF. Setting `LDAP_SEARCH_*`, `LDAP_TLS_*` file inputs or either
-`LDAP_ADMIN_PASSWORD*` input fails rather than overriding the signed configuration.
-Listener selection and `LDAP_LOG_LEVEL` remain runtime-owned for both paths.
+`LDAP_ADMIN_PASSWORD*` input fails rather than overriding the signed
+configuration. Listener selection and `LDAP_LOG_LEVEL` remain runtime-owned for
+both paths.
 
 Limits: 1 MiB source YAML; 256 Vault values of 32 KiB each; 32 snapshot LDIF
 files, 16 MiB combined LDIF, 1 MiB manifest and 16 KiB signature. Users/groups
@@ -670,6 +712,7 @@ The example warns after 6 hours and stops after 12. Refresh before the warning.
 and must remain below the soft TTL. Exact replay does not renew a snapshot;
 different content at an accepted revision is rejected.
 
+
 ##### Status and logs (LDAP host)<a id="usage-ops-status"></a>
 
 ```bash
@@ -680,6 +723,7 @@ podman exec openldap-example /usr/local/lib/openldap-declarative/status.sh
 
 Status returns JSON: exit `0` healthy, `1` soft-expired, `2`
 expired/unavailable. At hard expiry, the runtime stops LDAP with exit `78`.
+
 
 ##### TLS and key rotation (admin/CI and LDAP host)<a id="usage-ops-tls"></a>
 
@@ -692,17 +736,50 @@ To rotate a Vault key, re-encrypt affected source fields on admin/CI with the
 new key, verify generation, then retire the old key after accounting for
 backups. Vault keys never go to the LDAP host.
 
+
 ##### Backup and recovery (admin/CI and LDAP host)<a id="usage-ops-backup-and-recovery"></a>
 
-Back up definitions, stable IDs, namespaces, required credentials, Vault and
-signing keys, deployment settings and image digests. On LDAP hosts, preserve
-public keys and revision state. MDB is rebuilt at startup.
+Back up these inputs on **admin/CI**, using the paths from this guide:
 
-For users/groups YAML, no administrator password is configured by default.
-For temporary recovery, mount a password file and set `LDAP_ADMIN_PASSWORD_FILE`. This enables
-`cn=admin,<base_dn>`, which can write and read verifiers. Never use it for
-applications. Recovery changes disappear on rebuild; update the source for
-lasting changes, then remove the recovery input and restart.
+|     Location (if you followed the examples)      | Backup contents |
+| ------------------------------------------------ | --------------- |
+| `~/directory-data/` (`${data}`)                  | `directory.yaml` and all referenced LDIF and schema files. Put them under version control (e.g. git) if possible. |
+| `~/.config/openldap-declarative/` (`${private}`) | `snapshot.key`, `snapshot.pub`, `vault-password` if used, and any credential files stored here. |
+| Your deployment repository or CI configuration   | Customized service units, environment settings, mount sources, deployed revisions, generator/runtime image digests and TLS provisioning settings. |
+
+Include source files and credentials stored outside these directories, such as
+CI-managed secrets. Protect secret backups with encryption and restricted
+access; retain the Vault passwords needed to decrypt backed-up definitions.
+
+On the **LDAP host**, back up local deployment changes not held in your
+deployment repository: the example's `openldap-example.*` files under
+`~/.config/containers/systemd/`, `openldap-example-backstop.*` under
+`~/.config/systemd/user/`, and `~/.local/libexec/openldap-expiry-backstop`.
+Include host files referenced by custom mounts, such as TLS keys and
+certificates, unless your provisioning process recreates them. Here, `~` is
+the LDAP service account's home.
+
+To restore:
+
+1. Admin/CI: restore the current definition, referenced files, credentials and
+   signing/Vault keys. Preserve the stable IDs and namespace.
+2. Admin/CI: set `revision` above the last deployed revision and
+   [generate a fresh signed snapshot](#usage-snapshot-generate).
+3. LDAP host: redeploy the service configuration and mount inputs, including
+   the current public verification key from admin/CI.
+4. [Preflight and activate](examples/quadlet/README.md#preflight-and-activate),
+   then
+   [verify searches and password binds](examples/quadlet/README.md#verify-and-connect-an-application).
+   Startup establishes revision state from the freshly generated snapshot.
+
+
+##### Temporary administrator access (LDAP host)<a id="usage-ops-admin"></a>
+
+For users/groups YAML, temporary debugging access requires an original-password
+file mounted read-only into the container and `LDAP_ADMIN_PASSWORD_FILE` set to
+its container path. Restart to enable `cn=admin,<base_dn>`, which can write and
+read password verifiers. Use it only for administration. Update the source for
+lasting changes, then remove the setting and mount and restart.
 
 Custom LDIF owns its recovery and write policy. All database changes, including
 overlay-maintained state, disappear on rebuild unless represented in the next
