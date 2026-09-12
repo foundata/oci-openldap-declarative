@@ -96,9 +96,7 @@ def test_limit_failure_stops_startup(
 
 
 @pytest.mark.parametrize("pid", ["0", "-1", "not-a-pid"])
-def test_invalid_pid_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, pid: str
-) -> None:
+def test_invalid_pid_is_rejected(monkeypatch: pytest.MonkeyPatch, pid: str) -> None:
     prlimit = Mock()
     monkeypatch.setattr(resource, "prlimit", prlimit)
     with pytest.raises(SystemExit, match="2"):
