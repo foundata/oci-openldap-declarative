@@ -2,7 +2,7 @@ schema_version = 1
 
 [project]
 name = "oci-openldap-declarative"
-source = "https://github.com/foundata/oci-openldap-declarative"
+source = "https://foundata.com/en/projects/oci-openldap-declarative/#source"
 
 [[images]]
 id = "runtime"

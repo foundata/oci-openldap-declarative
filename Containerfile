@@ -7,7 +7,7 @@ ARG IMAGE_VERSION
 LABEL org.opencontainers.image.title="OpenLDAP Declarative"
 LABEL org.opencontainers.image.description="OpenLDAP directory and configuration built from a signed snapshot"
 LABEL org.opencontainers.image.vendor="foundata GmbH"
-LABEL org.opencontainers.image.source="https://github.com/foundata/oci-openldap-declarative"
+LABEL org.opencontainers.image.source="https://foundata.com/en/projects/oci-openldap-declarative/#source"
 LABEL org.opencontainers.image.url="https://foundata.com/en/projects/oci-openldap-declarative/"
 LABEL org.opencontainers.image.documentation="https://foundata.com/en/projects/oci-openldap-declarative/#doc"
 LABEL org.opencontainers.image.licenses="GPL-3.0-or-later"
