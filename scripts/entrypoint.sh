@@ -241,6 +241,7 @@ supervise_slapd() {
 main() {
   umask 077
   trap forward_shutdown TERM INT HUP
+  python3 "${script_dir}/runtime_limits.py" "$$" || return $?
   mkdir -p "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot create the runtime directory'
   remove_verified_snapshot "${runtime_dir}" || die "${EXIT_INTERNAL}" 'Cannot remove stale verified snapshot data'
   validate_runtime_configuration || exit $?

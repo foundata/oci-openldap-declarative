@@ -1,7 +1,7 @@
 # OpenLDAP Declarative
 
-"OpenLDAP Declarative" serves an LDAP directory from a signed, expiring
-snapshot using OCI containers. Users/groups YAML provides a read-only application
+**"OpenLDAP Declarative" serves an LDAP directory from a signed, expiring
+snapshot using OCI containers.** Users/groups YAML provides a read-only application
 directory. Custom LDIF gives administrators control of the server configuration
 and entries. One definition produces one directory.
 
@@ -621,6 +621,7 @@ users/groups example; adjust them for another directory definition.
 | `LDAP_SEARCH_SIZE_LIMIT`                   | `500`                                  | YAML only: maximum results per search, including the total across pages. |
 | `LDAP_SEARCH_TIME_LIMIT`                   | `10`                                   | YAML only: maximum search duration in seconds. |
 | `LDAP_LOG_LEVEL`                           | `256`                                  | Numeric slapd log mask. |
+| `LDAP_MAX_OPEN_FILES`                      | `4096`                                 | Startup ceiling for soft and hard open-file limits; lower inherited limits are preserved. |
 | `LDAP_TLS_CERT_FILE` / `LDAP_TLS_KEY_FILE` | `/tls/cert.pem` / `/tls/cert.key`      | YAML only: required for LDAPS. |
 | `LDAP_TLS_CA_FILE`                         | `/tls/ca.pem`                          | YAML only: optional server trust bundle. |
 | `LDAP_SNAPSHOT_DIR`                        | `/snapshot`                            | Manifest, signature and listed LDIF files. |
@@ -635,6 +636,11 @@ Search limits accept integers from `1` through `2147483647`, or `unlimited`.
 Set them as container environment variables (Quadlet `Environment=`); use the
 same settings during preflight and restart after changing them. They do not
 change the number of entries the directory can contain.
+
+`LDAP_MAX_OPEN_FILES` accepts integers from `1` through `2147483647`, applies
+to both input paths and requires a restart. slapd allocates memory based on
+its descriptor limit, so raising this ceiling requires reviewing the container's
+memory budget. The ceiling does not reserve memory or guarantee capacity.
 
 For custom LDIF, configure search limits, TLS certificates and any administrator
 credentials in LDIF. Setting `LDAP_SEARCH_*`, `LDAP_TLS_*` file inputs or either

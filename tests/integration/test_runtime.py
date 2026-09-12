@@ -29,6 +29,7 @@ from tests.integration.harness import (
     sha256_file,
     utc_now,
 )
+from tests.integration.image_checks import assert_image_privileges
 from tests.integration.lifecycle import (
     LDAP_URI,
     LDAPI_URI,
@@ -256,6 +257,8 @@ class Runtime:
         key_mode: str = "file",
         extra_environment: str = "LDAP_TLS_CA_FILE=/tls/ca.pem",
         extra_arguments: tuple[str, ...] = (),
+        nofile: str | None = "1024:1024",
+        runtime_tmpfs: str | None = None,
     ) -> Container:
         workspace = self.workspace.path
         name = f"{self.prefix}-{test_name}"
@@ -288,8 +291,7 @@ class Runtime:
             "none",
             "--read-only",
             "--read-only-tmpfs=false",
-            "--ulimit",
-            "nofile=1024:1024",
+            *(["--ulimit", f"nofile={nofile}"] if nofile is not None else []),
             "--memory=256m",
             "--pids-limit=128",
             "--cap-drop=all",
@@ -302,8 +304,14 @@ class Runtime:
             key_environment,
             "--env",
             extra_environment,
-            "--mount",
-            f"type=volume,source={runtime_volume},destination=/run/openldap",
+            *(
+                ["--tmpfs", f"/run/openldap:{runtime_tmpfs}"]
+                if runtime_tmpfs is not None
+                else [
+                    "--mount",
+                    f"type=volume,source={runtime_volume},destination=/run/openldap",
+                ]
+            ),
             "--mount",
             f"type=volume,source={state},destination=/state",
             "--volume",
@@ -731,6 +739,123 @@ def test_image_contents_match_the_production_boundary(
         "ansible-vault",
     ):
         assert not host.exists(tool), tool
+
+
+def test_runtime_image_privileges(podman: Podman, images: Images) -> None:
+    assert_image_privileges(
+        podman, images.require_runtime(), {"/run/openldap", "/state"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("nofile", "cap", "expected"),
+    [
+        (None, None, None),
+        ("524288:524288", None, ["4096", "4096"]),
+        ("524288:524288", "8192", ["8192", "8192"]),
+        ("1024:524288", None, ["1024", "4096"]),
+        ("512:512", None, ["512", "512"]),
+    ],
+)
+def test_inherited_nofile_is_bounded(
+    runtime: Runtime, nofile: str | None, cap: str | None, expected: list[str] | None
+) -> None:
+    container = runtime.create(
+        f"nofile-{str(nofile).replace(':', '-')}-{cap}",
+        "valid",
+        nofile=nofile,
+        transport="both",
+        extra_arguments=() if cap is None else ("--env", f"LDAP_MAX_OPEN_FILES={cap}"),
+    )
+    runtime.start_healthy(container)
+    pid = runtime.podman.exec_output(
+        container.name, "cat", "/run/openldap/slapd.pid"
+    ).strip()
+    limits = runtime.podman.exec_output(container.name, "cat", f"/proc/{pid}/limits")
+    row = next(
+        line.split()
+        for line in limits.splitlines()
+        if line.startswith("Max open files")
+    )
+    if expected is None:
+        assert all(0 < int(limit) <= 4096 for limit in row[3:5])
+    else:
+        assert row[3:5] == expected
+    assert runtime.podman.inspect(container.name, "{{.State.OOMKilled}}") == "false"
+    assert runtime.stop(container) == 0
+
+
+@pytest.mark.parametrize("value", ["", "0", "unlimited", "2147483648"])
+def test_invalid_nofile_cap_fails_before_import(runtime: Runtime, value: str) -> None:
+    container = runtime.create(
+        f"invalid-nofile-{value}",
+        "valid",
+        extra_environment=f"LDAP_MAX_OPEN_FILES={value}",
+    )
+    runtime.expect_exit(container, 64, "LDAP_MAX_OPEN_FILES must be an integer")
+    assert "Importing" not in runtime.podman.logs(container.name)
+
+
+@pytest.mark.parametrize("first_bytes", [0, 12 * 1024 * 1024])
+def test_oversized_snapshot_copy_is_bounded(
+    runtime: Runtime, workspace: RuntimeWorkspace, first_bytes: int
+) -> None:
+    name = f"oversized-copy-{first_bytes}"
+    snapshot = workspace.copy_snapshot("valid", name)
+    manifest_path = snapshot / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    data = snapshot / "directory.ldif"
+    if first_bytes:
+        content = data.read_bytes()
+        data.write_bytes(
+            content + b"#" + b"x" * (first_bytes - len(content) - 2) + b"\n"
+        )
+        manifest["files"][0]["sha256"] = sha256_file(data)
+        data = snapshot / "overflow.ldif"
+        manifest["files"].append({"path": data.name, "kind": "data", "sha256": ""})
+    data.write_bytes(b"#" + b"x" * (40 * 1024 * 1024 - 2) + b"\n")
+    manifest["files"][-1]["sha256"] = sha256_file(data)
+    manifest_path.write_text(json.dumps(manifest))
+    workspace.sign_manifest(snapshot)
+    workspace.publish_permissions(snapshot)
+    container = runtime.create(
+        name, name, runtime_tmpfs="rw,noexec,nosuid,nodev,size=20m,mode=1777"
+    )
+    runtime.expect_exit(container, 65, "Snapshot LDIF data exceeds 16777216 bytes")
+    assert "Starting slapd" not in runtime.podman.logs(container.name)
+
+
+@pytest.mark.parametrize("bytes_over", [0, 1])
+def test_snapshot_copy_budget_boundary(
+    runtime: Runtime, workspace: RuntimeWorkspace, bytes_over: int
+) -> None:
+    name = f"copy-budget-boundary-{bytes_over}"
+    snapshot = workspace.copy_snapshot("valid", name)
+    data = snapshot / "directory.ldif"
+    content = data.read_bytes()
+    data.write_bytes(
+        content
+        + b"#"
+        + b"x" * (16 * 1024 * 1024 + bytes_over - len(content) - 2)
+        + b"\n"
+    )
+    workspace.refresh_signature(snapshot)
+    workspace.publish_permissions(snapshot)
+    container = runtime.create(
+        name,
+        name,
+        runtime_tmpfs="rw,noexec,nosuid,nodev,size=20m,mode=1777",
+        extra_arguments=("--entrypoint", f"{LIB}/verify-snapshot.sh"),
+    )
+    runtime.podman.run("start", container.name)
+    status = runtime.podman.wait(container.name)
+    logs = runtime.podman.logs(container.name)
+    assert status == (65 if bytes_over else 0), logs
+    assert (
+        "Snapshot LDIF data exceeds 16777216 bytes"
+        if bytes_over
+        else "Accepted signed snapshot"
+    ) in logs
 
 
 def test_valid_snapshot_serves_and_stops_cleanly(

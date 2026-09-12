@@ -63,6 +63,8 @@ RUN apt-get update \
   fi \
   && groupmod --gid 1001 openldap \
   && usermod --uid 1001 --gid 1001 openldap \
+  && rmdir /etc/ldap/slapd.d /var/lib/ldap \
+  && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
   && install -d -o openldap -g openldap -m 0700 \
     /run/openldap \
     /state \
@@ -85,6 +87,7 @@ ENV LDAP_RUNTIME_DIR="/run/openldap" \
 COPY --chown=0:0 --chmod=0555 scripts/common.sh /usr/local/lib/openldap-declarative/common.sh
 COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/directory_data.py
 COPY --chown=0:0 --chmod=0444 scripts/server_config.py /usr/local/lib/openldap-declarative/server_config.py
+COPY --chown=0:0 --chmod=0444 scripts/runtime_limits.py /usr/local/lib/openldap-declarative/runtime_limits.py
 COPY --chown=0:0 --chmod=0444 schema/application-user.ldif /usr/local/share/openldap-declarative/schema/application-user.ldif
 COPY --chown=0:0 --chmod=0555 scripts/entrypoint.sh /usr/local/lib/openldap-declarative/entrypoint.sh
 COPY --chown=0:0 --chmod=0555 scripts/healthcheck.sh /usr/local/lib/openldap-declarative/healthcheck.sh

@@ -61,6 +61,10 @@ podman volume create --ignore openldap-example-state
 The example maps your host UID/GID to container UID/GID `1001`. It uses a
 read-only filesystem, restricted capabilities, 256 MiB RAM and no published
 ports. The runtime volume is disposable; the state volume must persist.
+`Ulimit=nofile=1024:1024` keeps slapd's connection-table allocation small enough
+for this memory budget. Startup also caps inherited descriptor limits at
+`LDAP_MAX_OPEN_FILES` (default `4096`). Review `Memory=256m` when raising either
+limit or changing the workload or custom server configuration.
 
 ## Transfer a snapshot (admin/CI)<a id="transfer-a-snapshot"></a>
 

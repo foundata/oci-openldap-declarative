@@ -234,7 +234,8 @@ validate_manifest_files() {
         exit "${EXIT_SNAPSHOT}"
       fi
 
-      if ! cp "${snapshot_file}" "${verified_snapshot_file}"; then
+      remaining_bytes=$((MAX_SNAPSHOT_BYTES - total_snapshot_bytes))
+      if ! head -c "$((remaining_bytes + 1))" "${snapshot_file}" >"${verified_snapshot_file}"; then
         exit "${EXIT_INTERNAL}"
       fi
       chmod 0600 "${verified_snapshot_file}" || exit "${EXIT_INTERNAL}"

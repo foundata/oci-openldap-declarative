@@ -66,6 +66,7 @@ RUN apt-get update \
   && groupadd --gid 1001 openldap-generator \
   && useradd --uid 1001 --gid 1001 --home-dir /nonexistent \
     --no-create-home --shell /usr/sbin/nologin openldap-generator \
+  && find / -xdev -type f -perm /6000 -exec chmod a-s {} + \
   && install -d -o openldap-generator -g openldap-generator -m 0700 /output \
   && install -d -o root -g root -m 0555 /input /run/credentials
 

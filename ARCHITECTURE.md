@@ -333,10 +333,19 @@ data.
 The generator MUST publish into a new output directory, with directory mode
 `0700` and file mode `0600`. Limits: 32 files, 16 MiB combined LDIF,
 1 MiB manifest and 16 KiB signature.
+The verifier MUST bound each LDIF copy to the remaining byte budget plus one
+byte before checking its size and digest. Oversized input MUST fail with exit
+65 without copying the rest of the source file.
 
 ## Runtime contract<a id="runtime"></a>
 
 ### Startup and preflight<a id="startup"></a>
+
+Before running OpenLDAP tools, the service entrypoint MUST cap its soft and
+hard open-file limits at `LDAP_MAX_OPEN_FILES` (default `4096`), preserving
+any lower inherited limits. The setting MUST accept integers from `1` through
+`2147483647`; invalid values MUST fail with exit 64. Failure to apply the
+ceiling MUST fail startup with exit 70. This applies to both input paths.
 
 Before opening listeners, startup MUST:
 
@@ -448,6 +457,9 @@ need writable mounts only for the runtime directory and revision state.
 Custom configurations MAY require additional declared writable paths; preflight
 MUST use disposable scratch mounts for them, not writable service mounts.
 No source or deployment secrets belong in image layers.
+Both final images MUST be free of set-user-ID and set-group-ID executables.
+UID/GID 1001 ownership MUST be limited to the declared writable directories;
+image files MUST NOT have unmapped owners or groups.
 
 LDAP defaults to loopback port 1389; optional LDAPS uses port 1636. Ports MUST
 be unprivileged and distinct when both transports are enabled. Generated YAML

@@ -22,6 +22,7 @@ from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
 from scripts.server_config import MODULES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
+from tests.integration.image_checks import assert_image_privileges
 from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
 from tests.namespace_cases import NAMESPACE_CASES
 from tests.validate_snapshot_manifest import validate_manifest
@@ -190,6 +191,10 @@ def test_generator_image_boundary(generator: Generator) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("1001\n1001\n/usr/bin/ansible-vault\n")
     assert "/usr/local/bin/openldap-password\n/usr/bin/openssl\n" in result.stdout
+
+
+def test_generator_image_privileges(podman: Podman, images: Images) -> None:
+    assert_image_privileges(podman, images.require_generator(), {"/output"})
 
 
 @pytest.fixture(scope="module")
