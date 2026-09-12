@@ -17,12 +17,12 @@ import yaml
 from argon2 import PasswordHasher
 from jsonschema import Draft202012Validator
 
-from tests.namespace_cases import NAMESPACE_CASES
+from tests.entry_uuid_cases import ENTRY_UUID_CASES
 from tests.password_hash_cases import HASH_CASES, VALID_HASH
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples/generator"
-NAMESPACE = uuid.UUID("7f38d690-8427-5ca2-98b4-bd5ee71ac31f")
+DIRECTORY_UUID = "c5fa5db6-3963-44c2-9834-9409d1ab9f86"
 
 
 @pytest.fixture(scope="module")
@@ -58,18 +58,18 @@ def test_base_dn_is_canonicalized(generate: ModuleType) -> None:
     assert dn == "DC=example-app,dc=services,dc=example,dc=org"
 
 
-@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
-def test_namespace_parser_and_public_schemas_agree(
-    generate: ModuleType, tmp_path: Path, namespace: str, valid: bool
+@pytest.mark.parametrize(("entry_uuid", "valid"), ENTRY_UUID_CASES)
+def test_base_uuid_parser_and_public_schemas_agree(
+    generate: ModuleType, tmp_path: Path, entry_uuid: str, valid: bool
 ) -> None:
     directory = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
-    directory["uuid_namespace"] = namespace
+    directory["entry_uuid"] = entry_uuid
     source = tmp_path / "directory.yaml"
     source.write_text(yaml.safe_dump(directory), encoding="utf-8")
     if valid:
-        assert str(generate.parse_directory(source).namespace) == namespace.lower()
+        assert str(generate.parse_directory(source).entry_uuid) == entry_uuid
     else:
-        with pytest.raises(generate.ConfigurationError, match="uuid_namespace"):
+        with pytest.raises(generate.ConfigurationError, match="entry_uuid"):
             generate.parse_directory(source)
     schema = json.loads((ROOT / "schema/directory-v1.schema.json").read_text())
     assert Draft202012Validator(schema).is_valid(directory) is valid
@@ -77,7 +77,7 @@ def test_namespace_parser_and_public_schemas_agree(
     manifest = json.loads(
         (ROOT / "tests/fixtures/snapshot-manifest-valid.json").read_text()
     )
-    manifest["uuid_namespace"] = namespace.lower()
+    manifest["entry_uuid"] = entry_uuid
     assert Draft202012Validator(schema).is_valid(manifest) is valid
 
 
@@ -199,14 +199,13 @@ def test_controlled_generation_times_are_strict(
         generate.parse_generated_at(value)
 
 
-def test_stable_uuids_derive_from_entity_type_and_source_id(
+def test_container_uuids_derive_only_from_base_uuid_and_ou(
     generate: ModuleType,
 ) -> None:
-    user = generate.stable_uuid(NAMESPACE, "user", "person-0001")
-
-    assert user == str(uuid.uuid5(NAMESPACE, "user:person-0001"))
-    assert user == generate.stable_uuid(NAMESPACE, "user", "person-0001")
-    assert user != generate.stable_uuid(NAMESPACE, "group", "person-0001")
+    people = generate.container_uuid(DIRECTORY_UUID, "people")
+    assert people == str(uuid.uuid5(uuid.UUID(DIRECTORY_UUID), "ou:people"))
+    assert people == generate.container_uuid(DIRECTORY_UUID, "people")
+    assert people != generate.container_uuid(DIRECTORY_UUID, "groups")
 
 
 def test_password_hashes_use_the_documented_argon2id_parameters(
@@ -343,9 +342,9 @@ def test_inline_credentials_and_schema_agree(
     Draft202012Validator(schema).validate(document)
     directory = generate.parse_directory(source)
     credential = (
-        directory.bind_accounts["bind-example-app"].credential
+        directory.bind_accounts["843828e3-1e61-4114-b0a1-b0f4914f55a7"].credential
         if bind
-        else directory.users["person-0001"].credential
+        else directory.users["003ffd6f-3074-457f-9740-2547970687be"].credential
     )
     assert credential.kind == generate.PASSWORD_FIELDS[field]
     assert seeded_hash not in repr(directory)
@@ -389,8 +388,12 @@ def test_one_directory_includes_all_active_users(
     directory = example_directory
     assert directory.directory_id == "example-app"  # type: ignore[attr-defined]
     assert directory.revision == 1  # type: ignore[attr-defined]
-    assert set(directory.users) == {"person-0001", "person-0002", "person-0003"}  # type: ignore[attr-defined]
-    assert directory.users["person-0003"].active  # type: ignore[attr-defined]
+    assert set(directory.users) == {  # type: ignore[attr-defined]
+        "003ffd6f-3074-457f-9740-2547970687be",
+        "62d4e3af-b3f5-454f-8293-70d7eb92bf85",
+        "df0ee4d6-fd01-48b6-9c66-713c52b5ed5a",
+    }
+    assert directory.users["df0ee4d6-fd01-48b6-9c66-713c52b5ed5a"].active  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -405,7 +408,7 @@ def test_one_directory_includes_all_active_users(
         ("phone", "telephoneNumber"),
         ("mobile", "mobile"),
         ("email", "mail"),
-        ("company", "o"),
+        ("org", "o"),
         ("employee_number", "employeeNumber"),
         ("department", "ou"),
         ("job_title", "title"),
@@ -438,7 +441,9 @@ def test_profile_fields_and_schema_agree(
     valid = value == "Example"
     assert Draft202012Validator(schema).is_valid(document) is valid
     if valid:
-        user = generate.parse_directory(source).users["person-0001"]
+        user = generate.parse_directory(source).users[
+            "003ffd6f-3074-457f-9740-2547970687be"
+        ]
         if field == "last_name":
             assert user.last_name == value
         else:
@@ -458,7 +463,7 @@ def test_profile_fields_and_schema_agree(
         ("email", 320),
         ("phone", 64),
         ("mobile", 64),
-        ("company", 256),
+        ("org", 256),
         ("employee_number", 256),
     ],
 )
@@ -487,6 +492,7 @@ def test_profile_length_boundaries(
         ("given_name", "first_name"),
         ("mail", "email"),
         ("telephone_number", "phone"),
+        ("company", "org"),
     ],
 )
 @pytest.mark.parametrize("keep_new", [False, True])
@@ -551,7 +557,9 @@ def test_proxy_addresses_are_bounded_typed_values(
     )
     valid = value in ([], ["smtp:old@example.org", "SMTP:primary@example.org"])
     if valid:
-        user = generate.parse_directory(source).users["person-0001"]
+        user = generate.parse_directory(source).users[
+            "003ffd6f-3074-457f-9740-2547970687be"
+        ]
         assert isinstance(value, list)
         assert user.attributes.get("proxyAddresses", ()) == tuple(value)
     else:
@@ -585,14 +593,18 @@ def test_bind_accounts_reject_invalid_lists(
     elif damage == "old-key":
         document["bind_account"] = document.pop("bind_accounts")[0]
     else:
-        second = {**account, "id": "second", "common_name": "second"}
+        second = {
+            **account,
+            "entry_uuid": "5b5e5bcc-58cc-4c41-b125-927b926fb8f4",
+            "username": "second",
+        }
         if damage == "duplicate-id":
-            second["id"] = account["id"]
+            second["entry_uuid"] = account["entry_uuid"]
         else:
-            second["common_name"] = (
-                account["common_name"].upper()
+            second["username"] = (
+                account["username"].upper()
                 if damage == "case-name"
-                else account["common_name"]
+                else account["username"]
             )
         document["bind_accounts"].append(second)
     source = write_secret(
@@ -620,8 +632,8 @@ def test_bind_accounts_reject_invalid_lists(
             "hard_ttl_seconds: 21600",
             "soft_ttl_seconds must be less than",
         ),
-        ('      - "person-0002"', '      - "missing"', "references unknown users"),
-        ('uid: "bob"', 'uid: "ALICE"', "duplicate user"),
+        ('      - "disabled"', '      - "missing"', "references an unknown user"),
+        ('username: "bob"', 'username: "ALICE"', "duplicate user"),
         ("format_version: 1", "format_version: 99", "format_version must be 1"),
         (
             'password_file: "/run/credentials/person-0001-example-app"',

@@ -6,3 +6,5 @@ objectClass: olcSchemaConfig
 cn: application-user
 olcAttributeTypes: ( 1.2.840.113556.1.2.210 NAME 'proxyAddresses' DESC 'Typed alternative recipient addresses' EQUALITY caseIgnoreMatch SUBSTR caseIgnoreSubstringsMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )
 olcObjectClasses: ( 2.25.102199958310269207961265706432821439950 NAME 'openldapDeclarativeUser' SUP top AUXILIARY MAY proxyAddresses )
+# UUID-derived class OID: 496d6d86-d4c6-5755-b90e-451b314ae4ec.
+olcObjectClasses: ( 2.25.97601825514950331698585965886104593644 NAME 'openldapDeclarativeBindAccount' SUP top AUXILIARY MUST uid MAY displayName )

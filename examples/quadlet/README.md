@@ -160,7 +160,7 @@ systemctl --user start openldap-example-backstop.service
 systemctl --user status openldap-example-backstop.timer
 base_dn=dc=example-app,dc=services,dc=example,dc=org
 podman exec -it openldap-example ldapsearch -x -H ldap://127.0.0.1:1389 \
-  -D "cn=application,ou=services,${base_dn}" -W \
+  -D "uid=application,ou=services,${base_dn}" -W \
   -b "${base_dn}" '(uid=alice)' uid entryUUID memberOf
 podman exec -it openldap-example ldapwhoami -x -H ldap://127.0.0.1:1389 \
   -D "uid=alice,ou=people,${base_dn}" -W
@@ -176,7 +176,7 @@ Add `Network=openldap-example.network` to the application's Quadlet:
 | ------------------- | ----- |
 | LDAP URL | `ldap://ldap:1389` |
 | Base DN | `dc=example-app,dc=services,dc=example,dc=org` |
-| Bind DN | `cn=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
+| Bind DN | `uid=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
 | Bind password | Original password used for the bind account's verifier |
 | Login attribute | `uid` |
 | Persistent identity attribute | `entryUUID` |

@@ -145,7 +145,7 @@ verify_signature() {
 validate_manifest_schema() {
   if ! jq -e --argjson max_snapshot_files "${MAX_SNAPSHOT_FILES}" '
     type == "object" and
-    ((keys | sort) == (["base_dn", "directory_id", "expires_at", "files", "format_version", "generated_at", "input_type", "revision", "soft_expires_at", "uuid_namespace"] +
+    ((keys | sort) == (["base_dn", "directory_id", "expires_at", "files", "format_version", "generated_at", "input_type", "revision", "soft_expires_at", "entry_uuid"] +
       (if .input_type == "users-groups" then ["read_attributes"] else [] end) | sort)) and
     (.format_version == 1) and
     (.directory_id | type == "string" and test("^[a-z0-9][a-z0-9._-]{0,127}$")) and
@@ -155,8 +155,8 @@ validate_manifest_schema() {
     (.soft_expires_at | type == "string" and fromdateiso8601 >= 0) and
     (.expires_at | type == "string" and fromdateiso8601 >= 0) and
     (if .input_type == "users-groups" then
-      (.uuid_namespace | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))
-    else .input_type == "ldif" and .uuid_namespace == null end) and
+      (.entry_uuid | type == "string" and test("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"))
+    else .input_type == "ldif" and .entry_uuid == null end) and
     (if .input_type == "users-groups" then (.read_attributes | type == "array" and length > 0 and length <= 128 and
       all(.[]; type == "string" and length <= 128 and test("^([A-Za-z][A-Za-z0-9-]*|[0-9]+(\\.[0-9]+)+)$") and
         (ascii_downcase | . != "userpassword" and . != "2.5.4.35" and (startswith("olc") | not))) and

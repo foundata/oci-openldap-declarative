@@ -115,7 +115,7 @@ def native_document(tmp_path: Path) -> tuple[Path, dict[str, Any]]:
     [
         "read_attributes",
         "schema_files",
-        "uuid_namespace",
+        "entry_uuid",
         "users",
         "configuration_mode",
     ],

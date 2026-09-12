@@ -36,6 +36,7 @@ BASE_ATTRIBUTES = (
     "( 2.16.840.1.113730.3.1.39 NAME 'preferredLanguage' SINGLE-VALUE )",
     "( 0.9.2342.19200300.100.1.41 NAME ( 'mobile' 'mobileTelephoneNumber' ) )",
     "( 2.5.4.10 NAME ( 'o' 'organizationName' ) SUP name )",
+    "( 2.16.840.1.113730.3.1.241 NAME 'displayName' SINGLE-VALUE )",
     "( 0.9.2342.19200300.100.1.42 NAME 'pager' )",
     "( 1.3.6.1.1.1.1.0 NAME 'uidNumber' SINGLE-VALUE )",
     "( 1.3.6.1.1.1.1.1 NAME 'gidNumber' SINGLE-VALUE )",
@@ -48,6 +49,7 @@ BASE_CLASSES = (
     "( 2.5.6.9 NAME 'groupOfNames' SUP top STRUCTURAL )",
     "( 2.5.6.8 NAME 'organizationalRole' SUP top STRUCTURAL )",
     "( 0.9.2342.19200300.100.4.19 NAME 'simpleSecurityObject' SUP top AUXILIARY )",
+    "( 2.25.97601825514950331698585965886104593644 NAME 'openldapDeclarativeBindAccount' SUP top AUXILIARY MUST uid MAY displayName )",
     "( 1.3.6.1.1.1.2.0 NAME ( 'posixAccount' 'posixAlias' ) SUP top AUXILIARY )",
 )
 
@@ -229,6 +231,35 @@ def test_schema_aware_rejections(
 
 
 @pytest.mark.parametrize(
+    "name",
+    [
+        "uid",
+        "userid",
+        "0.9.2342.19200300.100.1.1",
+        "displayName",
+        "2.16.840.1.113730.3.1.241",
+    ],
+)
+def test_bind_account_naming_attributes_are_reserved(
+    catalog: SchemaCatalog, tmp_path: Path, name: str
+) -> None:
+    value = document()
+    value["bind_accounts"][0]["attributes"] = {name: ["PRIVATE-MARKER"]}
+    with pytest.raises(ConfigurationError, match="reserved") as failure:
+        parse_document(tmp_path / "directory.yaml", value)
+    assert "PRIVATE-MARKER" not in str(failure.value)
+
+
+def test_bind_account_class_cannot_be_repeated(
+    catalog: SchemaCatalog, tmp_path: Path
+) -> None:
+    value = document()
+    value["bind_accounts"][0]["object_classes"] = ["openldapDeclarativeBindAccount"]
+    with pytest.raises(ConfigurationError, match="generated class"):
+        parse_document(tmp_path / "directory.yaml", value)
+
+
+@pytest.mark.parametrize(
     "definition",
     [
         "( 1.2.3 NAME 'privateAttribute' SUP userPassword )",
@@ -303,9 +334,9 @@ def test_custom_schema_paths_and_inherited_attributes(
     value["users"][0]["attributes"] = {"customAttribute": ["one", "two"]}
     value["users"][0]["object_classes"] = ["customClass"]
     parsed = parse_document(tmp_path / "directory.yaml", value)
-    assert parsed.users["person-0001"].extensions.attributes == {
-        "customAttribute": ("one", "two")
-    }
+    assert parsed.users[
+        "003ffd6f-3074-457f-9740-2547970687be"
+    ].extensions.attributes == {"customAttribute": ("one", "two")}
 
 
 def test_vault_values_are_decrypted_before_extension_validation(
@@ -322,9 +353,9 @@ def test_vault_values_are_decrypted_before_extension_validation(
     )
     path.chmod(0o600)
     parsed = generate.parse_directory(path)
-    assert parsed.users["person-0001"].extensions.attributes["preferredLanguage"] == (
-        "private employee",
-    )
+    assert parsed.users["003ffd6f-3074-457f-9740-2547970687be"].extensions.attributes[
+        "preferredLanguage"
+    ] == ("private employee",)
 
 
 def test_group_description_and_empty_extensions_preserve_existing_entries(
@@ -340,9 +371,9 @@ def test_group_description_and_empty_extensions_preserve_existing_entries(
     assert generate.simplified_entries(parsed) == before
     value["groups"][0]["attributes"] = {"description": ["A group"]}
     parsed = parse_document(tmp_path / "directory.yaml", value)
-    assert parsed.groups["group-staff"].extensions.attributes["description"] == (
-        "A group",
-    )
+    assert parsed.groups["73113c3f-7a96-4268-82a4-fd09154d8364"].extensions.attributes[
+        "description"
+    ] == ("A group",)
 
 
 def test_ordered_schema_values_and_build_only_export(

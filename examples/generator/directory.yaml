@@ -6,13 +6,12 @@ soft_ttl_seconds: 21600
 hard_ttl_seconds: 43200
 expiry_offset_seconds: 0
 input_type: "users-groups"
-uuid_namespace: "7f38d690-8427-5ca2-98b4-bd5ee71ac31f"
+entry_uuid: "c5fa5db6-3963-44c2-9834-9409d1ab9f86"
 organization: "Example Company"
 
 users:
-  - id: "person-0001"
-    uid: "alice"
-    common_name: "Alice Example"
+  - entry_uuid: "003ffd6f-3074-457f-9740-2547970687be"
+    username: "alice"
     last_name: "Example"
     email: "alice@example.org"
     first_name: "Alice"
@@ -22,34 +21,33 @@ users:
     office: "Main office"
     phone: "+49 721 5550100"
     mobile: "+49 170 5550100"
-    company: "Example Company"
+    org: "Example Company"
     employee_number: "E-0001"
     department: "Operations"
     job_title: "Engineer"
     proxy_addresses: ["smtp:alice.old@example.org", "smtp:a.example@example.org"]
     active: true
     password_file: "/run/credentials/person-0001-example-app"
-  - id: "person-0002"
-    uid: "disabled"
-    common_name: "Disabled Example"
+  - entry_uuid: "62d4e3af-b3f5-454f-8293-70d7eb92bf85"
+    username: "disabled"
+    display_name: "Disabled Example"
     last_name: "Example"
     active: false
-  - id: "person-0003"
-    uid: "bob"
-    common_name: "Bob Example"
+  - entry_uuid: "df0ee4d6-fd01-48b6-9c66-713c52b5ed5a"
+    username: "bob"
     last_name: "Example"
     email: "bob@example.org"
     active: true
     password_file: "/run/credentials/person-0003"
 
 groups:
-  - id: "group-staff"
-    common_name: "staff"
+  - entry_uuid: "73113c3f-7a96-4268-82a4-fd09154d8364"
+    groupname: "staff"
     members:
-      - "person-0001"
-      - "person-0002"
+      - "003ffd6f-3074-457f-9740-2547970687be"
+      - "disabled"
 
 bind_accounts:
-  - id: "bind-example-app"
-    common_name: "application"
+  - entry_uuid: "843828e3-1e61-4114-b0a1-b0f4914f55a7"
+    username: "application"
     password_file: "/run/credentials/bind-example-app"

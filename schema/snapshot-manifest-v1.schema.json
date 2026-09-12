@@ -12,7 +12,7 @@
     "generated_at",
     "soft_expires_at",
     "expires_at",
-    "uuid_namespace",
+    "entry_uuid",
     "files",
     "input_type"
   ],
@@ -47,11 +47,11 @@
       "type": "string",
       "format": "date-time"
     },
-    "uuid_namespace": {
+    "entry_uuid": {
       "anyOf": [
         {
           "type": "string",
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
         },
         {
           "type": "null"
@@ -145,7 +145,7 @@
             "minContains": 1,
             "maxContains": 1
           },
-          "uuid_namespace": {
+          "entry_uuid": {
             "type": "null"
           }
         }
@@ -160,7 +160,7 @@
               }
             }
           },
-          "uuid_namespace": {
+          "entry_uuid": {
             "type": "string"
           }
         }

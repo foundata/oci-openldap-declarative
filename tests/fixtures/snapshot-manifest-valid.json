@@ -6,7 +6,7 @@
   "generated_at": "2030-01-01T00:00:00Z",
   "soft_expires_at": "2030-01-01T06:00:00Z",
   "expires_at": "2030-01-01T12:00:00Z",
-  "uuid_namespace": "7f38d690-8427-5ca2-98b4-bd5ee71ac31f",
+  "entry_uuid": "7f38d690-8427-5ca2-98b4-bd5ee71ac31f",
   "files": [
     {
       "path": "directory.ldif",

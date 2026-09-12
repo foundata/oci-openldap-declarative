@@ -56,6 +56,24 @@ class ConfigurationError(Exception):
     """An operator-provided input is invalid; diagnostics never contain values."""
 
 
+def validate_entry_uuid(value: Any, *, context: str = "entryUUID") -> str:
+    if not isinstance(value, str) or len(value) != 36:
+        raise ConfigurationError(f"invalid {context}")
+    try:
+        identifier = uuid.UUID(value)
+    except ValueError:
+        raise ConfigurationError(f"invalid {context}") from None
+    if (
+        str(identifier) != value
+        or identifier.variant != uuid.RFC_4122
+        or identifier.version not in range(1, 9)
+    ):
+        raise ConfigurationError(
+            f"{context} must be a canonical lowercase RFC-variant UUID (version 1 through 8)"
+        )
+    return value
+
+
 def validate_password_hash(value: Any, *, context: str) -> str:
     match = (
         HASH_PATTERN.fullmatch(value)
@@ -202,7 +220,7 @@ def validate_entries(
     config = dn_key("cn=config")
     dns: set[DNKey] = set()
     exact_dns: set[DNKey] = set()
-    identifiers: set[uuid.UUID] = set()
+    identifiers: set[str] = set()
     for dn, attributes in entries:
         key = dn_key(dn)
         if key[-len(base) :] != base or key[-len(config) :] == config:
@@ -225,17 +243,9 @@ def validate_entries(
             if not values:
                 continue
             text = values[0].decode("ascii")
-            identifier = uuid.UUID(text)
-        except (ValueError, UnicodeError):
+        except UnicodeError:
             raise ConfigurationError("invalid entryUUID") from None
-        if (
-            str(identifier) != text
-            or identifier.variant != uuid.RFC_4122
-            or identifier.version not in range(1, 9)
-        ):
-            raise ConfigurationError(
-                "entryUUID must be a canonical lowercase RFC-variant UUID (version 1 through 8)"
-            )
+        identifier = validate_entry_uuid(text)
         if identifier in identifiers:
             raise ConfigurationError("directory contains duplicate entryUUID values")
         identifiers.add(identifier)

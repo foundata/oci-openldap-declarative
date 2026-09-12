@@ -149,18 +149,28 @@ MUST be rejected on this path.
 
 - Every active user MUST appear in the snapshot, regardless of group membership.
   Inactive users MUST be omitted.
-- Group members MUST reference existing user IDs. Groups with no active members
-  MUST be omitted because `groupOfNames` requires a member.
+- Group members MUST reference existing users by `entry_uuid` or `username`.
+  The generator MUST compare references case-insensitively and resolve both
+  namespaces. Unknown references, references identifying different users in
+  the two namespaces, and repeated users MUST be rejected. Bind accounts MUST
+  NOT be group members. Groups with no active members MUST be omitted because
+  `groupOfNames` requires a member.
 - The generator MUST emit reciprocal `member` and `memberOf` values.
 - Users MUST be `inetOrgPerson` entries at
-  `uid=<uid>,ou=people,<base_dn>`. Their `common_name` is the LDAP `cn`
-  attribute, not their naming RDN. Their required `last_name` MUST map to `sn`.
+  `uid=<username>,ou=people,<base_dn>`. Their required `last_name` MUST map to `sn`.
+- For users and bind accounts, `username` MUST supply LDAP `uid`.
+  Optional `display_name` MUST supply `displayName` and `cn`. If omitted,
+  `cn` MUST use `username` and `displayName` MUST be absent. Display names MUST
+  NOT affect DNs. Usernames MUST be case-insensitively unique across all users
+  (including inactive users) and bind accounts.
 - Groups MUST be `groupOfNames` entries at
-  `cn=<common_name>,ou=groups,<base_dn>`.
+  `cn=<groupname>,ou=groups,<base_dn>`. `groupname` MUST supply `cn`, not `name`,
+  and MUST be case-insensitively unique among groups.
 - `bind_accounts` MUST be a non-empty list. Each account MUST be an
-  `organizationalRole` with `simpleSecurityObject` at
-  `cn=<common_name>,ou=services,<base_dn>`.
-  Account IDs and case-insensitive common names MUST be unique within the list.
+  `organizationalRole` with `simpleSecurityObject` and the bundled
+  `openldapDeclarativeBindAccount` auxiliary class at
+  `uid=<username>,ou=services,<base_dn>`. The auxiliary class MUST require `uid`
+  and allow `displayName`; bind accounts do not require a surname.
   Accounts have independent credentials and identities but share the read policy.
 - The base entry MUST use `dcObject` and `organization`; this route therefore
   requires an ASCII base DN beginning with a single `dc` RDN.
@@ -174,19 +184,19 @@ means no attribute value. Empty strings and NUL/newline characters are rejected.
 | ---------- | -------------- |
 | `first_name` | `givenName` |
 | `initials` | `initials` |
-| `display_name` | `displayName` |
+| `display_name` | `displayName` and `cn` |
 | `description` | `description` |
 | `office` | `physicalDeliveryOfficeName` |
 | `phone` | `telephoneNumber` |
 | `mobile` | `mobile` |
 | `email` | `mail` |
-| `company` | `o` (metadata, not directory placement) |
+| `org` | `o` (metadata, not directory placement) |
 | `employee_number` | `employeeNumber` |
 | `department` | `ou` (metadata, not directory placement) |
 | `job_title` | `title` |
 
-`employee_number` MUST NOT affect source IDs or generated identities.
-User `company` MUST NOT change the base entry's `organization` value.
+`employee_number` MUST NOT affect entry UUIDs.
+User `org` MUST NOT change the base entry's `organization` value.
 
 `proxy_addresses` MAY contain up to 64 `TYPE:address` strings of at most 1123
 characters. The generator MUST preserve them as multivalued `proxyAddresses`,
@@ -211,7 +221,8 @@ Omission, an empty attribute mapping or an empty class list means no extension.
 - Generator-owned `objectClass`, `entryUUID`, `userPassword`, `member` and
   `memberOf` MUST be reserved on every entry. Users MUST also reserve `uid`,
   `cn`, `sn` and all dedicated profile mappings, even when omitted. Groups and
-  bind accounts MUST reserve `cn`. Operational, collective, non-user-modifiable
+  bind accounts MUST reserve `cn`; bind accounts MUST also reserve `uid` and
+  `displayName`. Operational, collective, non-user-modifiable
   and server-configuration attributes MUST be rejected.
 - The generator MUST resolve aliases and OIDs against the bundled schemas and
   optional `schema_files`. Attribute subtypes MUST NOT bypass reserved-field
@@ -220,7 +231,7 @@ Omission, an empty attribute mapping or an empty class list means no extension.
   attribute MUST fail generation. Inheritance checks are bounded to 128 steps.
   Schema inputs used for these checks MUST be the same contents packaged in
   the snapshot.
-- The generator MUST preserve existing DNs, UUID derivation, credentials,
+- The generator MUST preserve existing DNs, UUIDs, credentials,
   membership generation and omission rules. It MUST NOT infer auxiliary
   classes from extra attributes or merge them into dedicated profile fields.
 - Extensions MUST NOT expand the readable-attribute allowlist. Existing default
@@ -243,22 +254,24 @@ classes, binary values and attributes reserved by the simplified model.
 `directory_id` identifies the deployment target. It MUST match the runtime's
 `LDAP_EXPECTED_DIRECTORY_ID`; it is independent of LDAP DNs.
 
-In users/groups YAML, `id` is a permanent source-record key, not a YAML anchor
-or a separate LDAP attribute. The generator MUST derive lowercase UUIDv5
-`entryUUID` values from `uuid_namespace` and these fixed names:
+In users/groups YAML, the base entry, every user, group and bind account MUST
+declare `entry_uuid`. Values MUST be canonical lowercase RFC-variant UUIDs
+(version 1 through 8). Administrators SHOULD generate UUIDv4 values once and
+MUST preserve them across renames and rebuilds. The generator MUST write each
+value directly to LDAP `entryUUID`, without further derivation.
 
-| Entry | UUIDv5 name |
-| ----- | ----------- |
-| User | `"user:" + id` |
-| Group | `"group:" + id` |
-| Bind account | `"bind:" + id` |
-| Base | `"directory:" + directory_id` |
-| Container OU | `"container:" + directory_id + ":" + ou` |
+The generator MUST derive each fixed OU's UUID as
+`UUIDv5(base_entry_uuid, "ou:" + ou)`, where `ou` is `people`, `groups` or
+`services`. UUIDs MUST be unique across all declared entries, including
+inactive users, and MUST NOT collide with the base or generated OUs.
+Changing `directory_id`, usernames, display names or group names MUST NOT
+change entry UUIDs.
 
-The namespace MUST be an RFC-variant UUID of version 1 through 5. Administrators
-MUST preserve source IDs and the namespace across renames and rebuilds.
-Changing a user's `uid` changes its DN but MUST NOT change its `entryUUID`.
-IDs MAY themselves be UUID strings; they remain inputs to the calculation.
+The generator MUST resolve memberships to user UUIDs internally and generate
+LDAP DN references from the current usernames. UUID references survive
+renames; username references require source updates. A reused username may
+resolve to a different person. A stateless generator cannot detect that reuse
+or distinguish an accidental UUID replacement from an intentional new entry.
 
 Custom LDIF MAY supply `entryUUID`. Supplied values MUST be unique, canonical
 lowercase RFC-variant UUIDs (version 1 through 8). The generator MUST preserve
@@ -326,10 +339,10 @@ only the listed LDIF files. Each file record declares its `data`, `schema` or
 `config` kind and SHA-256 digest.
 
 The signed manifest MUST cover directory identity, base DN, revision, input
-type, applicable read-attribute policy, namespace and timestamps. The runtime
-MUST reject unknown fields, duplicate paths, invalid file kinds, unsafe paths, mismatched
-digests and unlisted LDIF files. Signatures MUST be verified before interpreting
-manifest-controlled data.
+type, applicable read-attribute policy, base `entry_uuid` (null for custom LDIF)
+and timestamps. The runtime MUST reject unknown fields, duplicate paths, invalid
+file kinds, unsafe paths, mismatched digests and unlisted LDIF files. Signatures
+MUST be verified before interpreting manifest-controlled data.
 
 Users/groups manifests MUST carry `read_attributes` and permit only `data` and
 `schema` files. Custom manifests MUST omit `read_attributes`, contain exactly

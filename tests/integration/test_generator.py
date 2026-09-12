@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -20,11 +21,11 @@ from ldif import LDIFRecordList
 
 from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
 from scripts.server_config import MODULES
+from tests.entry_uuid_cases import ENTRY_UUID_CASES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
 from tests.integration.image_checks import assert_image_privileges
 from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
-from tests.namespace_cases import NAMESPACE_CASES
 from tests.validate_snapshot_manifest import validate_manifest
 
 pytestmark = pytest.mark.integration
@@ -32,7 +33,7 @@ EXAMPLES = PROJECT / "examples/generator"
 SCHEMA = PROJECT / "schema/snapshot-manifest-v1.schema.json"
 APP_BASE = "dc=example-app,dc=services,dc=example,dc=org"
 ALICE_DN = f"uid=alice,ou=people,{APP_BASE}"
-APPLICATION_DN = f"cn=application,ou=services,{APP_BASE}"
+APPLICATION_DN = f"uid=application,ou=services,{APP_BASE}"
 PASSWORDS = {
     "person-0001-example-app": "TEST-ONLY-app-user",
     "person-0003": "TEST-ONLY-bob",
@@ -363,7 +364,7 @@ def test_profile_updates_and_vault_preserve_directory_identity(
         email="alicia@example.org",
         phone="+49 721 5550200",
         mobile="+49 170 5550200",
-        company="VAULT_COMPANY",
+        org="VAULT_COMPANY",
         employee_number="VAULT_EMPLOYEE",
     )
     source = yaml.safe_dump(document)
@@ -411,6 +412,120 @@ def test_profile_updates_and_vault_preserve_directory_identity(
     assert "userPassword:" not in result.stdout
     assert running.bind(ALICE_DN, "TEST-ONLY-app-user").returncode == 0
     podman.stop(running.name)
+
+
+def test_mixed_memberships_and_display_names_survive_account_renames(
+    generator: Generator, podman: Podman, images: Images, store: Store
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    alice, _, bob = document["users"]
+    group = document["groups"][0]
+    bind = document["bind_accounts"][0]
+    group["members"] = ["ALICE", bob["entry_uuid"]]
+    bind["display_name"] = "Application reader"
+    result = generator.variant("mixed-members", document)
+    assert result.returncode == 0, result.stderr
+    running = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-mixed-members"
+    )
+    running.start(generator.output / "mixed-members")
+    assert running.alice_uuid() == alice["entry_uuid"]
+    assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    result = running.search(
+        "-b", APPLICATION_DN, "-s", "base", "uid", "cn", "displayName", "entryUUID"
+    )
+    assert result.returncode == 0, result.stderr
+    for value in (
+        "uid: application",
+        "cn: Application reader",
+        "displayName: Application reader",
+        f"entryUUID: {bind['entry_uuid']}",
+    ):
+        assert value in result.stdout
+    document["revision"] = 2
+    alice.update(username="alicia", display_name="Alicia Example")
+    group["groupname"] = "employees"
+    result = generator.variant("mixed-dangling", document)
+    assert result.returncode == 2 and "unknown user" in result.stderr
+    assert not (generator.output / "mixed-dangling").exists()
+    group["members"][0] = "alicia"
+    result = generator.variant("mixed-renamed", document)
+    assert result.returncode == 0, result.stderr
+    running.start(generator.output / "mixed-renamed")
+    renamed_dn = f"uid=alicia,ou=people,{APP_BASE}"
+    result = running.search(
+        "-b",
+        renamed_dn,
+        "-s",
+        "base",
+        "uid",
+        "cn",
+        "displayName",
+        "entryUUID",
+        "memberOf",
+    )
+    assert result.returncode == 0, result.stderr
+    for value in (
+        "cn: Alicia Example",
+        "displayName: Alicia Example",
+        f"entryUUID: {alice['entry_uuid']}",
+        f"memberOf: cn=employees,ou=groups,{APP_BASE}",
+    ):
+        assert value in result.stdout
+    assert running.bind(renamed_dn, "TEST-ONLY-app-user").returncode == 0
+    result = running.search(
+        "-b", f"cn=employees,ou=groups,{APP_BASE}", "-s", "base", "*", "+"
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"member: {renamed_dn}" in result.stdout
+    assert f"member: uid=bob,ou=people,{APP_BASE}" in result.stdout
+    assert f"entryUUID: {group['entry_uuid']}" in result.stdout
+    snapshot = records(generator.output / "mixed-renamed/directory.ldif")
+    assert snapshot[APP_BASE]["entryUUID"] == [document["entry_uuid"].encode()]
+    assert "name" not in snapshot[f"cn=employees,ou=groups,{APP_BASE}"]
+    podman.stop(running.name)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate-uuid",
+        "generated-uuid",
+        "duplicate-member",
+        "ambiguous-member",
+        "bind-username",
+        "missing-uuid",
+        "old-key",
+    ],
+)
+def test_managed_identity_errors_stop_before_signing(
+    generator: Generator, mutation: str
+) -> None:
+    document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
+    alice = document["users"][0]
+    if mutation == "duplicate-uuid":
+        document["bind_accounts"][0]["entry_uuid"] = document["users"][1]["entry_uuid"]
+    elif mutation == "generated-uuid":
+        alice["entry_uuid"] = str(
+            uuid.uuid5(uuid.UUID(document["entry_uuid"]), "ou:people")
+        )
+        document["groups"][0]["members"] = ["alice"]
+    elif mutation == "duplicate-member":
+        document["groups"][0]["members"] = ["alice", alice["entry_uuid"]]
+    elif mutation == "ambiguous-member":
+        document["users"][2]["username"] = alice["entry_uuid"]
+    elif mutation == "bind-username":
+        document["bind_accounts"][0]["username"] = "ALICE"
+    elif mutation == "missing-uuid":
+        del alice["entry_uuid"]
+    else:
+        alice["common_name"] = "PRIVATE-MARKER"
+    name = f"identity-reject-{mutation}"
+    result = generator.variant(name, document)
+    assert result.returncode == 2, result.stderr
+    assert "PRIVATE-MARKER" not in result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert not (generator.output / name).exists()
 
 
 def test_yaml_extensions_preserve_identity_and_obey_read_policy(
@@ -606,7 +721,7 @@ def test_yaml_extensions_offline_preflight(
             "users",
             "groups",
             "bind_accounts",
-            "uuid_namespace",
+            "entry_uuid",
             "organization",
         ):
             del document[key]
@@ -757,8 +872,9 @@ def test_bind_accounts_rotate_rename_and_revoke_independently(
 ) -> None:
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
     secondary = {
-        "id": "bind-secondary",
-        "common_name": "secondary",
+        "entry_uuid": "5b5e5bcc-58cc-4c41-b125-927b926fb8f4",
+        "username": "secondary",
+        "display_name": "Secondary reader",
         "password": "SECONDARY_PLACEHOLDER",
     }
     document["bind_accounts"].append(secondary)
@@ -776,12 +892,20 @@ def test_bind_accounts_rotate_rename_and_revoke_independently(
         podman, images.require_runtime(), generator, f"{store.prefix}-multi-bind"
     )
     running.start(generator.output / "multi-bind-1")
-    secondary_dn = f"cn=secondary,ou=services,{APP_BASE}"
+    secondary_dn = f"uid=secondary,ou=services,{APP_BASE}"
     original_uuid = records(generator.output / "multi-bind-1/directory.ldif")[
         secondary_dn
     ]["entryUUID"]
     assert running.bind(secondary_dn, "TEST-ONLY-secondary").returncode == 0
     assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode == 0
+    identity = running.search(
+        "-b", secondary_dn, "-s", "base", "uid", "cn", "displayName", "entryUUID"
+    )
+    assert identity.returncode == 0, identity.stderr
+    assert "uid: secondary" in identity.stdout
+    assert "cn: Secondary reader" in identity.stdout
+    assert "displayName: Secondary reader" in identity.stdout
+    assert f"entryUUID: {secondary['entry_uuid']}" in identity.stdout
     search = podman.exec(
         running.name,
         "ldapsearch",
@@ -821,10 +945,12 @@ def test_bind_accounts_rotate_rename_and_revoke_independently(
     )
     assert write.returncode == 50
     document["revision"] = 2
-    secondary.update(common_name="renamed", password="TEST-ONLY-rotated")
+    secondary.update(
+        username="renamed", display_name="Renamed reader", password="TEST-ONLY-rotated"
+    )
     result = generator.variant("multi-bind-2", document)
     assert result.returncode == 0, result.stderr
-    renamed_dn = f"cn=renamed,ou=services,{APP_BASE}"
+    renamed_dn = f"uid=renamed,ou=services,{APP_BASE}"
     assert (
         records(generator.output / "multi-bind-2/directory.ldif")[renamed_dn][
             "entryUUID"
@@ -980,13 +1106,13 @@ class RuntimeService:
         ).strip()
 
 
-@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
-def test_namespace_validation_precedes_signing(
-    generator: Generator, namespace: str, valid: bool, request: pytest.FixtureRequest
+@pytest.mark.parametrize(("entry_uuid", "valid"), ENTRY_UUID_CASES)
+def test_base_uuid_validation_precedes_signing(
+    generator: Generator, entry_uuid: str, valid: bool, request: pytest.FixtureRequest
 ) -> None:
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
-    document["uuid_namespace"] = namespace
-    name = f"namespace-{request.node.callspec.indices['namespace']}"
+    document["entry_uuid"] = entry_uuid
+    name = f"entry_uuid-{request.node.callspec.indices['entry_uuid']}"
     result = generator.variant(name, document)
     assert result.returncode == (0 if valid else 2), result.stderr
     if valid:
@@ -1111,7 +1237,7 @@ def test_generated_directory_authentication_and_revisions(
     assert "memberOf: cn=staff," in entry.stdout and "userPassword:" not in entry.stdout
     document = yaml.safe_load((EXAMPLES / "directory.yaml").read_text())
     document["revision"] = 2
-    document["users"][0]["uid"] = "alice.renamed"
+    document["users"][0]["username"] = "alice.renamed"
     del document["users"][0]["password_file"]
     verifier = "{ARGON2}" + PasswordHasher(
         memory_cost=19456, time_cost=2, parallelism=1

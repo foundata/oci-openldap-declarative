@@ -186,8 +186,9 @@ bind_hash=$(hash_password "Application bind password")
 
 generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
   quay.io/foundata/openldap-declarative-generator:latest)
-namespace=$(podman run --rm --network none --entrypoint python3 "${generator}" \
-  -c 'import uuid; print(uuid.uuid4())')
+uuids=$(podman run --rm --network none --entrypoint python3 "${generator}" \
+  -c 'import uuid; print(*(uuid.uuid4() for _ in range(4)))')
+read -r directory_uuid user_uuid group_uuid bind_uuid <<<"${uuids}"
 
 cat > "${data}/directory.yaml" <<YAML
 format_version: 1
@@ -197,30 +198,30 @@ revision: 1
 soft_ttl_seconds: 21600
 hard_ttl_seconds: 43200
 input_type: "users-groups"
-uuid_namespace: "${namespace}"
+entry_uuid: "${directory_uuid}"
 organization: "Example Company"
 users:
-  - id: "user-0001"
-    uid: "alice"
-    common_name: "Alice Example"
+  - entry_uuid: "${user_uuid}"
+    username: "alice"
+    display_name: "Alice Example"
     last_name: "Example"
     email: "alice@example.org"
     active: true
     password_hash: '${user_hash}'
 groups:
-  - id: "group-0001"
-    common_name: "staff"
-    members: ["user-0001"]
+  - entry_uuid: "${group_uuid}"
+    groupname: "staff"
+    members: ["alice"]
 bind_accounts:
-  - id: "bind-example-app"
-    common_name: "application"
+  - entry_uuid: "${bind_uuid}"
+    username: "application"
     password_hash: '${bind_hash}'
 YAML
 unset user_hash bind_hash
 chmod 0600 "${data}/directory.yaml"
 ```
 
-Generate `uuid_namespace` once and preserve it. All active users are included.
+Generate UUIDs once and preserve them in the definition. All active users are included.
 See the [larger example](examples/generator/directory.yaml) for profile fields,
 inactive users and credential files. Continue with
 [signing and generation](#usage-snapshot).
@@ -334,24 +335,24 @@ administration is covered in [its guide](docs/custom-ldif.md).
 |           Field            | Meaning |
 | -------------------------- | ------- |
 | `directory_id`             | Snapshot target, matched by `LDAP_EXPECTED_DIRECTORY_ID`. Not an LDAP DN or hostname. |
-| User `id`                  | Permanent source-record key, referenced by `groups[].members` and used to calculate `entryUUID`. Not a YAML anchor or separate LDAP attribute. |
-| User `uid`                 | Login name and naming attribute: `uid=alice,ou=people,<base_dn>`. |
-| User `common_name`         | LDAP `cn`, e.g. `Alice Example`. Changing it does not rename the user's DN. |
-| Group `id`                 | Permanent key used to calculate the group's `entryUUID`. |
-| Group `common_name`        | LDAP `cn` and DN: `cn=staff,ou=groups,<base_dn>`. |
-| Bind account `id`          | Permanent key used to calculate its `entryUUID`. |
-| Bind account `common_name` | Names `cn=application,ou=services,<base_dn>`. |
-| `uuid_namespace`           | Permanent namespace for generated UUIDs. |
-| LDAP `entryUUID`           | Persistent identity for applications, independent of username changes. |
+| `entry_uuid` on a user, group or bind account | Permanent identity, copied directly to LDAP `entryUUID`. |
+| Top-level `entry_uuid` | Base entry's UUID; also used to derive stable UUIDs for the generated OUs. |
+| User `username` | LDAP `uid` and login DN: `uid=alice,ou=people,<base_dn>`. |
+| Bind account `username` | LDAP `uid` and bind DN: `uid=application,ou=services,<base_dn>`. |
+| User/bind `display_name` | Supplies LDAP `displayName` and `cn`. If omitted, `cn` uses `username` and `displayName` is absent. Does not change the DN. |
+| Group `groupname` | LDAP `cn` and DN: `cn=staff,ou=groups,<base_dn>`. |
 
-For users, `entryUUID = UUIDv5(uuid_namespace, "user:" + id)`; `user:` is fixed.
-An ID can be a UUID string or another unique, permanent string. It is still an
-input to the calculation, not the resulting LDAP UUID.
+Generate UUIDv4 values once, as in the setup example. Canonical lowercase
+RFC-variant UUIDs of versions 1 through 8 are accepted. UUIDs must be unique
+across the directory, including inactive users. Never recycle or regenerate
+them when renaming an entry.
 
-To rename a user, change `uid`, keep `id` and `uuid_namespace`, increase
-`revision`, then regenerate and deploy (DNs and membership references update;
-`entryUUID` stays unchanged). Applications keyed by username or DN may need
-their own migration. Never recycle IDs.
+To rename an account, change `username`, update any username-based group
+references, increase `revision`, then regenerate and deploy. UUID-based
+references need no edits. The generator updates LDAP DNs and memberships while
+preserving `entryUUID`. Applications keyed by username or DN may need their own
+migration. A fresh top-level UUID does not replace the UUIDs on users, groups
+or bind accounts when cloning a definition.
 
 
 ##### User profile fields<a id="usage-admin-profile-fields"></a>
@@ -363,20 +364,20 @@ Users/groups YAML also accepts these optional strings:
 | ------------------ | -------------- |
 | `first_name`       | `givenName` (first name) |
 | `initials`         | `initials`     |
-| `display_name`     | `displayName`  |
+| `display_name`     | `displayName` and `cn` |
 | `description`      | `description`  |
 | `office`           | `physicalDeliveryOfficeName` |
 | `phone`            | `telephoneNumber` |
 | `mobile`           | `mobile` (mobile phone number) |
 | `email`            | `mail` (email) |
-| `company`          | `o` (organization name) |
+| `org`              | `o` (organization name) |
 | `employee_number`  | `employeeNumber` |
 | `department`       | `ou` (department) |
 | `job_title`        | `title`        |
 
-`company` and `department` describe the user without changing the DN or the
-directory's top-level `organization`. `employee_number` is independent of `id`
-and `entryUUID`; quote numeric values to preserve leading zeros.
+`org` and `department` describe the user without changing the DN or the
+directory's top-level `organization`. `employee_number` is independent of
+`entry_uuid`; quote numeric values to preserve leading zeros.
 
 Omit unset optional fields rather than supplying empty strings. For old email
 aliases, add a list of typed values:
@@ -462,27 +463,41 @@ the dedicated profile mappings.
 
 ##### Bind accounts<a id="usage-admin-bind-accounts"></a>
 
-`bind_accounts` is a non-empty list. Each item has a unique permanent `id`,
-a case-insensitively unique `common_name`, and one credential source:
+`bind_accounts` is a non-empty list. Each item has a permanent `entry_uuid`,
+a `username` unique across users and bind accounts (case-insensitive), and one
+credential source. Optional `display_name` follows the same rules as for users:
 
 ```yaml
 bind_accounts:
-  - id: "bind-app-a"
-    common_name: "app-a"
+  - entry_uuid: "843828e3-1e61-4114-b0a1-b0f4914f55a7"
+    username: "app-a"
+    display_name: "Application A"
     password_file: "/run/credentials/app-a"
-  - id: "bind-app-b"
-    common_name: "app-b"
+  - entry_uuid: "5b5e5bcc-58cc-4c41-b125-927b926fb8f4"
+    username: "app-b"
     password_hash_file: "/run/credentials/app-b.hash"
 ```
 
+Bind accounts use `ou=services`, so applications searching `ou=people` do not
+include their own bind accounts among users.
+
 Use distinct passwords. Rotate one account's credential or remove its item,
-increment the revision and deploy. Other accounts keep working. Keeping `id`
-and `uuid_namespace` preserves its UUID when changing `common_name`.
+increment the revision and deploy. Other accounts keep working. Keep
+`entry_uuid` when changing `username`; update the application's bind DN.
 All bind accounts share the directory's read policy; separate credentials do
 not create per-application access restrictions.
 
 
 ##### Membership and access<a id="usage-admin-membership"></a>
+
+Each `members` item can be a user's `entry_uuid` or `username`; both forms can
+be mixed in one list. References are case-insensitive and only resolve to
+`users`, not bind accounts. Unknown or ambiguous references and duplicate users
+(including a username and UUID for the same person) are rejected.
+
+UUID references survive username changes. Username references are easier to
+read, but must be updated on rename; reassigning a username can also reassign
+its group memberships. Use UUIDs where that risk is unacceptable.
 
 Active users need no group. Inactive users and groups without active members
 are omitted when generating a snapshot. `member` and `memberOf` are generated
@@ -768,7 +783,7 @@ the LDAP service account's home.
 To restore:
 
 1. Admin/CI: restore the current definition, referenced files, credentials and
-   signing/Vault keys. Preserve the stable IDs and namespace.
+   signing/Vault keys. Preserve all `entry_uuid` values.
 2. Admin/CI: set `revision` above the last deployed revision and
    [generate a fresh signed snapshot](#usage-snapshot-generate).
 3. LDAP host: redeploy the service configuration and mount inputs, including

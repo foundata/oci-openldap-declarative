@@ -36,6 +36,7 @@ from scripts.directory_data import (
     parse_ldif,
     read_regular,
     validate_entries,
+    validate_entry_uuid,
     validate_password_hash,
     validate_schema,
     write_ldif,
@@ -43,12 +44,8 @@ from scripts.directory_data import (
 from scripts.server_config import validate_config
 
 DIRECTORY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
-SOURCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$")
 UID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-UUID_NAMESPACE_PATTERN = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}"
-    r"-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
-)
+CONTAINER_OUS = ("people", "groups", "services")
 MAX_YAML_BYTES = 1024 * 1024
 MAX_EXPIRY_OFFSET_SECONDS = 86_400
 type CredentialKind = Literal["plaintext", "plaintext-file", "hash-file", "hash"]
@@ -67,7 +64,7 @@ USER_TEXT_FIELDS = {
     "office": ("physicalDeliveryOfficeName", 256),
     "phone": ("telephoneNumber", 64),
     "mobile": ("mobile", 64),
-    "company": ("o", 256),
+    "org": ("o", 256),
     "employee_number": ("employeeNumber", 256),
     "department": ("ou", 256),
     "job_title": ("title", 256),
@@ -112,30 +109,38 @@ class CredentialSource:
 
 @dataclass(frozen=True)
 class User:
-    source_id: str
-    uid: str
-    common_name: str
+    entry_uuid: str
+    username: str
     last_name: str
     attributes: dict[str, tuple[str, ...]]
     active: bool
     credential: CredentialSource | None
     extensions: Extensions = field(default_factory=Extensions)
 
+    @property
+    def common_name(self) -> str:
+        return self.attributes.get("displayName", (self.username,))[0]
+
 
 @dataclass(frozen=True)
 class Group:
-    source_id: str
-    common_name: str
+    entry_uuid: str
+    groupname: str
     members: tuple[str, ...]
     extensions: Extensions = field(default_factory=Extensions)
 
 
 @dataclass(frozen=True)
 class BindAccount:
-    source_id: str
-    common_name: str
+    entry_uuid: str
+    username: str
+    display_name: str | None
     credential: CredentialSource
     extensions: Extensions = field(default_factory=Extensions)
+
+    @property
+    def common_name(self) -> str:
+        return self.display_name or self.username
 
 
 @dataclass(frozen=True)
@@ -147,7 +152,7 @@ class Directory:
     hard_ttl_seconds: int
     expiry_offset_seconds: int
     input_type: str
-    namespace: uuid.UUID | None
+    entry_uuid: str | None
     organization: str | None
     users: dict[str, User]
     groups: dict[str, Group]
@@ -228,13 +233,6 @@ def load_yaml(
     return cast(dict[str, Any], (vault or Vault([])).resolve(value))
 
 
-def validate_source_id(value: Any, *, context: str) -> str:
-    source_id = text_value(value, context=context, maximum=128)
-    if not SOURCE_ID_PATTERN.fullmatch(source_id):
-        error(f"{context} contains unsupported characters")
-    return source_id
-
-
 def validate_uid(value: Any, *, context: str) -> str:
     uid = text_value(value, context=context, maximum=64)
     if not UID_PATTERN.fullmatch(uid):
@@ -296,21 +294,23 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
     if not isinstance(root["users"], list):
         error("users must be a list")
     users: dict[str, User] = {}
-    uids: set[str] = set()
+    usernames: set[str] = set()
     for index, raw in enumerate(root["users"]):
         context = f"users[{index}]"
         item = strict_keys(
             raw,
-            required={"id", "uid", "common_name", "last_name", "active"},
+            required={"entry_uuid", "username", "last_name", "active"},
             optional=set(USER_TEXT_FIELDS)
             | {"proxy_addresses", "attributes", "object_classes"}
             | set(PASSWORD_FIELDS),
             context=context,
         )
-        source_id = validate_source_id(item["id"], context=f"{context}.id")
-        uid = validate_uid(item["uid"], context=f"{context}.uid")
-        if source_id in users or uid.casefold() in uids:
-            error("duplicate user id or case-insensitive uid")
+        entry_uuid = validate_entry_uuid(
+            item["entry_uuid"], context=f"{context}.entry_uuid"
+        )
+        username = validate_uid(item["username"], context=f"{context}.username")
+        if entry_uuid in users or username.casefold() in usernames:
+            error("duplicate user entry_uuid or case-insensitive username")
         if not isinstance(item["active"], bool):
             error(f"{context}.active must be true or false")
         credential = default_credential_source(item, context=context, path=path)
@@ -342,20 +342,43 @@ def parse_users(root: dict[str, Any], path: Path) -> dict[str, User]:
                 )
             if proxies:
                 attributes["proxyAddresses"] = proxies
-        users[source_id] = User(
-            source_id,
-            uid,
-            text_value(
-                item["common_name"], context=f"{context}.common_name", maximum=256
-            ),
+        users[entry_uuid] = User(
+            entry_uuid,
+            username,
             text_value(item["last_name"], context=f"{context}.last_name", maximum=256),
             attributes,
             item["active"],
             credential,
             parse_extensions(item, context=context),
         )
-        uids.add(uid.casefold())
+        usernames.add(username.casefold())
     return users
+
+
+def resolve_members(
+    value: Any, users: dict[str, User], usernames: dict[str, str], *, context: str
+) -> tuple[str, ...]:
+    references = string_list(value, context=context, maximum=64)
+    if len(references) > 100_000:
+        error(f"{context} accepts at most 100000 references")
+    members: list[str] = []
+    seen: set[str] = set()
+    for reference in references:
+        validate_uid(reference, context=f"{context} item")
+        normalized = reference.casefold()
+        candidates = {normalized} if normalized in users else set()
+        if normalized in usernames:
+            candidates.add(usernames[normalized])
+        if not candidates:
+            error(f"{context} references an unknown user")
+        if len(candidates) != 1:
+            error(f"{context} contains an ambiguous username/entry_uuid reference")
+        resolved = candidates.pop()
+        if resolved in seen:
+            error(f"{context} references the same user more than once")
+        members.append(resolved)
+        seen.add(resolved)
+    return tuple(members)
 
 
 def parse_groups(root: dict[str, Any], users: dict[str, User]) -> dict[str, Group]:
@@ -363,23 +386,26 @@ def parse_groups(root: dict[str, Any], users: dict[str, User]) -> dict[str, Grou
         error("groups must be a list")
     groups: dict[str, Group] = {}
     names: set[str] = set()
+    usernames = {user.username.casefold(): key for key, user in users.items()}
     for index, raw in enumerate(root["groups"]):
         context = f"groups[{index}]"
         item = strict_keys(
             raw,
-            required={"id", "common_name", "members"},
+            required={"entry_uuid", "groupname", "members"},
             optional={"attributes", "object_classes"},
             context=context,
         )
-        source_id = validate_source_id(item["id"], context=f"{context}.id")
-        name = validate_uid(item["common_name"], context=f"{context}.common_name")
-        members = string_list(item["members"], context=f"{context}.members")
-        if source_id in groups or name.casefold() in names:
-            error("duplicate group id or case-insensitive common_name")
-        if set(members) - users.keys():
-            error(f"{context} references unknown users")
-        groups[source_id] = Group(
-            source_id, name, members, parse_extensions(item, context=context)
+        entry_uuid = validate_entry_uuid(
+            item["entry_uuid"], context=f"{context}.entry_uuid"
+        )
+        name = validate_uid(item["groupname"], context=f"{context}.groupname")
+        members = resolve_members(
+            item["members"], users, usernames, context=f"{context}.members"
+        )
+        if entry_uuid in groups or name.casefold() in names:
+            error("duplicate group entry_uuid or case-insensitive groupname")
+        groups[entry_uuid] = Group(
+            entry_uuid, name, members, parse_extensions(item, context=context)
         )
         names.add(name.casefold())
     return groups
@@ -394,19 +420,33 @@ def parse_bind_accounts(root: dict[str, Any], path: Path) -> dict[str, BindAccou
         context = f"bind_accounts[{index}]"
         item = strict_keys(
             raw,
-            required={"id", "common_name"},
-            optional=set(PASSWORD_FIELDS) | {"attributes", "object_classes"},
+            required={"entry_uuid", "username"},
+            optional=set(PASSWORD_FIELDS)
+            | {"display_name", "attributes", "object_classes"},
             context=context,
         )
-        source_id = validate_source_id(item["id"], context=f"{context}.id")
-        name = validate_uid(item["common_name"], context=f"{context}.common_name")
-        if source_id in accounts or name.casefold() in names:
-            error("duplicate bind account id or case-insensitive common_name")
+        entry_uuid = validate_entry_uuid(
+            item["entry_uuid"], context=f"{context}.entry_uuid"
+        )
+        name = validate_uid(item["username"], context=f"{context}.username")
+        if entry_uuid in accounts or name.casefold() in names:
+            error("duplicate bind account entry_uuid or case-insensitive username")
         credential = default_credential_source(item, context=context, path=path)
         if credential is None:
             error(f"{context} requires one password source")
-        accounts[source_id] = BindAccount(
-            source_id, name, credential, parse_extensions(item, context=context)
+        display_name = (
+            text_value(
+                item["display_name"], context=f"{context}.display_name", maximum=256
+            )
+            if "display_name" in item
+            else None
+        )
+        accounts[entry_uuid] = BindAccount(
+            entry_uuid,
+            name,
+            display_name,
+            credential,
+            parse_extensions(item, context=context),
         )
         names.add(name.casefold())
     return accounts
@@ -438,7 +478,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         "input_type",
     }
     specific = (
-        {"uuid_namespace", "organization", "users", "groups", "bind_accounts"}
+        {"entry_uuid", "organization", "users", "groups", "bind_accounts"}
         if input_type == "users-groups"
         else {"ldif_files", "config_files"}
     )
@@ -482,7 +522,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         for name in read_attributes
     ):
         error("read_attributes must not expose passwords or server configuration")
-    namespace = None
+    entry_uuid = None
     organization = None
     users: dict[str, User] = {}
     groups: dict[str, Group] = {}
@@ -490,18 +530,29 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
     files: tuple[Path, ...] = ()
     config_files: tuple[Path, ...] = ()
     if input_type == "users-groups":
-        namespace_text = text_value(root["uuid_namespace"], context="uuid_namespace")
-        if not UUID_NAMESPACE_PATTERN.fullmatch(namespace_text):
-            error(
-                "uuid_namespace must be a hyphenated RFC-variant UUID of version 1 through 5"
-            )
-        namespace = uuid.UUID(namespace_text)
+        entry_uuid = validate_entry_uuid(root["entry_uuid"], context="entry_uuid")
         organization = text_value(
             root["organization"], context="organization", maximum=256
         )
         users = parse_users(root, path)
         groups = parse_groups(root, users)
         bind_accounts = parse_bind_accounts(root, path)
+        user_names = {user.username.casefold() for user in users.values()}
+        if any(
+            account.username.casefold() in user_names
+            for account in bind_accounts.values()
+        ):
+            error(
+                "users and bind_accounts must have distinct case-insensitive usernames"
+            )
+        generated_uuids = {
+            entry_uuid,
+            *(container_uuid(entry_uuid, name) for name in CONTAINER_OUS),
+        }
+        for entries in (users, groups, bind_accounts):
+            if generated_uuids & entries.keys():
+                error("duplicate entry_uuid across directory entries")
+            generated_uuids.update(entries)
     else:
         files = source_files(root["ldif_files"], path, context="ldif_files")
         if not files:
@@ -521,7 +572,7 @@ def parse_directory(path: Path, vault: Vault | None = None) -> Directory:
         hard,
         offset,
         input_type,
-        namespace,
+        entry_uuid,
         organization,
         users,
         groups,
@@ -566,8 +617,13 @@ def validate_extensions(directory: Directory) -> tuple[bytes, ...] | None:
     for index, bind in enumerate(directory.bind_accounts.values()):
         catalog.validate(
             bind.extensions,
-            reserved={"cn"},
-            base_classes=("top", "organizationalRole", "simpleSecurityObject"),
+            reserved={"uid", "cn", "displayName"},
+            base_classes=(
+                "top",
+                "organizationalRole",
+                "simpleSecurityObject",
+                "openldapDeclarativeBindAccount",
+            ),
             context=f"bind_accounts[{index}]",
         )
     return catalog.source_contents
@@ -615,13 +671,12 @@ def password_verifier(source: CredentialSource, *, context: str) -> str:
     return validate_password_hash(value, context=context)
 
 
-def stable_uuid(namespace: uuid.UUID, entity_type: str, source_id: str) -> str:
-    return str(uuid.uuid5(namespace, f"{entity_type}:{source_id}"))
+def container_uuid(directory_uuid: str, name: str) -> str:
+    return str(uuid.uuid5(uuid.UUID(directory_uuid), f"ou:{name}"))
 
 
 def simplified_entries(directory: Directory) -> list[Entry]:
-    assert directory.namespace is not None
-    namespace = directory.namespace
+    assert directory.entry_uuid is not None
     base = directory.base_dn
     entries: list[Entry] = []
 
@@ -642,28 +697,22 @@ def simplified_entries(directory: Directory) -> list[Entry]:
             "objectClass": ["top", "dcObject", "organization"],
             "dc": [ldap.dn.str2dn(base)[0][0][1]],
             "o": [directory.organization or ""],
-            "entryUUID": [stable_uuid(namespace, "directory", directory.directory_id)],
+            "entryUUID": [directory.entry_uuid],
         },
     )
-    for name in ("people", "groups", "services"):
+    for name in CONTAINER_OUS:
         add(
             f"ou={name},{base}",
             {
                 "objectClass": ["top", "organizationalUnit"],
                 "ou": [name],
-                "entryUUID": [
-                    stable_uuid(
-                        namespace,
-                        "container",
-                        f"{directory.directory_id}:{name}",
-                    )
-                ],
+                "entryUUID": [container_uuid(directory.entry_uuid, name)],
             },
         )
     users = {key: user for key, user in directory.users.items() if user.active}
     memberships: dict[str, list[str]] = {key: [] for key in users}
     for group in directory.groups.values():
-        dn = f"cn={ldap.dn.escape_dn_chars(group.common_name)},ou=groups,{base}"
+        dn = f"cn={ldap.dn.escape_dn_chars(group.groupname)},ou=groups,{base}"
         members = [key for key in group.members if key in users]
         if not members:
             continue
@@ -674,10 +723,10 @@ def simplified_entries(directory: Directory) -> list[Entry]:
             group.extensions.merge(
                 {
                     "objectClass": ["top", "groupOfNames"],
-                    "cn": [group.common_name],
-                    "entryUUID": [stable_uuid(namespace, "group", group.source_id)],
+                    "cn": [group.groupname],
+                    "entryUUID": [group.entry_uuid],
                     "member": sorted(
-                        f"uid={ldap.dn.escape_dn_chars(users[key].uid)},ou=people,{base}"
+                        f"uid={ldap.dn.escape_dn_chars(users[key].username)},ou=people,{base}"
                         for key in members
                     ),
                 }
@@ -687,10 +736,10 @@ def simplified_entries(directory: Directory) -> list[Entry]:
         assert user.credential is not None
         attributes = {
             "objectClass": ["top", "inetOrgPerson"],
-            "uid": [user.uid],
+            "uid": [user.username],
             "cn": [user.common_name],
             "sn": [user.last_name],
-            "entryUUID": [stable_uuid(namespace, "user", key)],
+            "entryUUID": [user.entry_uuid],
             "userPassword": [
                 password_verifier(user.credential, context="user credential")
             ],
@@ -703,21 +752,28 @@ def simplified_entries(directory: Directory) -> list[Entry]:
         if memberships[key]:
             attributes["memberOf"] = sorted(memberships[key])
         add(
-            f"uid={ldap.dn.escape_dn_chars(user.uid)},ou=people,{base}",
+            f"uid={ldap.dn.escape_dn_chars(user.username)},ou=people,{base}",
             user.extensions.merge(attributes),
         )
     for bind in directory.bind_accounts.values():
         add(
-            f"cn={ldap.dn.escape_dn_chars(bind.common_name)},ou=services,{base}",
+            f"uid={ldap.dn.escape_dn_chars(bind.username)},ou=services,{base}",
             bind.extensions.merge(
                 {
                     "objectClass": [
                         "top",
                         "organizationalRole",
                         "simpleSecurityObject",
+                        "openldapDeclarativeBindAccount",
                     ],
+                    "uid": [bind.username],
                     "cn": [bind.common_name],
-                    "entryUUID": [stable_uuid(namespace, "bind", bind.source_id)],
+                    **(
+                        {"displayName": [bind.display_name]}
+                        if bind.display_name is not None
+                        else {}
+                    ),
+                    "entryUUID": [bind.entry_uuid],
                     "userPassword": [
                         password_verifier(bind.credential, context="bind credential")
                     ],
@@ -875,9 +931,7 @@ def generate_snapshot(
                 seconds=directory.hard_ttl_seconds - directory.expiry_offset_seconds
             )
         ),
-        "uuid_namespace": str(directory.namespace)
-        if directory.namespace is not None
-        else None,
+        "entry_uuid": directory.entry_uuid,
         "input_type": directory.input_type,
         "files": files,
     }

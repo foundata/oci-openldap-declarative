@@ -43,7 +43,7 @@ def test_representative_manifest_matches_meta_validated_schema() -> None:
         "generated_at",
         "soft_expires_at",
         "expires_at",
-        "uuid_namespace",
+        "entry_uuid",
         "files",
     ],
 )

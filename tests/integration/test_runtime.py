@@ -20,6 +20,7 @@ from ldif import LDIFRecordList, LDIFWriter
 
 from scripts.directory_data import DEFAULT_READ_ATTRIBUTES
 from scripts.server_config import MODULES
+from tests.entry_uuid_cases import ENTRY_UUID_CASES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import (
     OWNER_LABEL,
@@ -39,7 +40,6 @@ from tests.integration.lifecycle import (
     wait_until_healthy,
     wait_until_initializing,
 )
-from tests.namespace_cases import NAMESPACE_CASES
 from tests.password_hash_cases import HASH_CASES
 
 pytestmark = pytest.mark.integration
@@ -194,7 +194,7 @@ class RuntimeWorkspace:
             "generated_at": iso_timestamp(now + generated),
             "soft_expires_at": iso_timestamp(now + soft),
             "expires_at": iso_timestamp(now + hard),
-            "uuid_namespace": "7f38d690-8427-5ca2-98b4-bd5ee71ac31f",
+            "entry_uuid": "032e4d5a-6605-5d20-8d88-370c02d99f91",
             "files": [
                 {
                     "path": "directory.ldif",
@@ -1010,20 +1010,20 @@ def test_backstop_stops_when_trust_input_disappears(
     assert runtime.podman.inspect(container.name, "{{.State.Running}}") == "false"
 
 
-@pytest.mark.parametrize(("namespace", "valid"), NAMESPACE_CASES)
-def test_runtime_namespace_verification_matches_the_public_contract(
+@pytest.mark.parametrize(("entry_uuid", "valid"), ENTRY_UUID_CASES)
+def test_runtime_base_uuid_verification_matches_the_public_contract(
     runtime: Runtime,
     workspace: RuntimeWorkspace,
-    namespace: str,
+    entry_uuid: str,
     valid: bool,
     request: pytest.FixtureRequest,
 ) -> None:
     snapshot = workspace.copy_snapshot(
-        "valid", f"namespace-{request.node.callspec.indices['namespace']}"
+        "valid", f"entry_uuid-{request.node.callspec.indices['entry_uuid']}"
     )
     manifest = snapshot / "manifest.json"
     document = json.loads(manifest.read_text())
-    document["uuid_namespace"] = namespace.lower()
+    document["entry_uuid"] = entry_uuid
     manifest.write_text(json.dumps(document), encoding="utf-8")
     workspace.sign_manifest(snapshot)
     completed = runtime.podman.run_container(

@@ -76,9 +76,9 @@
       "maxItems": 128,
       "uniqueItems": true
     },
-    "uuid_namespace": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    "entry_uuid": {
+      "$ref": "#/$defs/entryUuid",
+      "description": "Stable base-entry UUID; also the namespace for generated OU UUIDs."
     },
     "organization": {
       "type": "string",
@@ -139,7 +139,7 @@
         }
       },
       "required": [
-        "uuid_namespace",
+        "entry_uuid",
         "organization",
         "users",
         "groups",
@@ -168,7 +168,7 @@
           {"required": ["schema_files"]},
           {
             "required": [
-              "uuid_namespace"
+              "entry_uuid"
             ]
           },
           {
@@ -196,6 +196,22 @@
     }
   ],
   "$defs": {
+    "entryUuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])",
+      "description": "Permanent LDAP entryUUID, unique across the entire directory. Generate a UUIDv4 once and retain it across renames and rebuilds."
+    },
+    "username": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?![\\s\\S])"
+    },
+    "displayName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000\\r\\n]+(?![\\s\\S])",
+      "description": "LDAP displayName and cn; when omitted, cn uses username."
+    },
     "extraAttributes": {
       "type": "object",
       "maxProperties": 128,
@@ -346,9 +362,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
-        "uid",
-        "common_name",
+        "entry_uuid",
+        "username",
         "last_name",
         "active"
       ],
@@ -359,21 +374,11 @@
         "object_classes": {
           "$ref": "#/$defs/extraObjectClasses"
         },
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+        "entry_uuid": {
+          "$ref": "#/$defs/entryUuid"
         },
-        "uid": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
-        },
-        "common_name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^[^\\u0000\\r\\n]+$"
+        "username": {
+          "$ref": "#/$defs/username"
         },
         "last_name": {
           "type": "string",
@@ -419,11 +424,7 @@
           "description": "LDAP initials attribute."
         },
         "display_name": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256,
-          "pattern": "^[^\\u0000\\r\\n]+$",
-          "description": "LDAP displayName attribute."
+          "$ref": "#/$defs/displayName"
         },
         "description": {
           "type": "string",
@@ -453,7 +454,7 @@
           "pattern": "^[^\\u0000\\r\\n]+$",
           "description": "LDAP mobile attribute."
         },
-        "company": {
+        "org": {
           "type": "string",
           "minLength": 1,
           "maxLength": 256,
@@ -465,7 +466,7 @@
           "minLength": 1,
           "maxLength": 256,
           "pattern": "^[^\\u0000\\r\\n]+$",
-          "description": "LDAP employeeNumber attribute; independent of id and entryUUID."
+          "description": "LDAP employeeNumber attribute; independent of username and entry_uuid."
         },
         "department": {
           "type": "string",
@@ -546,8 +547,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
-        "common_name",
+        "entry_uuid",
+        "groupname",
         "members"
       ],
       "properties": {
@@ -557,27 +558,22 @@
         "object_classes": {
           "$ref": "#/$defs/extraObjectClasses"
         },
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+        "entry_uuid": {
+          "$ref": "#/$defs/entryUuid"
         },
-        "common_name": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        "groupname": {
+          "$ref": "#/$defs/username",
+          "description": "LDAP cn and the group's naming RDN."
         },
         "members": {
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+            "$ref": "#/$defs/username"
           },
           "minItems": 0,
           "maxItems": 100000,
-          "uniqueItems": true
+          "uniqueItems": true,
+          "description": "User entry_uuid or username references, compared case-insensitively. Ambiguous references and repeated users are rejected."
         }
       }
     },
@@ -585,8 +581,8 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "id",
-        "common_name"
+        "entry_uuid",
+        "username"
       ],
       "properties": {
         "attributes": {
@@ -595,15 +591,14 @@
         "object_classes": {
           "$ref": "#/$defs/extraObjectClasses"
         },
-        "id": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$"
+        "entry_uuid": {
+          "$ref": "#/$defs/entryUuid"
         },
-        "common_name": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        "username": {
+          "$ref": "#/$defs/username"
+        },
+        "display_name": {
+          "$ref": "#/$defs/displayName"
         },
         "password": {
           "$ref": "#/$defs/credentialValue"
