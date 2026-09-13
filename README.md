@@ -76,6 +76,7 @@ The project provides two images:
       - [Temporary administrator access (LDAP host)](#usage-ops-admin)
 - [Development](#tests)
 - [Licensing, copyright](#licensing-copyright)
+  - [Trademarks](#trademarks)
 - [Author information](#author-information)
 
 
@@ -912,6 +913,18 @@ including third-party components, following the
 source licensing SBOM. Debian packages retain their respective licenses;
 release SBOMs must describe the actual image contents.
 <!--REUSE-IgnoreEnd-->
+
+
+### Trademarks<a id="trademarks"></a>
+
+- Red Hat®, Ansible® and Quay® are trademarks of Red Hat, Inc., registered in
+  the US and other countries
+- OpenLDAP® is a registered trademark of the OpenLDAP Foundation
+- Debian® is a registered trademark of Software in the Public Interest, Inc.
+- Linux® is a registered trademark of Linus Torvalds
+
+Their use here is purely descriptive and does not imply any affiliation with or
+endorsement by the trademark holders.
 
 
 ## Author information<a id="author-information"></a>
