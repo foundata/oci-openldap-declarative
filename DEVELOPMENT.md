@@ -15,6 +15,10 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 - [Testing](#testing)
 - [Pin updates](#pin-updates)
 - [Qualification and releases](#qualification-and-releases)
+  - [Prepare the release host](#release-host)
+  - [Qualify without publishing](#qualify)
+  - [Release both images](#release)
+  - [Resume, archive and rescan](#release-maintenance)
 - [Troubleshooting](#troubleshooting)
 
 
@@ -28,14 +32,26 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Git**, **jq**, **shfmt**, **ShellCheck**, **checkbashisms** and **Hadolint**
   for repository checks.
 - **Rootless Buildah and Podman** for container tests.
-- **[ConClear](https://foundata.com/en/projects/conclear/)**, only for pin
-  checks, qualification and releases; none of the checks above need it. Install
-  it as a tool with uv:
+- **[ConClear](https://foundata.com/en/projects/conclear/)** for OCI checks, pin
+  checks, qualification and releases. `hack/check.sh` and developer-build tests
+  do not need it. Install the exact release approved for your build environment;
+  these instructions use the 1.0.0 CLI:
 
   ```sh
-  uv tool install conclear
-  conclear version
+  uv tool install 'conclear==1.0.0'
+  conclear version --format json
   ```
+
+  If that version is not published yet, install an approved wheel with
+  `uv tool install /absolute/path/to/conclear-1.0.0-py3-none-any.whl`, built through
+  ConClear's [distribution release procedure](https://github.com/foundata/conclear/blob/main/DEVELOPMENT.md#release-procedure).
+  Check the reported source and guide revisions; release commands must not use
+  an installation reporting `development-source-tree`.
+
+For qualification, install ConClear's supported Buildah, Podman, Skopeo,
+Hadolint and Trivy versions; publishing and signed rescans also need Cosign.
+Use its [current tool requirements](https://github.com/foundata/conclear#installation)
+instead of maintaining another version table here.
 
 
 ## Getting started<a id="getting-started"></a>
@@ -93,7 +109,9 @@ runtime=localhost/openldap-declarative:dev
 
 For a single-host test, set both variables in the same Bash terminal. Skip the
 registry pull/digest-resolution blocks in the README and Quadlet guide, keeping
-these local references throughout. Start with
+these local references throughout. Inside `hash_password()`, replace the image
+inspection assignment with `generator=localhost/openldap-declarative-generator:dev`
+as well. Start with
 [directory preparation](README.md#usage-prepare), then follow signing,
 generation and deployment. The admin workflow needs only the generator image.
 
@@ -247,36 +265,127 @@ boundary.
 
 ## Qualification and releases<a id="qualification-and-releases"></a>
 
-Qualification uses an isolated checkout, so commit the reviewed changes first.
-Qualify both images from the same revision and version:
+ConClear builds the selected commit's tracked tree in isolation. Commit reviewed
+code, documentation and `conclear.toml` first. Use the same source revision and
+release version for `runtime` and `generator`; both declare `linux/amd64` and
+`linux/arm64`.
+
+### Prepare the release host<a id="release-host"></a>
+
+Follow ConClear's [host setup](https://github.com/foundata/conclear#usage-host-config)
+for rootless storage, SELinux, Quay access and a protected release profile.
+Keep the profile outside this repository, normally at
+`~/.config/conclear/foundata.toml`. Reuse the approved builder identity and
+Cosign signing authority. These sign OCI images and are separate from the
+minisign keys used for LDAP snapshots.
+
+The effective defaults require native `linux/amd64` testing; `linux/arm64` may
+use a native worker or supported QEMU user-mode emulation. ConClear checks
+available handlers but does not install them. For separate platform workers, use its
+[distributed qualification workflow](https://github.com/foundata/conclear/blob/main/docs/distributed-qualification.md),
+including the shared scanner database and qualification window.
+
+Choose a durable, backed-up archive directory outside the source repository
+and ConClear's working directories. Create it with permissions for the release
+user, then set these values in the release terminal:
 
 ```sh
 revision=$(git rev-parse HEAD)
-version=0.1.0-test.1
-for platform in linux/amd64 linux/arm64; do
-  for image in runtime generator; do
-    conclear qualify --source . --revision "$revision" \
-      --image "$image" --version "$version" --platform "$platform"
-  done
+version=1.0.0
+profile=foundata
+archives=/srv/archives/conclear
+conclear config show --version "$version"
+conclear doctor --scope release --profile "$profile" --version "$version"
+```
+
+`config show` reports effective repository settings. `doctor` checks
+prerequisites without publishing or signing; neither replaces a release run.
+
+### Qualify without publishing<a id="qualify"></a>
+
+This optional diagnostic builds, tests and scans one platform. `release` runs
+these gates itself. On a worker able to execute the selected platform:
+
+```sh
+conclear doctor --scope qualify
+platform=linux/amd64 # Repeat with linux/arm64 on a suitable worker.
+for image in runtime generator; do
+  conclear qualify --source . --revision "$revision" \
+    --image "$image" --version "$version" --platform "$platform" || exit
 done
 ```
 
-A signed release additionally requires the external protected ConClear profile,
-Quay credentials and approved signing authority, plus the exact ConClear version
-approved for that release (`uv tool install conclear==<version>`) rather than
-whatever is newest. CI invokes the same ConClear CLI and does not reimplement
-it. Follow the ConClear
-[quick start](https://github.com/foundata/conclear/blob/master/docs/quickstart.md)
-for release, resume, cleanup and rescan operations.
+The runtime qualification includes the same-revision generator dependency and
+their compatibility tests. Generator-only qualification cannot replace it.
+Keep each result's run ID and evidence; separate ad-hoc qualifications are not
+automatically reused by `release`.
+
+### Release both images<a id="release"></a>
+
+Run from the configured release host, using the values above:
+
+```sh
+for image in generator runtime; do
+  conclear release --source . --revision "$revision" \
+    --image "$image" --version "$version" --profile "$profile" \
+    --archive-dir "$archives" || exit
+done
+```
+
+Each command qualifies every declared platform, publishes and verifies signed
+registry artifacts, then assigns `<version>` and `latest`. It also produces a
+release archive containing source, configuration, test/scan evidence, SBOMs and
+attestations. These are two separate releases, not an atomic pair: verify both
+results and record both digests before deployment. Never overwrite an existing
+version tag with different bytes or rebuild images to promote them.
+
+A managed workstation can run this workflow. CI invokes the same commands with
+its protected profile; it does not need a separate release implementation.
+
+### Resume, archive and rescan<a id="release-maintenance"></a>
+
+Resume an interrupted image release using its reported run ID, original profile
+and toolchain. Completed runs are not resumable:
+
+```sh
+conclear release --resume '<interrupted-run-id>' --profile "$profile" \
+  --archive-dir "$archives"
+```
+
+If qualification has expired or required inputs changed, start a new release.
+Verify and retain each completed release's archive before cleaning its run:
+
+```sh
+bundle="$archives/<reported-archive-name>.tar.gz"
+conclear archive verify "$bundle" --profile "$profile" || exit
+# Only after verification succeeds and the archive is safely retained:
+conclear cleanup '<completed-run-id>' --profile "$profile"
+```
+
+Rescan each supported image from its release archive or latest rescan archive,
+keeping referenced source archives beside it:
+
+```sh
+conclear rescan --archive "$bundle" --profile "$profile" \
+  --authoritative --archive-dir "$archives"
+```
+
+Schedule rescans externally, retain their archives and assign rejected or failed
+assessments for triage and rebuild. Back up protected profiles, credentials and
+signing keys separately; ConClear excludes them from release archives. See its
+[archive and recovery instructions](https://github.com/foundata/conclear#usage-archives)
+for retention and retrying a failed archive export.
 
 
 ## Troubleshooting<a id="troubleshooting"></a>
 
 - **ConClear reports `development-source-tree`:** you are running ConClear from
-  a source checkout. Install it as a tool instead (`uv tool install conclear`),
-  or the exact reviewed version for a release.
-- **The Git origin uses SSH:** leave it unchanged. `conclear.toml` records the
-  credential-free canonical HTTPS repository identity; ConClear canonicalizes an
-  equivalent HTTPS or SSH remote before comparing it and writing evidence.
+  a source checkout. Install an approved distribution as described under
+  [prerequisites](#prerequisites).
+- **ConClear rejects the Git origin:** review `allowed_source_origins` in the
+  protected profile. It authorizes actual checkout origins, with equivalent SSH
+  and HTTPS forms canonicalized. `project.source` in `conclear.toml` is the
+  public project page used in labels and evidence; it need not match the Git
+  origin. Do not rewrite a legitimate origin to match that public URL.
 - **A container test fails:** inspect only the resources named in its run
   manifest. Do not remove unrelated Podman or Buildah state.

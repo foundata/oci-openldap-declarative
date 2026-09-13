@@ -83,11 +83,11 @@ The project provides two images:
 
 ### Application-specific LDAP, sidecar containers<a id="example-app-ldap"></a>
 
-foundata built this project to replace shared central-directory dependencies
-with isolated, application-local LDAP sidecar containers containing only the
-identities each application needs. This reduces blast radius, limits data
-exposure, and removes the central directory from the application's runtime
-network path, supporting
+[foundata](https://foundata.com/) built this project to replace shared
+central-directory dependencies with isolated, application-local LDAP sidecar
+containers containing only the identities each application needs. This reduces
+blast radius, limits data exposure, and removes the central directory from the
+application's runtime network path, supporting
 [Zero Trust](https://en.wikipedia.org/wiki/Zero_trust_architecture) and
 [defense in depth](https://en.wikipedia.org/wiki/Defense_in_depth_(computing)).
 
@@ -102,7 +102,10 @@ or the current one expires.
 | Admin host / CI | Maintain directory definitions, generate and sign snapshots. Holds source credentials, Vault passwords and the private signing key. |
 | LDAP host       | Serve the directory via LDAP(S). Holds public verification keys, snapshot files and persistent revision state. |
 
-The same machine can fill both roles for testing. Both images support Linux
+The same machine can fulfill both roles, for example, for testing or when the
+security benefits over centralized directories are not important to you.
+
+Both images support Linux
 [amd64](https://www.kernel.org/doc/html/latest/arch/x86/x86_64/index.html) and
 [arm64](https://www.kernel.org/doc/html/latest/arch/arm64/). Local builds and
 testing are covered in
@@ -111,8 +114,8 @@ testing are covered in
 
 ## Image: `quay.io/foundata/openldap-declarative-generator` (admin host / CI)<a id="image-generator"></a>
 
-The generator is a one-shot command so no tools installation is needed on your
-host: it reads your definition, writes a signed snapshot and exits.
+The generator is a one-shot command. It reads your definition, writes a signed
+snapshot and exits, so no tools installation is needed on your host.
 
 
 ### Tags<a id="tags-generator"></a>
@@ -140,44 +143,58 @@ Run these steps in Bash on the admin host or in CI:
 
 #### Prepare directory data<a id="usage-prepare"></a>
 
-Prepare these paths and the password-hashing helper in the admin Bash terminal.
-Then choose one input route below.
+Prepare these paths and the password-hashing helper in a Bash terminal as your
+normal admin/CI user; no root shell is needed. Then choose one input route
+below.
 
 ```bash
-set +x
-umask 077
-data="${HOME}/directory-data" # good idea to put under version control (e.g. git)
-private="${HOME}/.config/openldap-declarative" # contains secrets
-output="${HOME}/.local/share/openldap-declarative/generated" # to be shipped later
-install -d -m 0700 "${data}" "${private}" "${output}"
+set +x # Disable tracing before handling secrets.
+umask 077 # New files are owner-only; new directories are owner-accessible only.
+
+# directory.yaml and referenced LDIF/schema; mounted at /input.
+data="${HOME}/directory-data"
+
+# Private Git is suitable for reviewed hash-only or Vault-encrypted sources, not plaintext secrets.
+private="${HOME}/.config/openldap-declarative" # Signing/Vault keys and credential files; never commit.
+
+# Mounted at /run/credentials on admin/CI; deploy only snapshot.pub from this directory.
+output="${HOME}/.local/share/openldap-declarative/generated" # Signed revision-* directories; mounted at /output.
+
+# Deploy one complete revision directory to the LDAP host; it contains verifiers, so keep it private.
+install -d -m 0700 "${data}" "${private}" "${output}" # Restrict these host directories to their owner.
 
 hash_password() (
+  # Use the immutable digest of the generator image pulled above.
   generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
     quay.io/foundata/openldap-declarative-generator:latest)
   set +x
   set -euo pipefail
+  # Read password input literally, without terminal echo and
+  # Keep the password out of child-process environments
   read -r -s -p "$1: " password
   export -n password
   printf '\n' >&2
-  test -n "${password}"
+  test -n "${password}" # Reject empty passwords.
+  # Send plaintext only through stdin; stdout contains the hash.
   printf '%s' "${password}" |
     podman run --rm -i --network none --entrypoint openldap-password "${generator}"
 )
 ```
 
-The snippet above is just an example and can be adapted to your needs. It reads
-an original password without echoing it, passes it through
-stdin and returns a salted [Argon2id](https://en.wikipedia.org/wiki/Argon2)
+The helper returns a salted [Argon2id](https://en.wikipedia.org/wiki/Argon2)
 hash. `openldap-password` accepts one non-empty UTF-8 line of at most 4096
 bytes, with an optional new line at the end (LF or CRLF).
 
 
 ##### Application directory: users/groups YAML<a id="usage-prepare-yaml"></a>
 
-Use this fixed-layout model for application logins, identities and groups, as
-in the [example use case](#example-app-ldap) as it is far easier to use and
-maintain if fitting. Each application can have one or
-more separate [bind accounts](#usage-admin-bind-accounts). Start with one:
+Use this route if you need simple application logins, identities and group
+memberships, with one or more [bind accounts](#usage-admin-bind-accounts)
+for directory searches.
+
+It provides a fixed layout and managed read-only policy; use
+[custom LDIF](#usage-prepare-native-ldif) when you need another layout or
+control over OpenLDAP configuration. Start with one user and bind account:
 
 ```bash
 # hash_password() was defined in the previous section's snippet
@@ -221,18 +238,22 @@ unset user_hash bind_hash
 chmod 0600 "${data}/directory.yaml"
 ```
 
-Generate UUIDs once and preserve them in the definition. All active users are included.
-See the [larger example](examples/generator/directory.yaml) for profile fields,
-inactive users and credential files. Continue with
+Generate UUIDs once and preserve them in the definition. All active users are
+included. See the [larger example](examples/generator/directory.yaml) for
+profile fields, inactive users and credential files. Continue with
 [signing and generation](#usage-snapshot).
 
 
 ##### Custom directory: LDIF<a id="usage-prepare-native-ldif"></a>
 
-Supply complete OpenLDAP configuration and directory entries. Start with the
-[custom LDIF guide](docs/custom-ldif.md) and its read-only example. You own the
-schemas, ACLs, indexes, overlays and password policy; the runtime does not merge
-generated defaults into your configuration.
+Use this general-purpose route when you need custom entry types, directory
+layouts or server policies. It allows you to administer OpenLDAP directly and
+therefore requires solid knowledge of OpenLDAP administration.
+
+Supply complete configuration and directory entries; you own schemas, ACLs,
+indexes, overlays and password policy, without generated defaults merged into
+them. Start with the [custom LDIF guide](docs/custom-ldif.md) and its read-only
+example.
 
 Write `${data}/directory.yaml` with snapshot settings and ordered file lists:
 
@@ -292,11 +313,31 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
   -G -W -s /run/credentials/snapshot.key -p /run/credentials/snapshot.pub
 ```
 
-`-W` creates an unencrypted private key for unattended signing. Keep
-`snapshot.key` private and backed up. Deploy only `snapshot.pub`.
+[Minisign](https://jedisct1.github.io/minisign/) keys have no built-in expiry;
+snapshots expire separately. Minisign supports password-protected keys, but `-W`
+creates the unencrypted key required by this generator's unattended signing.
+Keep `snapshot.key` private on admin/CI and back it up. Deploy only
+`snapshot.pub`.
+
+- Lost public key: restore it or rerun the Podman command above with `-R`
+  instead of `-G -W`, keeping the same `-s` and `-p` paths.
+- Lost private key: restore it, or create a new pair and deploy a fresh snapshot
+  with the new public key to every LDAP host and its backstop. Existing
+  snapshots remain usable until expiry while their public key is still trusted.
+- Suspected compromise: stop affected LDAP services, replace the key pair and
+  deploy a reviewed snapshot. Remove the old public key from every runtime,
+  preflight and backstop trust input before restarting. A stolen signing key
+  can authorize malicious identities, credentials or custom server configuration
+  if an attacker can deliver a snapshot to a trusting host.
+
+Follow the
+[coordinated rotation procedure](examples/quadlet/README.md#signing-key-rotation),
+keeping revision state and increasing the snapshot revision.
 
 
 ##### Generate a snapshot<a id="usage-snapshot-generate"></a>
+
+Generate the signed snapshot to deploy to the LDAP host:
 
 ```bash
 data="${HOME}/directory-data"
@@ -320,8 +361,8 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 
 The output directory must be new. Its files are `directory.ldif`,
 `manifest.json`, `manifest.json.minisig`, and either declared YAML schemas or
-the complete custom `config.ldif`.
-The signed revision comes from YAML; the shell variable only names the output.
+the complete custom `config.ldif`. The signed revision comes from YAML; the
+shell variable only names the output.
 
 
 #### Directory administration<a id="usage-admin"></a>
@@ -332,20 +373,21 @@ administration is covered in [its guide](docs/custom-ldif.md).
 
 ##### IDs, names and renames<a id="usage-admin-identities"></a>
 
-|           Field            | Meaning |
-| -------------------------- | ------- |
-| `directory_id`             | Snapshot target, matched by `LDAP_EXPECTED_DIRECTORY_ID`. Not an LDAP DN or hostname. |
+|                     Field                     | Meaning |
+| --------------------------------------------- | ------- |
+| `directory_id`                                | Snapshot target, matched by `LDAP_EXPECTED_DIRECTORY_ID`. Not an LDAP DN or hostname. |
 | `entry_uuid` on a user, group or bind account | Permanent identity, copied directly to LDAP `entryUUID`. |
-| Top-level `entry_uuid` | Base entry's UUID; also used to derive stable UUIDs for the generated OUs. |
-| User `username` | LDAP `uid` and login DN: `uid=alice,ou=people,<base_dn>`. |
-| Bind account `username` | LDAP `uid` and bind DN: `uid=application,ou=services,<base_dn>`. |
-| User/bind `display_name` | Supplies LDAP `displayName` and `cn`. If omitted, `cn` uses `username` and `displayName` is absent. Does not change the DN. |
-| Group `groupname` | LDAP `cn` and DN: `cn=staff,ou=groups,<base_dn>`. |
+| Top-level `entry_uuid`                        | Base entry's UUID; also used to derive stable UUIDs for the generated OUs. |
+| User `username`                               | LDAP `uid` and login DN: `uid=alice,ou=people,<base_dn>`. |
+| Bind account `username`                       | LDAP `uid` and bind DN: `uid=application,ou=services,<base_dn>`. |
+| User/bind `display_name`                      | Supplies LDAP `displayName` and `cn`. If omitted, `cn` uses `username` and `displayName` is absent. Does not change the DN. |
+| Group `groupname`                             | LDAP `cn` and DN: `cn=staff,ou=groups,<base_dn>`. |
 
-Generate UUIDv4 values once, as in the setup example. Canonical lowercase
-RFC-variant UUIDs of versions 1 through 8 are accepted. UUIDs must be unique
-across the directory, including inactive users. Never recycle or regenerate
-them when renaming an entry.
+Generate [UUIDv4](https://en.wikipedia.org/wiki/Universally_unique_identifier)
+values once, as in the setup example. Canonical lowercase RFC-variant UUIDs of
+versions 1 through 8 are accepted. UUIDs must be unique across the directory,
+including inactive users. Never recycle or regenerate them when renaming an
+entry.
 
 To rename an account, change `username`, update any username-based group
 references, increase `revision`, then regenerate and deploy. UUID-based
@@ -354,26 +396,67 @@ preserving `entryUUID`. Applications keyed by username or DN may need their own
 migration. A fresh top-level UUID does not replace the UUIDs on users, groups
 or bind accounts when cloning a definition.
 
+Example: rename `alice` to `alicia` and `bob` to `robert`; `carol` stays
+unchanged. These excerpts show only identity and membership fields. Keep the
+other fields and credentials unchanged.
+
+Before:
+
+```yaml
+revision: 1
+users:
+  - entry_uuid: "003ffd6f-3074-457f-9740-2547970687be"
+    username: "alice"
+  - entry_uuid: "df0ee4d6-fd01-48b6-9c66-713c52b5ed5a"
+    username: "bob"
+  - entry_uuid: "62d4e3af-b3f5-454f-8293-70d7eb92bf85"
+    username: "carol"
+groups:
+  - entry_uuid: "73113c3f-7a96-4268-82a4-fd09154d8364"
+    groupname: "staff"
+    members: ["003ffd6f-3074-457f-9740-2547970687be", "bob", "carol"]
+```
+
+After:
+
+```yaml
+revision: 2
+users:
+  - entry_uuid: "003ffd6f-3074-457f-9740-2547970687be"
+    username: "alicia"
+  - entry_uuid: "df0ee4d6-fd01-48b6-9c66-713c52b5ed5a"
+    username: "robert"
+  - entry_uuid: "62d4e3af-b3f5-454f-8293-70d7eb92bf85"
+    username: "carol"
+groups:
+  - entry_uuid: "73113c3f-7a96-4268-82a4-fd09154d8364"
+    groupname: "staff"
+    members: ["003ffd6f-3074-457f-9740-2547970687be", "robert", "carol"]
+```
+
+Alice's UUID reference needs no edit; Bob's username reference changes. LDAP
+membership DNs update for both users, and all entry UUIDs stay the same.
+
 
 ##### User profile fields<a id="usage-admin-profile-fields"></a>
 
 Each user requires `last_name`, mapped to LDAP `sn` (surname).
 Users/groups YAML also accepts these optional strings:
 
-|     YAML field     | LDAP attribute |
-| ------------------ | -------------- |
-| `first_name`       | `givenName` (first name) |
-| `initials`         | `initials`     |
-| `display_name`     | `displayName` and `cn` |
-| `description`      | `description`  |
-| `office`           | `physicalDeliveryOfficeName` |
-| `phone`            | `telephoneNumber` |
-| `mobile`           | `mobile` (mobile phone number) |
-| `email`            | `mail` (email) |
-| `org`              | `o` (organization name) |
-| `employee_number`  | `employeeNumber` |
-| `department`       | `ou` (department) |
-| `job_title`        | `title`        |
+|    YAML field     | LDAP attribute |
+| ----------------- | -------------- |
+| `first_name`      | `givenName` (first name) |
+| `initials`        | `initials`     |
+| `display_name`    | `displayName` and `cn` |
+| `description`     | `description`  |
+| `office`          | `physicalDeliveryOfficeName` |
+| `phone`           | `telephoneNumber` |
+| `mobile`          | `mobile` (mobile phone number) |
+| `email`           | `mail` (email) |
+| `org`             | `o` (organization name) |
+| `employee_number` | `employeeNumber` |
+| `department`      | `ou` (department) |
+| `job_title`       | `title`        |
 
 `org` and `department` describe the user without changing the DN or the
 directory's top-level `organization`. `employee_number` is independent of
@@ -413,9 +496,9 @@ attributes:
   homeDirectory: ["/home/alice"]
 ```
 
-`inetOrgPerson` remains Alice's structural class; `posixAccount` adds the
-POSIX account attributes. This stores data only, without configuring host
-login or creating a home directory.
+[`inetOrgPerson`](https://www.rfc-editor.org/info/rfc2798/) remains Alice's
+structural class; `posixAccount` adds the POSIX account attributes. This stores
+data only, without configuring host login or creating a home directory.
 
 - Attribute values are non-empty lists of strings, including quoted numbers.
   Each string may use [`!vault`](#usage-vault). Limits: 128 attributes per
