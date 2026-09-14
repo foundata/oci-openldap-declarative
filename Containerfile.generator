@@ -7,6 +7,7 @@ COPY --chown=0:0 --chmod=0444 generator/export_schema.py /tmp/export_schema.py
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
   && chmod 0755 /usr/sbin/policy-rc.d \
   && apt-get update \
+  && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends python3 python3-ldap slapd \
   && install -d -m 0755 /export/schema \
   && install -d -m 0755 /export/available \
@@ -34,7 +35,9 @@ LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Keep base packages patched until the pinned tag includes these updates.
 RUN apt-get update \
+  && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \
     ansible-core \
     libssl3t64 \
@@ -48,6 +51,7 @@ RUN apt-get update \
   && find /usr/share/doc -type f ! -name copyright -delete \
   && find /usr/share/doc -type l -delete \
   && find /usr/share/doc -depth -type d -empty -delete \
+  && find /usr -xdev -type d -name __pycache__ -prune -exec rm -rf {} + \
   && install -d -m 0755 /usr/local/share/openldap-declarative \
   && dpkg-query -W -f='${Package}\t${Version}\n' \
     > /usr/local/share/openldap-declarative/package-versions.unsorted \
@@ -55,8 +59,13 @@ RUN apt-get update \
     > /usr/local/share/openldap-declarative/package-versions.txt \
   && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
+    /usr/lib/python3/dist-packages/ansible/galaxy/data \
+    /usr/share/locale \
     /usr/share/man/* \
     /var/lib/apt/lists/* \
+    /var/cache/apt \
+    /var/cache/debconf/* \
+    /var/log/* \
   && if getent passwd 1001 >/dev/null || getent group 1001 >/dev/null; then \
     printf '%s\n' 'UID or GID 1001 already exists in the pinned base image' >&2; \
     exit 1; \

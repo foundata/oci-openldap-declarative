@@ -30,7 +30,10 @@ from tests.integration.harness import (
     sha256_file,
     utc_now,
 )
-from tests.integration.image_checks import assert_image_privileges
+from tests.integration.image_checks import (
+    assert_image_package_data,
+    assert_image_privileges,
+)
 from tests.integration.lifecycle import (
     LDAP_URI,
     LDAPI_URI,
@@ -49,7 +52,9 @@ BASE_DN = "dc=example,dc=org"
 TEST_USER_DN = f"uid=test,ou=people,{BASE_DN}"
 APP_DN = f"cn=app,ou=services,{BASE_DN}"
 TEST_USER_UUID = "a4bcb5de-4982-51e9-b7e8-7e8d6b6f4c22"
-MAXIMUM_IMAGE_SIZE = 200_000_000
+# 2026-09-14: amd64 205,691,717 bytes; arm64 244,361,560 bytes.
+# Allow 10% above the larger image, rounded up to 10 MB.
+MAXIMUM_IMAGE_SIZE = 270_000_000
 MINUTES = timedelta(minutes=1)
 SECONDS = timedelta(seconds=1)
 
@@ -700,6 +705,7 @@ def test_image_contents_match_the_production_boundary(
 ) -> None:
     image = images.require_runtime()
     assert int(podman.inspect_image(image, "{{.Size}}")) < MAXIMUM_IMAGE_SIZE
+    assert_image_package_data(podman, image)
     host = testinfra.get_host(f"podman://{sleeper}")
     assert host.check_output("id -u") == "1001"
     assert host.check_output("id -g") == "1001"

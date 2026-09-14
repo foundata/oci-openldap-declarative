@@ -128,14 +128,6 @@ timeout_seconds = 1800
 reference = "docker.io/library/debian:13-slim"
 tag_intent = "moving-release-line"
 
-[[images.configuration_exceptions]]
-path = "usr/lib/python3/dist-packages/ansible/galaxy/data/**/Dockerfile.j2"
-checks = ["DS-0001", "DS-0011"]
-rationale = "Galaxy scaffolding templates shipped as data by the ansible-core package; they are never built and are not this image's build definition."
-owner = "foundata GmbH (https://foundata.com)"
-review_trigger = "Review when ansible-core changes its Galaxy data files, the generator drops ansible-core or the expiry passes."
-expires = "2027-03-31"
-
 [images.release]
 version_tags = ["{version}"]
 moving_tags = ["latest"]

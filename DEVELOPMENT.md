@@ -135,6 +135,8 @@ snapshot generation share the hashing implementation. The signed snapshot is the
 boundary between the images; no generator process or source-decryption key is
 needed on the LDAP host. Debian package installation uses
 `--no-install-recommends` to exclude the full Ansible collection bundle.
+Both images omit package caches, logs, translations and Python bytecode; `C.UTF-8`
+and Python sources remain. The generator omits unused Galaxy scaffolding data.
 
 For additive YAML fields, the generator parses schema definitions with
 `python-ldap`. A build-only stage exports the loaded schema through a temporary
@@ -248,6 +250,9 @@ done
 [ConClear](https://foundata.com/en/projects/conclear/) can update the Debian
 digest locally. Proposal generation does not edit the checkout; application
 verifies every occurrence and updates all files atomically.
+Prefer a refreshed base digest. If the tag still lacks security updates, keep
+`apt-get upgrade` in the existing package-install `RUN`; reassess it at each pin
+update to avoid duplicating upgraded base files in another layer.
 
 ```sh
 proposal_dir=$(mktemp -d "${TMPDIR:-/tmp}/openldap-pins.XXXXXX")

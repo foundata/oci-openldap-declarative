@@ -15,7 +15,9 @@ LABEL org.opencontainers.image.revision="${IMAGE_REVISION}"
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ARG DEBIAN_FRONTEND=noninteractive
+# Keep base packages patched until the pinned tag includes these updates.
 RUN apt-get update \
+  && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     jq \
@@ -28,6 +30,7 @@ RUN apt-get update \
   && find /usr/share/doc -type f ! -name copyright -delete \
   && find /usr/share/doc -type l -delete \
   && find /usr/share/doc -depth -type d -empty -delete \
+  && find /usr -xdev -type d -name __pycache__ -prune -exec rm -rf {} + \
   && find /usr/lib/ldap -mindepth 1 \
     ! -name 'argon2.*' \
     ! -name 'back_mdb.*' \
@@ -52,10 +55,13 @@ RUN apt-get update \
   && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
     /etc/ldap/slapd.d/* \
+    /usr/share/locale \
     /usr/share/man/* \
     /var/lib/apt/lists/* \
+    /var/cache/apt \
     /var/cache/debconf/* \
     /var/lib/ldap/* \
+    /var/log/* \
   && if getent passwd 1001 >/dev/null || getent group 1001 >/dev/null; then \
     printf '%s\n' 'UID or GID 1001 already exists in the pinned base image' >&2; \
     exit 1; \

@@ -24,7 +24,10 @@ from scripts.server_config import MODULES
 from tests.entry_uuid_cases import ENTRY_UUID_CASES
 from tests.integration.conftest import PROJECT, Images
 from tests.integration.harness import Podman, Store
-from tests.integration.image_checks import assert_image_privileges
+from tests.integration.image_checks import (
+    assert_image_package_data,
+    assert_image_privileges,
+)
 from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
 from tests.validate_snapshot_manifest import validate_manifest
 
@@ -184,6 +187,7 @@ def generated(generator: Generator) -> Path:
 
 
 def test_generator_image_boundary(generator: Generator) -> None:
+    assert_image_package_data(generator.podman, generator.image)
     result = generator.container(
         "-c",
         "id -u; id -g; command -v ansible-vault; command -v openldap-password; command -v openssl; test ! -e /usr/sbin/slapd; test ! -e /tmp/export_schema.py; test ! -e /usr/local/lib/openldap-declarative/generator/export_schema.py; test ! -e /TEMP-Notes; test -s /usr/share/doc/ansible-core/copyright; test -s /usr/local/share/openldap-declarative/LICENSE.txt",
