@@ -79,18 +79,20 @@ From the repository root, run:
 ```sh
 created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 revision=$(git rev-parse HEAD)
-podman build --format oci --pull=always --file Containerfile \
+podman build --format oci --pull=always --inherit-labels=false --file Containerfile \
   --build-arg "IMAGE_CREATED=${created}" \
   --build-arg "IMAGE_REVISION=${revision}" \
   --build-arg IMAGE_VERSION=dev --tag localhost/openldap-declarative:dev .
-podman build --format oci --pull=always --file Containerfile.generator \
+podman build --format oci --pull=always --inherit-labels=false --file Containerfile.generator \
   --build-arg "IMAGE_CREATED=${created}" \
   --build-arg "IMAGE_REVISION=${revision}" \
   --build-arg IMAGE_VERSION=dev \
   --tag localhost/openldap-declarative-generator:dev .
 ```
 
-These images are for development only. Never deploy `:dev` images in production;
+`--inherit-labels=false` keeps the base image's labels out of the result, as the
+container image guide requires and as ConClear's release build does. These
+images are for development only. Never deploy `:dev` images in production;
 follow [qualification and releases](#qualification-and-releases) instead.
 
 ### Try the README workflow locally<a id="local-readme"></a>
