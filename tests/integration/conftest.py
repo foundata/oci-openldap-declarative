@@ -67,7 +67,10 @@ def store(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[Store]:
     if input_manifest is not None:
-        base = input_manifest.parent
+        scratch = os.environ.get("CC_HOOK_SCRATCH", "")
+        base = Path(scratch)
+        if not scratch or not base.is_dir() or base.is_symlink():
+            pytest.fail("ConClear modes require CC_HOOK_SCRATCH")
     else:
         run_dir = request.config.getoption("--run-dir")
         if run_dir is None:
