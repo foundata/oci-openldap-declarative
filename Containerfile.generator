@@ -61,6 +61,7 @@ RUN apt-get update \
   && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
     /usr/lib/python3/dist-packages/ansible/galaxy/data \
+    /usr/share/ieee-data \
     /usr/share/locale \
     /usr/share/man/* \
     /var/lib/apt/lists/* \

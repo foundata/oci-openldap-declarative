@@ -136,7 +136,8 @@ boundary between the images; no generator process or source-decryption key is
 needed on the LDAP host. Debian package installation uses
 `--no-install-recommends` to exclude the full Ansible collection bundle.
 Both images omit package caches, logs, translations and Python bytecode; `C.UTF-8`
-and Python sources remain. The generator omits unused Galaxy scaffolding data.
+and Python sources remain. The generator omits unused Galaxy scaffolding and
+IEEE MAC-address lookup data.
 
 For additive YAML fields, the generator parses schema definitions with
 `python-ldap`. A build-only stage exports the loaded schema through a temporary
