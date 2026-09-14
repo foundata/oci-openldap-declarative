@@ -15,7 +15,7 @@ LABEL org.opencontainers.image.revision="${IMAGE_REVISION}"
 LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ARG DEBIAN_FRONTEND=noninteractive
-# Keep base packages patched until the pinned tag includes these updates.
+# Apply available updates to inherited packages at build time.
 RUN apt-get update \
   && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \

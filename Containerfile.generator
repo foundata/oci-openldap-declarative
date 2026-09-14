@@ -4,6 +4,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 
 COPY --chown=0:0 --chmod=0444 generator/export_schema.py /tmp/export_schema.py
 
+# Apply available updates to inherited packages at build time.
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
   && chmod 0755 /usr/sbin/policy-rc.d \
   && apt-get update \
@@ -35,7 +36,7 @@ LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# Keep base packages patched until the pinned tag includes these updates.
+# Apply available updates to inherited packages at build time.
 RUN apt-get update \
   && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \

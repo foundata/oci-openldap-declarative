@@ -250,9 +250,9 @@ done
 [ConClear](https://foundata.com/en/projects/conclear/) can update the Debian
 digest locally. Proposal generation does not edit the checkout; application
 verifies every occurrence and updates all files atomically.
-Prefer a refreshed base digest. If the tag still lacks security updates, keep
-`apt-get upgrade` in the existing package-install `RUN`; reassess it at each pin
-update to avoid duplicating upgraded base files in another layer.
+Refresh base digests regularly and retain `apt-get upgrade` in each existing
+package-install `RUN`. Release builds must execute that step against current
+package indexes; reusing a cached layer does not refresh packages.
 
 ```sh
 proposal_dir=$(mktemp -d "${TMPDIR:-/tmp}/openldap-pins.XXXXXX")
