@@ -43,14 +43,16 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
   ```
 
   If that version is not published yet, install an approved wheel with
-  `uv tool install /absolute/path/to/conclear-1.0.0-py3-none-any.whl`, built through
-  ConClear's [distribution release procedure](https://github.com/foundata/conclear/blob/main/DEVELOPMENT.md#release-procedure).
+  `uv tool install /absolute/path/to/conclear-1.0.0-py3-none-any.whl`, built
+  through ConClear's
+  [distribution release procedure](https://github.com/foundata/conclear/blob/main/DEVELOPMENT.md#release-procedure).
   Check the reported source and guide revisions; release commands must not use
   an installation reporting `development-source-tree`.
 
 For qualification, install ConClear's supported Buildah, Podman, Skopeo,
-Hadolint and Trivy versions; publishing and signed rescans also need Cosign.
-Use its [current tool requirements](https://github.com/foundata/conclear#installation)
+Hadolint and Trivy versions; publishing and signed rescans also need Cosign. Use
+its
+[current tool requirements](https://github.com/foundata/conclear#installation)
 instead of maintaining another version table here.
 
 
@@ -112,8 +114,8 @@ runtime=localhost/openldap-declarative:dev
 For a single-host test, set both variables in the same Bash terminal. Skip the
 registry pull/digest-resolution blocks in the README and Quadlet guide, keeping
 these local references throughout. Inside `hash_password()`, replace the image
-inspection assignment with `generator=localhost/openldap-declarative-generator:dev`
-as well. Start with
+inspection assignment with
+`generator=localhost/openldap-declarative-generator:dev` as well. Start with
 [directory preparation](README.md#usage-prepare), then follow signing,
 generation and deployment. The admin workflow needs only the generator image.
 
@@ -203,9 +205,9 @@ Custom LDIF tests supply complete configuration, including selected package
 schemas. They exercise administrator-owned ACLs and credentials, optional
 modules, disposable writes, runtime-setting conflicts and preflight isolation.
 The generator image also ships the package's schema LDIF files for explicit
-selection; no schemas or policy are implicitly inserted in this path.
-Use separate fresh containers for custom preflight. Never mount an active
-service's runtime volume or writable revision state into that preflight container.
+selection; no schemas or policy are implicitly inserted in this path. Use
+separate fresh containers for custom preflight. Never mount an active service's
+runtime volume or writable revision state into that preflight container.
 
 ```sh
 sh hack/check.sh
@@ -274,16 +276,17 @@ release version for `runtime` and `generator`; both declare `linux/amd64` and
 
 ### Prepare the release host<a id="release-host"></a>
 
-Follow ConClear's [host setup](https://github.com/foundata/conclear#usage-host-config)
-for rootless storage, SELinux, Quay access and a protected release profile.
-Keep the profile outside this repository, normally at
-`~/.config/conclear/foundata.toml`. Reuse the approved builder identity and
-Cosign signing authority. These sign OCI images and are separate from the
-minisign keys used for LDAP snapshots.
+Follow ConClear's
+[host setup](https://github.com/foundata/conclear#usage-host-config) for
+rootless storage, SELinux, Quay access and a protected release profile. Keep the
+profile outside this repository, normally at `~/.config/conclear/foundata.toml`.
+Reuse the approved builder identity and Cosign signing authority. These sign OCI
+images and are separate from the minisign keys used for LDAP snapshots.
 
 The effective defaults require native `linux/amd64` testing; `linux/arm64` may
 use a native worker or supported QEMU user-mode emulation. ConClear checks
-available handlers but does not install them. For separate platform workers, use its
+available handlers but does not install them. For separate platform workers, use
+its
 [distributed qualification workflow](https://github.com/foundata/conclear/blob/main/docs/distributed-qualification.md),
 including the shared scanner database and qualification window.
 

@@ -1,11 +1,11 @@
 # Rootless Podman deployment
 
 Deploy one directory snapshot per container. These commands use the README's
-`example-app` directory and the files in this repository's `examples/` tree.
-Use example files from the same release as your images.
-Headings name the host where each action runs; see
-[host roles](../../README.md#usage-hosts). Keep an admin/CI terminal and an LDAP-host
-terminal open separately. Paths under `${HOME}` belong to the current host account.
+`example-app` directory and the files in this repository's `examples/` tree. Use
+example files from the same release as your images. Headings name the host where
+each action runs; see [host roles](../../README.md#usage-hosts). Keep an
+admin/CI terminal and an LDAP-host terminal open separately. Paths under
+`${HOME}` belong to the current host account.
 
 ## Table of contents
 
@@ -91,8 +91,9 @@ scp "${private}/snapshot.pub" \
 ```
 
 The destination revision directory must be new. For later key changes, follow
-[signing-key rotation](#tls-and-signing-key-rotation). Never transfer the private
-signing key, source definition, Vault keys or password files to the LDAP host.
+[signing-key rotation](#tls-and-signing-key-rotation). Never transfer the
+private signing key, source definition, Vault keys or password files to the LDAP
+host.
 
 ## Preflight and activate (LDAP host)<a id="preflight-and-activate"></a>
 
@@ -135,9 +136,10 @@ revision=1
 ```
 
 Preflight verifies and imports offline without opening a listener or updating
-revision state. Exit codes: `0` accepted, `64` invalid runtime settings, `65` invalid data/replay, `66` invalid
-input/state, `70` internal failure, `78` expired. For LDAPS, include the target
-TLS settings and certificate mounts in preflight too.
+revision state. Exit codes: `0` accepted, `64` invalid runtime settings, `65`
+invalid data/replay, `66` invalid input/state, `70` internal failure, `78`
+expired. For LDAPS, include the target TLS settings and certificate mounts in
+preflight too.
 
 Search limits default to 500 results and 10 seconds. Set
 `Environment=LDAP_SEARCH_SIZE_LIMIT=1000` and
@@ -172,15 +174,15 @@ returning her DN. Logs: `journalctl --user -u openldap-example.service -n 50`.
 
 Add `Network=openldap-example.network` to the application's Quadlet:
 
-| Application setting | Value |
-| ------------------- | ----- |
-| LDAP URL | `ldap://ldap:1389` |
-| Base DN | `dc=example-app,dc=services,dc=example,dc=org` |
-| Bind DN | `uid=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
-| Bind password | Original password used for the bind account's verifier |
-| Login attribute | `uid` |
+|      Application setting      | Value |
+| ----------------------------- | ----- |
+| LDAP URL                      | `ldap://ldap:1389` |
+| Base DN                       | `dc=example-app,dc=services,dc=example,dc=org` |
+| Bind DN                       | `uid=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
+| Bind password                 | Original password used for the bind account's verifier |
+| Login attribute               | `uid` |
 | Persistent identity attribute | `entryUUID` |
-| Group membership attribute | `memberOf` |
+| Group membership attribute    | `memberOf` |
 
 The internal network has no external connectivity. An application needing
 external access needs its own additional network. Publish LDAP ports only when
@@ -217,10 +219,12 @@ Custom LDIF must declare certificate paths and TLS policy in its signed
 
 1. On admin/CI, create the new keypair and transfer only its public key.
 2. On the LDAP host, configure runtime and preflight with a directory containing
-   old and new `*.pub` keys using `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`; do not also set
-   `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`. Restart with that trust set.
-3. On admin/CI, sign the next revision with the new key and transfer the snapshot.
-4. On the LDAP host, preflight and activate it, updating the backstop key as below.
+   old and new `*.pub` keys using `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`; do not also
+   set `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`. Restart with that trust set.
+3. On admin/CI, sign the next revision with the new key and transfer the
+   snapshot.
+4. On the LDAP host, preflight and activate it, updating the backstop key as
+   below.
 
 The supplied host backstop accepts a single public-key file, not a directory.
 Keep that file matched to the active snapshot's signer: while LDAP and the

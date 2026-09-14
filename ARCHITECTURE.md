@@ -5,12 +5,13 @@ OpenLDAP Declarative. The terms MUST, SHOULD and MAY are used as defined in
 [RFC 2119](https://datatracker.ietf.org/doc/html/rfc2119) and
 [RFC 8174](https://datatracker.ietf.org/doc/html/rfc8174).
 
-Implementation and tests MUST conform to this contract.
-Discrepancies MUST be investigated; an approved correction changes either the
-implementation or the contract. This document contains no planned or speculative
-behavior. Proposals and future changes are tracked separately, preferably as
-[issues](https://foundata.com/en/projects/oci-openldap-declarative/#issues), until the
-implementation, tests and corresponding contract changes are merged together.
+Implementation and tests MUST conform to this contract. Discrepancies MUST be
+investigated; an approved correction changes either the implementation or the
+contract. This document contains no planned or speculative behavior. Proposals
+and future changes are tracked separately, preferably as
+[issues](https://foundata.com/en/projects/oci-openldap-declarative/#issues),
+until the implementation, tests and corresponding contract changes are merged
+together.
 
 
 ## Table of contents
@@ -40,8 +41,8 @@ instance serves one directory; replicas MAY consume the same snapshot.
 
 Users/groups YAML produces a directory read-only to ordinary LDAP clients.
 Custom LDIF supplies administrator-owned server configuration and data; its
-access and credential policies are not project guarantees. Both paths retain
-the signed snapshot lifecycle. Runtime databases and local changes are disposable.
+access and credential policies are not project guarantees. Both paths retain the
+signed snapshot lifecycle. Runtime databases and local changes are disposable.
 One snapshot-loaded MDB data database is supported; replication consumers and
 other data backends are outside the import contract.
 
@@ -74,8 +75,8 @@ LDAP clients       LDAP clients       LDAP clients
   password generation and Ansible Vault tooling belong only in the generator.
   Both images use the same entry-LDIF validator.
 - The generator image MUST contain all tooling needed for the documented admin
-  workflow, including password hashing, Vault-key generation and snapshot signing.
-  Admin operations MUST NOT require the runtime image.
+  workflow, including password hashing, Vault-key generation and snapshot
+  signing. Admin operations MUST NOT require the runtime image.
 - Configuration and directory entries MUST remain distinct, signed inputs.
   Users/groups YAML uses generated configuration and explicit schema/read-policy
   inputs. Custom LDIF owns the complete server configuration, including schemas.
@@ -104,8 +105,8 @@ switch or fallback to generated policy for incomplete custom configuration.
 
 YAML MUST use one top-level mapping with string keys. Duplicate keys, aliases,
 unknown fields and unsupported tags MUST be rejected. Decrypted strings are
-validated as values; they MUST NOT be reparsed as YAML or evaluated as templates.
-Schema validation describes the document after decryption.
+validated as values; they MUST NOT be reparsed as YAML or evaluated as
+templates. Schema validation describes the document after decryption.
 
 ### Custom directory: LDIF<a id="native-ldif"></a>
 
@@ -115,13 +116,14 @@ Schema validation describes the document after decryption.
 - Data entries MUST be under `base_dn` and MUST NOT target `cn=config`.
 - Entries MAY use other layouts, object classes, binary attributes and
   multivalued attributes. Schema selection MUST be explicit.
-- `config_files` MUST contain complete `cn=config` entry LDIF, including schemas,
-  modules, databases, ACLs and any overlays, in dependency order. The generator
-  MUST combine these records into one signed `config.ldif` without inserting
-  generated defaults. Duplicate configuration DNs MUST be rejected.
-- `schema_files`, `read_attributes` and application-model fields MUST be rejected
-  on this path. The administrator owns schema, access and credential policies.
-  The runtime MUST NOT force Argon2id, read-only access or the application layout.
+- `config_files` MUST contain complete `cn=config` entry LDIF, including
+  schemas, modules, databases, ACLs and any overlays, in dependency order. The
+  generator MUST combine these records into one signed `config.ldif` without
+  inserting generated defaults. Duplicate configuration DNs MUST be rejected.
+- `schema_files`, `read_attributes` and application-model fields MUST be
+  rejected on this path. The administrator owns schema, access and credential
+  policies. The runtime MUST NOT force Argon2id, read-only access or the
+  application layout.
 - Packaged schema definitions MAY be selected as `config_files` inputs. Their
   contents MUST enter the snapshot; their source paths MUST NOT be needed at
   runtime. Changes, controls, includes and URL-valued imports MUST be rejected.
@@ -156,22 +158,22 @@ MUST be rejected on this path.
   NOT be group members. Groups with no active members MUST be omitted because
   `groupOfNames` requires a member.
 - The generator MUST emit reciprocal `member` and `memberOf` values.
-- Users MUST be `inetOrgPerson` entries at
-  `uid=<username>,ou=people,<base_dn>`. Their required `last_name` MUST map to `sn`.
+- Users MUST be `inetOrgPerson` entries at `uid=<username>,ou=people,<base_dn>`.
+  Their required `last_name` MUST map to `sn`.
 - For users and bind accounts, `username` MUST supply LDAP `uid`.
   Optional `display_name` MUST supply `displayName` and `cn`. If omitted,
   `cn` MUST use `username` and `displayName` MUST be absent. Display names MUST
   NOT affect DNs. Usernames MUST be case-insensitively unique across all users
   (including inactive users) and bind accounts.
-- Groups MUST be `groupOfNames` entries at
-  `cn=<groupname>,ou=groups,<base_dn>`. `groupname` MUST supply `cn`, not `name`,
-  and MUST be case-insensitively unique among groups.
+- Groups MUST be `groupOfNames` entries at `cn=<groupname>,ou=groups,<base_dn>`.
+  `groupname` MUST supply `cn`, not `name`, and MUST be case-insensitively
+  unique among groups.
 - `bind_accounts` MUST be a non-empty list. Each account MUST be an
   `organizationalRole` with `simpleSecurityObject` and the bundled
   `openldapDeclarativeBindAccount` auxiliary class at
   `uid=<username>,ou=services,<base_dn>`. The auxiliary class MUST require `uid`
-  and allow `displayName`; bind accounts do not require a surname.
-  Accounts have independent credentials and identities but share the read policy.
+  and allow `displayName`; bind accounts do not require a surname. Accounts have
+  independent credentials and identities but share the read policy.
 - The base entry MUST use `dcObject` and `organization`; this route therefore
   requires an ASCII base DN beginning with a single `dc` RDN.
 - A default group is not required. Group names such as `ALLOW` and `DENY`
@@ -180,20 +182,20 @@ MUST be rejected on this path.
 Optional user profile fields MUST map as follows. They are strings; omission
 means no attribute value. Empty strings and NUL/newline characters are rejected.
 
-| YAML field | LDAP attribute |
-| ---------- | -------------- |
-| `first_name` | `givenName` |
-| `initials` | `initials` |
-| `display_name` | `displayName` and `cn` |
-| `description` | `description` |
-| `office` | `physicalDeliveryOfficeName` |
-| `phone` | `telephoneNumber` |
-| `mobile` | `mobile` |
-| `email` | `mail` |
-| `org` | `o` (metadata, not directory placement) |
+|    YAML field     | LDAP attribute |
+| ----------------- | -------------- |
+| `first_name`      | `givenName`    |
+| `initials`        | `initials`     |
+| `display_name`    | `displayName` and `cn` |
+| `description`     | `description`  |
+| `office`          | `physicalDeliveryOfficeName` |
+| `phone`           | `telephoneNumber` |
+| `mobile`          | `mobile`       |
+| `email`           | `mail`         |
+| `org`             | `o` (metadata, not directory placement) |
 | `employee_number` | `employeeNumber` |
-| `department` | `ou` (metadata, not directory placement) |
-| `job_title` | `title` |
+| `department`      | `ou` (metadata, not directory placement) |
+| `job_title`       | `title`        |
 
 `employee_number` MUST NOT affect entry UUIDs.
 User `org` MUST NOT change the base entry's `organization` value.
@@ -201,17 +203,18 @@ User `org` MUST NOT change the base entry's `organization` value.
 `proxy_addresses` MAY contain up to 64 `TYPE:address` strings of at most 1123
 characters. The generator MUST preserve them as multivalued `proxyAddresses`,
 reject case-insensitive duplicates and add `openldapDeclarativeUser` when the
-list is non-empty. It MUST NOT infer a primary address or configure mail delivery.
-All supplied profile fields are included in the default readable-attribute list;
-an explicit `read_attributes` list replaces those defaults.
+list is non-empty. It MUST NOT infer a primary address or configure mail
+delivery. All supplied profile fields are included in the default
+readable-attribute list; an explicit `read_attributes` list replaces those
+defaults.
 
 #### Additive attributes and classes<a id="extensions"></a>
 
 Users, groups and bind accounts MAY supply `attributes` and `object_classes`.
 Omission, an empty attribute mapping or an empty class list means no extension.
 
-- `attributes` MUST map LDAP names or numeric OIDs to non-empty lists of strings.
-  Limits are 128 attributes per entry, 64 values per attribute and 4096
+- `attributes` MUST map LDAP names or numeric OIDs to non-empty lists of
+  strings. Limits are 128 attributes per entry, 64 values per attribute and 4096
   characters per value. Empty values, NUL/newlines, non-string values and exact
   duplicate values MUST be rejected. Attribute options MUST NOT be accepted.
 - `object_classes` MUST contain at most 16 additional auxiliary class names or
@@ -283,34 +286,35 @@ clients depend on stable identities. Custom snapshots have no UUID namespace.
 
 Every active simplified user and each bind account MUST have exactly one source:
 
-| Field | Meaning after optional Vault decryption |
-| ----- | --------------------------------------- |
-| `password` | Original password to hash |
-| `password_file` | Absolute path to an original-password file |
-| `password_hash` | Complete verifier to preserve |
-| `password_hash_file` | Absolute path to a verifier file |
+|        Field         | Meaning after optional Vault decryption |
+| -------------------- | --------------------------------------- |
+| `password`           | Original password to hash               |
+| `password_file`      | Absolute path to an original-password file |
+| `password_hash`      | Complete verifier to preserve           |
+| `password_hash_file` | Absolute path to a verifier file        |
 
 Credential files MUST be owner-only regular files, containing one non-empty
 UTF-8 line, at most 4096 bytes, with an optional LF or CRLF terminator.
 Unencrypted inline credentials require owner-only YAML permissions.
 
 The generator MUST hash original passwords with salted Argon2id version 19:
-19,456 KiB memory, two iterations, one lane, a 16-byte salt and a 32-byte digest.
-For users/groups YAML, the generator and runtime MUST reject `userPassword`
-values that are not valid `{ARGON2}` Argon2id verifiers. Seeded verifiers MUST meet those minimum
-memory, iteration, salt and digest sizes and use canonical unpadded base64.
-Parameter bounds MUST also fit the Argon2 implementation.
+19,456 KiB memory, two iterations, one lane, a 16-byte salt and a 32-byte
+digest. For users/groups YAML, the generator and runtime MUST reject
+`userPassword` values that are not valid `{ARGON2}` Argon2id verifiers. Seeded
+verifiers MUST meet those minimum memory, iteration, salt and digest sizes and
+use canonical unpadded base64. Parameter bounds MUST also fit the Argon2
+implementation.
 
 Custom LDIF credentials MUST remain administrator-owned values. Their usability
 depends on the selected OpenLDAP configuration and modules. Snapshot signing
 MUST NOT be described as validating the strength or confidentiality of those
 credentials.
 
-The generator's `openldap-password` command MUST use the same hashing parameters.
-It MUST read one non-empty UTF-8 password from stdin, at most 4096 bytes with an
-optional LF or CRLF terminator, and output only its verifier on success. Invalid
-input MUST fail without echoing the supplied value. Password arguments and
-terminal input MUST be rejected.
+The generator's `openldap-password` command MUST use the same hashing
+parameters. It MUST read one non-empty UTF-8 password from stdin, at most 4096
+bytes with an optional LF or CRLF terminator, and output only its verifier on
+success. Invalid input MUST fail without echoing the supplied value. Password
+arguments and terminal input MUST be rejected.
 
 YAML string values MAY use labeled Ansible Vault scalars:
 `!vault` with the standard `$ANSIBLE_VAULT;1.2;AES256;KEYID` header.
@@ -373,16 +377,17 @@ Before opening listeners, startup MUST:
 3. Validate entry LDIF and the applicable schema/configuration inputs.
 4. Rebuild configuration and MDB from verified private copies.
 5. Run offline OpenLDAP schema/configuration validation, import, indexing and
-   readback validation. Users/groups snapshots also require reciprocal membership.
+   readback validation. Users/groups snapshots also require reciprocal
+   membership.
 6. Recheck expiry, then start LDAP and record the accepted revision and digest.
 
 Preflight MUST perform equivalent offline checks without opening a listener,
-modifying existing revision state or changing the running directory. Custom
-LDIF preflight MUST run in a separate container with fresh `/run/openldap`
-scratch storage and read-only input/state mounts. It MUST refuse a nonempty
-runtime directory rather than redirecting administrator-supplied paths into
-the active service. The preflight invocation MUST clean its own scratch data.
-Startup MUST repeat verification after deployment. Failed validation MUST prevent serving.
+modifying existing revision state or changing the running directory. Custom LDIF
+preflight MUST run in a separate container with fresh `/run/openldap` scratch
+storage and read-only input/state mounts. It MUST refuse a nonempty runtime
+directory rather than redirecting administrator-supplied paths into the active
+service. The preflight invocation MUST clean its own scratch data. Startup MUST
+repeat verification after deployment. Failed validation MUST prevent serving.
 
 The database MUST be rebuilt on every startup. Persistent revision state is
 separate from disposable configuration, sockets and MDB files.
@@ -399,20 +404,22 @@ separate from disposable configuration, sockets and MDB files.
   `/run/openldap/slapd.pid` and `/run/openldap/slapd.args`.
 - Runtime owns listeners, signature/revision checks, supervision and
   `LDAP_LOG_LEVEL`. Custom LDIF MUST NOT contain `olcLogLevel`. The runtime MUST
-  reject `LDAP_SEARCH_SIZE_LIMIT`, `LDAP_SEARCH_TIME_LIMIT`, `LDAP_TLS_CERT_FILE`,
-  `LDAP_TLS_KEY_FILE`, `LDAP_TLS_CA_FILE`, `LDAP_ADMIN_PASSWORD_FILE` and
-  `LDAP_ADMIN_PASSWORD` for custom LDIF. Corresponding settings belong to LDIF.
+  reject `LDAP_SEARCH_SIZE_LIMIT`, `LDAP_SEARCH_TIME_LIMIT`,
+  `LDAP_TLS_CERT_FILE`, `LDAP_TLS_KEY_FILE`, `LDAP_TLS_CA_FILE`,
+  `LDAP_ADMIN_PASSWORD_FILE` and `LDAP_ADMIN_PASSWORD` for custom LDIF.
+  Corresponding settings belong to LDIF.
 - Configuration MUST use attribute names without options. Modules MUST use
   packaged basenames and `/usr/lib/ldap`; snapshot-provided binaries and
   arbitrary library paths MUST NOT be accepted. Optional modules MUST NOT be
   loaded by the generated YAML configuration.
 - Custom configuration MUST permit the current process's peer-credential
-  identity to search its base entry over LDAPI for health checks. Before serving,
-  startup and preflight MUST use `slapacl` to check base-entry read access and
-  `objectClass` search access with the local socket context and configured local
-  SSF. This check MUST have a 15-second timeout and require explicit ALLOWED
-  results, not only a successful tool exit. Administrators MUST also test live
-  health checks with their chosen ACLs, overlays and authentication mappings.
+  identity to search its base entry over LDAPI for health checks. Before
+  serving, startup and preflight MUST use `slapacl` to check base-entry read
+  access and `objectClass` search access with the local socket context and
+  configured local SSF. This check MUST have a 15-second timeout and require
+  explicit ALLOWED results, not only a successful tool exit. Administrators MUST
+  also test live health checks with their chosen ACLs, overlays and
+  authentication mappings.
 - Custom configuration is trusted administrative input, including code executed
   by modules during import. Preflight MUST use container isolation and read-only
   service mounts, not claim to sandbox arbitrary executable code.
@@ -421,8 +428,9 @@ The [custom LDIF guide](docs/custom-ldif.md) lists packaged modules and complete
 examples. The project guarantees the snapshot lifecycle for supported custom
 configuration, not its access policy, password strength or overlay combinations.
 If writes are allowed, the snapshot authenticates deployment inputs rather than
-subsequent data. Directory writes and database-backed overlay state are discarded
-on rebuild. Additional files, such as audit logs, remain deployment-owned.
+subsequent data. Directory writes and database-backed overlay state are
+discarded on rebuild. Additional files, such as audit logs, remain
+deployment-owned.
 
 ### LDAP access<a id="access"></a>
 
@@ -433,27 +441,28 @@ accounts MAY read the signed attribute allowlist throughout the directory;
 `entry` and `children` access are included for traversal.
 
 For users/groups YAML, `LDAP_SEARCH_SIZE_LIMIT` and `LDAP_SEARCH_TIME_LIMIT`
-MUST configure the global search result and duration limits, defaulting to
-500 results and 10 seconds.
-Each accepts integers from 1 through 2,147,483,647 or `unlimited`. Empty values,
-other spellings and invalid numbers MUST fail startup and preflight with exit
-code 64. These are operator-controlled runtime settings, not signed directory
-data; preflight SHOULD use the same settings as the target runtime. Size limits
-apply to the total search result, including paged searches, not directory capacity.
+MUST configure the global search result and duration limits, defaulting to 500
+results and 10 seconds. Each accepts integers from 1 through 2,147,483,647 or
+`unlimited`. Empty values, other spellings and invalid numbers MUST fail startup
+and preflight with exit code 64. These are operator-controlled runtime settings,
+not signed directory data; preflight SHOULD use the same settings as the target
+runtime. Size limits apply to the total search result, including paged searches,
+not directory capacity.
 
 Users/groups snapshots default to identity and membership attributes.
 Password ACLs MUST precede this list.
 The local peer-credential identity MAY read through LDAPI for health checks.
 
 Users/groups YAML configures no recovery administrator by default. If explicitly
-enabled, `cn=admin,<base_dn>` bypasses ACLs and MAY write or read verifiers. It MUST NOT
-be used by applications. Its modifications disappear on rebuild.
+enabled, `cn=admin,<base_dn>` bypasses ACLs and MAY write or read verifiers. It
+MUST NOT be used by applications. Its modifications disappear on rebuild.
 
 ### Expiry and revision state<a id="expiry"></a>
 
-- Revisions MUST be integers from 1 through 9,007,199,254,740,991 and MUST increase
-  for each newly generated snapshot, including unchanged-data renewals.
-- Exact artifact replay MAY restart a directory but MUST NOT extend its lifetime.
+- Revisions MUST be integers from 1 through 9,007,199,254,740,991 and MUST
+  increase for each newly generated snapshot, including unchanged-data renewals.
+- Exact artifact replay MAY restart a directory but MUST NOT extend its
+  lifetime.
 - Generation time MUST NOT be more than five minutes ahead of the runtime clock.
 - Soft expiry warns; hard expiry MUST stop LDAP with exit code 78.
 - `soft_ttl_seconds` MUST be less than `hard_ttl_seconds`.
@@ -509,8 +518,8 @@ beside the runtime for read-only mounting. It MUST NOT deliver source-decryption
 keys or the private signing key. Renewals SHOULD arrive before soft expiry.
 
 Backups MUST include source definitions, stable identifiers, required secret
-material, signing keys and deployment settings.
-Restores MUST use a current signed snapshot and verify identity and authentication.
+material, signing keys and deployment settings. Restores MUST use a current
+signed snapshot and verify identity and authentication.
 
 ## Verification<a id="verification"></a>
 
