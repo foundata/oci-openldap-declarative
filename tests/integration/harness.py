@@ -257,6 +257,9 @@ class Podman:
         label = f"{OWNER_LABEL}={self.store.run_key}"
         if arguments[0] in {"run", "create"}:
             arguments = (arguments[0], "--label", label, *arguments[1:])
+            platform = os.environ.get("CC_PLATFORM")
+            if platform:
+                arguments = (arguments[0], "--platform", platform, *arguments[1:])
         elif arguments[:2] == ("volume", "create"):
             arguments = (*arguments[:2], "--label", label, *arguments[2:])
         command = [

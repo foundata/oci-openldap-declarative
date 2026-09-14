@@ -46,6 +46,51 @@ def test_symlinks_never_prove_directory_ownership(isolated: Store) -> None:
     assert not isolated.owned(link)
 
 
+@pytest.mark.parametrize("platform", [None, "", "linux/amd64", "linux/arm64"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("run", "image"),
+        ("create", "image"),
+        ("exec", "container", "true"),
+        ("inspect", "container"),
+        ("build", "."),
+        ("volume", "create", "volume"),
+        ("pod", "create", "--name", "pod"),
+    ],
+)
+def test_platform_is_forwarded_only_when_launching_containers(
+    isolated: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str | None,
+    arguments: tuple[str, ...],
+) -> None:
+    if platform is None:
+        monkeypatch.delenv("CC_PLATFORM", raising=False)
+    else:
+        monkeypatch.setenv("CC_PLATFORM", platform)
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/unused/podman")
+    monkeypatch.setattr(subprocess, "run", run)
+    Podman(isolated).run(*arguments)
+    assert len(calls) == 1
+    command = calls[0]
+    if platform and arguments[0] in {"run", "create"}:
+        assert command.count("--platform") == 1
+        assert command[command.index("--platform") + 1] == platform
+    else:
+        assert "--platform" not in command
+    if arguments[0] in {"run", "create"}:
+        assert command[command.index("--label") + 1] == (
+            f"{harness.OWNER_LABEL}={isolated.run_key}"
+        )
+
+
 @pytest.mark.parametrize("resource", ["container", "volume"])
 def test_cleanup_refuses_unlabelled_resources_before_deletion(
     isolated: Store, monkeypatch: pytest.MonkeyPatch, resource: str
