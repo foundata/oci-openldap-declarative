@@ -259,6 +259,7 @@ class Runtime:
         extra_arguments: tuple[str, ...] = (),
         nofile: str | None = "1024:1024",
         runtime_tmpfs: str | None = None,
+        pod_name: str | None = None,
     ) -> Container:
         workspace = self.workspace.path
         name = f"{self.prefix}-{test_name}"
@@ -287,8 +288,8 @@ class Runtime:
             "create",
             "--name",
             name,
-            "--network",
-            "none",
+            *(("--pod", pod_name) if pod_name else ("--network", "none")),
+            "--user=1001:1001",
             "--read-only",
             "--read-only-tmpfs=false",
             *(["--ulimit", f"nofile={nofile}"] if nofile is not None else []),
@@ -339,6 +340,11 @@ class Runtime:
         self.podman.run("start", container.name)
         actual = self.podman.wait(container.name)
         logs = self.podman.logs(container.name)
+        # Process exit may precede delivery of the last conmon/journal message.
+        log_deadline = time.monotonic() + 5
+        while message and message not in logs and time.monotonic() < log_deadline:
+            time.sleep(POLL_INTERVAL)
+            logs = self.podman.logs(container.name)
         assert actual == status, (
             f"{container.name} exited {actual}, expected {status}:\n{logs}"
         )
@@ -408,6 +414,7 @@ class Runtime:
         runtime_dir: Path,
         *,
         extra_arguments: tuple[str, ...] = (),
+        environment_file: Path | None = None,
     ) -> subprocess.CompletedProcess[str]:
         return self.podman.run_container(
             "--rm",
@@ -428,19 +435,20 @@ class Runtime:
             "--volume",
             f"{runtime_dir}:/run/openldap:rw,Z",
             "--volume",
-            f"{snapshot}:/candidate:ro,z",
+            f"{snapshot}:/snapshot:ro,z",
             "--volume",
-            f"{self.workspace.path}/public/snapshot.pub:/keys/snapshot.pub:ro,z",
+            f"{self.workspace.path}/public/snapshot.pub:/run/credentials/snapshot-public-key:ro,z",
             "--volume",
-            f"{state_dir}:/existing-state:ro,Z",
+            f"{state_dir}:/state:ro,Z",
+            *(
+                ("--env-file", str(environment_file))
+                if environment_file is not None
+                else ("--env", "LDAP_EXPECTED_DIRECTORY_ID=test-service")
+            ),
             "--entrypoint",
-            f"{LIB}/preflight-snapshot.sh",
+            "openldap-preflight",
             *extra_arguments,
             self.image,
-            "/candidate",
-            "/keys/snapshot.pub",
-            "test-service",
-            "/existing-state/highest-revision",
             check=False,
         )
 
@@ -695,6 +703,12 @@ def test_image_contents_match_the_production_boundary(
     host = testinfra.get_host(f"podman://{sleeper}")
     assert host.check_output("id -u") == "1001"
     assert host.check_output("id -g") == "1001"
+    assert host.check_output("readlink /usr/local/bin/openldap-preflight") == (
+        f"{LIB}/preflight-snapshot.sh"
+    )
+    assert "LDAP_EXPECTED_DIRECTORY_ID" in host.check_output(
+        "openldap-preflight --help"
+    )
     for path in (
         "/usr/local/share/openldap-declarative/package-versions.txt",
         "/usr/local/share/openldap-declarative/LICENSE.txt",
@@ -702,7 +716,7 @@ def test_image_contents_match_the_production_boundary(
         *(f"/usr/lib/ldap/{module}.so" for module in sorted(MODULES)),
     ):
         assert host.file(path).size > 0, path
-    for path in ("/ARCHITECTURE.md", "/TEMP-Notes"):
+    for path in ("/ARCHITECTURE.md", "/TEMP-Notes", "/var/cache/debconf/templates.dat"):
         assert not host.file(path).exists, path
     for path in ("/snapshot", "/tls", "/run/credentials"):
         directory = host.file(path)
@@ -1279,6 +1293,201 @@ def test_preflight_validates_staged_revisions_without_mutating_state(
     else:
         assert sha256_file(state_path) == before
     assert not list(runtime_dir.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("settings", "status", "message"),
+    [
+        (("LDAP_SNAPSHOT_PUBLIC_KEY_DIR=/keys",), 0, "Preflight accepted"),
+        (
+            ("LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/keys/snapshot.pub",),
+            0,
+            "Preflight accepted",
+        ),
+        (
+            (
+                "LDAP_SNAPSHOT_PUBLIC_KEY_DIR=/keys",
+                "LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/keys/snapshot.pub",
+            ),
+            64,
+            "mutually exclusive",
+        ),
+        (("LDAP_EXPECTED_DIRECTORY_ID=",), 66, "is required"),
+        (("LDAP_EXPECTED_DIRECTORY_ID=wrong-directory",), 65, "directory"),
+        (
+            (
+                "LDAP_SNAPSHOT_DIR=/candidate",
+                "LDAP_REVISION_STATE_FILE=/existing-state/highest-revision",
+            ),
+            65,
+            "older than accepted revision 2",
+        ),
+    ],
+)
+def test_preflight_honors_runtime_environment(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    tmp_path: Path,
+    settings: tuple[str, ...],
+    status: int,
+    message: str,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    (state / "highest-revision").write_text("1\n")
+    alternate_state = tmp_path / "alternate-state"
+    alternate_state.mkdir(mode=0o700)
+    # Ignoring the configured path would accept revision 1 from the default state.
+    (alternate_state / "highest-revision").write_text("2\n")
+    arguments = [
+        "--volume",
+        f"{workspace.path}/public:/keys:ro,z",
+        "--volume",
+        f"{workspace.path}/valid:/candidate:ro,z",
+        "--volume",
+        f"{alternate_state}:/existing-state:ro,z",
+    ]
+    for setting in settings:
+        arguments.extend(("--env", setting))
+    result = runtime.preflight(
+        workspace.path / "valid", state, scratch, extra_arguments=tuple(arguments)
+    )
+    assert result.returncode == status, result.stdout + result.stderr
+    assert message in result.stdout + result.stderr
+    assert (state / "highest-revision").read_text() == "1\n"
+    assert (alternate_state / "highest-revision").read_text() == "2\n"
+    assert not list(scratch.iterdir())
+
+
+@pytest.mark.parametrize("limit", ["17", "invalid"])
+def test_preflight_and_startup_share_environment_file(
+    runtime: Runtime, workspace: RuntimeWorkspace, tmp_path: Path, limit: str
+) -> None:
+    environment = tmp_path / "ldap.env"
+    environment.write_text(
+        "LDAP_EXPECTED_DIRECTORY_ID=test-service\n"
+        f"LDAP_SEARCH_SIZE_LIMIT={limit}\n"
+        "LDAP_SEARCH_TIME_LIMIT=23\n"
+    )
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    result = runtime.preflight(
+        workspace.path / "valid", state, scratch, environment_file=environment
+    )
+    assert result.returncode == (0 if limit == "17" else 64), result.stderr
+    assert not list(state.iterdir()) and not list(scratch.iterdir())
+    container = runtime.create(
+        f"shared-environment-{limit}",
+        "valid",
+        extra_arguments=("--env-file", str(environment)),
+    )
+    if limit == "invalid":
+        runtime.expect_exit(container, 64, "LDAP_SEARCH_SIZE_LIMIT")
+    else:
+        runtime.start_healthy(container)
+        config = runtime.podman.exec_output(
+            container.name, "slapcat", "-F", "/run/openldap/slapd.d", "-n", "0"
+        )
+        assert "olcSizeLimit: 17" in config and "olcTimeLimit: 23" in config
+        assert runtime.stop(container) == 0
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        ("LDAP_PORT=389",),
+        ("LDAP_LISTEN_HOST=example.org",),
+        ("LDAP_TRANSPORT=invalid",),
+        ("LDAP_TRANSPORT=both", "LDAP_LDAPS_PORT=1389"),
+        ("LDAP_LOG_LEVEL=invalid",),
+        ("LDAP_MAX_OPEN_FILES=0",),
+    ],
+)
+def test_preflight_rejects_invalid_runtime_settings(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    tmp_path: Path,
+    settings: tuple[str, ...],
+    request: pytest.FixtureRequest,
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    arguments = tuple(value for setting in settings for value in ("--env", setting))
+    result = runtime.preflight(
+        workspace.path / "valid", state, scratch, extra_arguments=arguments
+    )
+    assert result.returncode == 64, result.stderr
+    assert not list(state.iterdir()) and not list(scratch.iterdir())
+    container = runtime.create(
+        f"preflight-settings-{request.node.callspec.id}",
+        "valid",
+        extra_arguments=arguments,
+    )
+    runtime.expect_exit(container, 64)
+
+
+def test_application_connects_through_shared_pod_loopback(
+    runtime: Runtime,
+    podman: Podman,
+    store: Store,
+) -> None:
+    pod_name = f"{store.prefix}-application-pod"
+    store.record("pod", pod_name)
+    pod_id = podman.output(
+        "pod",
+        "create",
+        "--name",
+        pod_name,
+        "--label",
+        f"{OWNER_LABEL}={store.run_key}",
+        "--network=none",
+        "--userns=keep-id:uid=1001,gid=1001",
+    )
+    try:
+        directory = runtime.create("pod-directory", "valid", pod_name=pod_name)
+        runtime.start_healthy(directory)
+        namespace = podman.exec_output(
+            directory.name, "readlink", "/proc/self/ns/net"
+        ).strip()
+        # A separate client process in the pod sees LDAP through its own loopback.
+        result = podman.run_container(
+            "--rm",
+            "--pod",
+            pod_name,
+            "--user=1002:1002",
+            "--read-only",
+            "--cap-drop=all",
+            "--security-opt=no-new-privileges",
+            "--entrypoint",
+            "sh",
+            runtime.image,
+            "-c",
+            "id -u; readlink /proc/self/ns/net; exec ldapsearch -LLL -x "
+            '-H ldap://127.0.0.1:1389 -D "$1" -w test-bind-password '
+            '-b "$2" "(objectClass=inetOrgPerson)" uid entryUUID memberOf',
+            "client",
+            APP_DN,
+            f"ou=people,{BASE_DN}",
+        )
+        assert result.stdout.splitlines()[:2] == ["1002", namespace]
+        assert f"dn: {TEST_USER_DN}" in result.stdout
+        assert f"entryUUID: {TEST_USER_UUID}" in result.stdout
+        assert f"dn: {APP_DN}" not in result.stdout
+        assert "memberOf:" in result.stdout
+        assert not json.loads(podman.output("pod", "inspect", pod_id))[0].get(
+            "PortBindings"
+        )
+        assert runtime.stop(directory) == 0
+    finally:
+        info = json.loads(podman.output("pod", "inspect", pod_id))[0]
+        assert info["Id"] == pod_id and info["Labels"][OWNER_LABEL] == store.run_key
+        podman.run("pod", "rm", "--force", pod_id)
 
 
 @pytest.mark.parametrize(

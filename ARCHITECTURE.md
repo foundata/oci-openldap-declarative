@@ -364,11 +364,11 @@ byte before checking its size and digest. Oversized input MUST fail with exit
 
 ### Startup and preflight<a id="startup"></a>
 
-Before running OpenLDAP tools, the service entrypoint MUST cap its soft and
+Before running OpenLDAP tools, startup and preflight MUST cap their soft and
 hard open-file limits at `LDAP_MAX_OPEN_FILES` (default `4096`), preserving
 any lower inherited limits. The setting MUST accept integers from `1` through
 `2147483647`; invalid values MUST fail with exit 64. Failure to apply the
-ceiling MUST fail startup with exit 70. This applies to both input paths.
+ceiling MUST fail with exit 70. This applies to both input paths.
 
 Before opening listeners, startup MUST:
 
@@ -381,6 +381,10 @@ Before opening listeners, startup MUST:
    membership.
 6. Recheck expiry, then start LDAP and record the accepted revision and digest.
 
+The runtime image MUST expose `openldap-preflight`, configured by the same
+`LDAP_*` environment variables and defaults as startup. It MUST NOT require
+positional arguments or infer the expected directory ID from the snapshot.
+Startup and preflight MUST share runtime-setting validation.
 Preflight MUST perform equivalent offline checks without opening a listener,
 modifying existing revision state or changing the running directory. Custom LDIF
 preflight MUST run in a separate container with fresh `/run/openldap` scratch

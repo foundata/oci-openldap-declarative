@@ -766,13 +766,11 @@ def test_yaml_extensions_offline_preflight(
         f"{generator.credentials}:/keys:ro,Z",
         "--volume",
         f"{state}:/state:ro,Z",
+        "--env=LDAP_EXPECTED_DIRECTORY_ID=example-app",
+        "--env=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/keys/snapshot.pub",
         "--entrypoint",
-        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
+        "openldap-preflight",
         images.require_runtime(),
-        "/snapshot",
-        "/keys/snapshot.pub",
-        "example-app",
-        "/state/highest-revision",
         check=False,
     )
     assert result.returncode == (0 if mutation == "none" else 65), (
@@ -1426,18 +1424,16 @@ def custom_preflight(
         f"{generator.credentials}:/keys:ro,Z",
         "--volume",
         f"{state}:/state:ro,Z",
+        "--env=LDAP_EXPECTED_DIRECTORY_ID=native-example",
+        "--env=LDAP_SNAPSHOT_PUBLIC_KEY_FILE=/keys/snapshot.pub",
         "--entrypoint",
-        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
+        "openldap-preflight",
     ]
     for value in environment:
         arguments.extend(("--env", value))
     result = podman.run_container(
         *arguments,
         images.require_runtime(),
-        "/snapshot",
-        "/keys/snapshot.pub",
-        "native-example",
-        "/state/highest-revision",
         check=False,
     )
     assert not list(state.iterdir())
@@ -1499,11 +1495,7 @@ def test_custom_writes_are_disposable_and_preflight_cannot_touch_live_data(
     before_revision = running.accepted_revision()
     result = podman.exec(
         running.name,
-        "/usr/local/lib/openldap-declarative/preflight-snapshot.sh",
-        "/snapshot",
-        "/run/credentials/snapshot-public-key",
-        "native-example",
-        "/state/highest-revision",
+        "openldap-preflight",
         check=False,
     )
     assert result.returncode == 64 and "separate container" in result.stderr

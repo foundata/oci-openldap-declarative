@@ -24,56 +24,6 @@ snapshot_expired=0
 shutdown_requested=0
 watchdog_failed=0
 
-validate_runtime_configuration() {
-  validation_errors=0
-
-  case "${LDAP_TRANSPORT:-ldap}" in
-    ldap | ldaps | both) ;;
-    *)
-      log_error 'LDAP_TRANSPORT must be ldap, ldaps, or both'
-      validation_errors=$((validation_errors + 1))
-      ;;
-  esac
-
-  case "${LDAP_LISTEN_HOST:-127.0.0.1}" in
-    127.0.0.1 | 0.0.0.0) ;;
-    *)
-      log_error 'LDAP_LISTEN_HOST must be 127.0.0.1 or 0.0.0.0'
-      validation_errors=$((validation_errors + 1))
-      ;;
-  esac
-
-  for port_value in "${LDAP_PORT:-1389}" "${LDAP_LDAPS_PORT:-1636}"; do
-    if ! printf '%s\n' "${port_value}" | grep -E -q '^[0-9]+$' \
-      || [ "${port_value}" -lt 1024 ] || [ "${port_value}" -gt 65535 ]; then
-      log_error "LDAP listener port is not an unprivileged TCP port: ${port_value}"
-      validation_errors=$((validation_errors + 1))
-    fi
-  done
-
-  if [ "${LDAP_TRANSPORT:-ldap}" = both ] \
-    && [ "${LDAP_PORT:-1389}" = "${LDAP_LDAPS_PORT:-1636}" ]; then
-    log_error 'LDAP_PORT and LDAP_LDAPS_PORT must differ when LDAP_TRANSPORT is both'
-    validation_errors=$((validation_errors + 1))
-  fi
-
-  if ! printf '%s\n' "${LDAP_LOG_LEVEL:-256}" | grep -E -q '^-?[0-9]+$'; then
-    log_error 'LDAP_LOG_LEVEL must be an integer'
-    validation_errors=$((validation_errors + 1))
-  fi
-
-  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] && [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
-    log_error 'LDAP_ADMIN_PASSWORD_FILE and LDAP_ADMIN_PASSWORD are mutually exclusive'
-    validation_errors=$((validation_errors + 1))
-  fi
-
-  if [ "${validation_errors}" -ne 0 ]; then
-    return "${EXIT_USAGE}"
-  fi
-
-  return 0
-}
-
 build_listener_urls() {
   listen_host=${LDAP_LISTEN_HOST:-127.0.0.1}
   listener_urls=${LDAP_LDAPI_URI:-ldapi://%2Frun%2Fopenldap%2Fldapi}

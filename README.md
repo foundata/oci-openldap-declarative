@@ -754,6 +754,8 @@ release as your images:
 Keep the runtime image selection consistent throughout the guide. It includes
 the host expiry backstop and renewal commands. Its names and queries match the
 users/groups example; adjust them for another directory definition.
+For pod-local `localhost`, use the
+[shared-pod recipe](examples/quadlet/README.md#shared-application-pod).
 
 
 #### Runtime inputs (LDAP host)<a id="runtime-inputs"></a>
@@ -779,8 +781,10 @@ users/groups example; adjust them for another directory definition.
 | `LDAP_BASE_DN` / `LDAP_DOMAIN`             | none                                   | Compatibility checks; must agree with the manifest. |
 
 Search limits accept integers from `1` through `2147483647`, or `unlimited`.
-Set them as container environment variables (Quadlet `Environment=`); use the
-same settings during preflight and restart after changing them. They do not
+Set them in the guide's `ldap.env` (Quadlet `EnvironmentFile=` and Podman
+`--env-file`). `openldap-preflight` uses the same variables and defaults as
+startup; run it in a separate container with fresh scratch storage and read-only
+revision state. Restart after changing settings. They do not
 change the number of entries the directory can contain.
 
 `LDAP_MAX_OPEN_FILES` accepts integers from `1` through `2147483647`, applies
@@ -816,6 +820,10 @@ The example warns after 6 hours and stops after 12. Refresh before the warning.
 `expiry_offset_seconds` optionally shortens both deadlines by 0..86,400 seconds
 and must remain below the soft TTL. Exact replay does not renew a snapshot;
 different content at an accepted revision is rejected.
+
+Retain and reuse the exact generated artifact for deployment retries. See the
+[renewal and retry recipe](examples/quadlet/README.md#renewals-and-image-updates)
+for revision ownership, scheduling and interrupted deployments.
 
 
 ##### Status and logs (LDAP host)<a id="usage-ops-status"></a>

@@ -4,7 +4,8 @@
 
 set -u
 
-script_dir=$(CDPATH='' cd "$(dirname "$0")" && pwd) || exit 70
+script_path=$(readlink -f "$0") || exit 70
+script_dir=$(CDPATH='' cd "$(dirname "${script_path}")" && pwd) || exit 70
 readonly script_dir
 # shellcheck source=scripts/common.sh
 . "${script_dir}/common.sh"
@@ -12,6 +13,7 @@ readonly script_dir
 . "${script_dir}/revision-state.sh"
 
 readonly runtime_dir="${LDAP_RUNTIME_DIR:-/run/openldap}"
+readonly revision_state_file="${LDAP_REVISION_STATE_FILE:-/state/highest-revision}"
 preflight_workspace=''
 preflight_status=0
 custom_workspace=0
@@ -47,26 +49,33 @@ prepare_custom_workspace() {
   return 0
 }
 
+usage() {
+  printf '%s\n' \
+    'Usage: openldap-preflight [--help]' \
+    'Validate and import a snapshot offline using the runtime LDAP_* environment.' \
+    'Required: LDAP_EXPECTED_DIRECTORY_ID.' \
+    'Paths: LDAP_SNAPSHOT_DIR, LDAP_REVISION_STATE_FILE, LDAP_RUNTIME_DIR.' \
+    'Trust: LDAP_SNAPSHOT_PUBLIC_KEY_FILE or LDAP_SNAPSHOT_PUBLIC_KEY_DIR.' \
+    'Use the target runtime settings and mounts, fresh scratch storage, and read-only state.'
+}
+
 main() {
-  if [ "$#" -ne 4 ]; then
-    log_error 'Usage: preflight-snapshot.sh SNAPSHOT KEY DIRECTORY_ID REVISION_STATE'
+  if [ "$#" -eq 1 ]; then
+    case "${1}" in
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *) ;;
+    esac
+  fi
+  if [ "$#" -ne 0 ]; then
+    usage >&2
     return "${EXIT_USAGE}"
   fi
 
-  LDAP_SNAPSHOT_DIR=${1}
-  verification_key=${2}
-  LDAP_EXPECTED_DIRECTORY_ID=${3}
-  revision_state_file=${4}
-  LDAP_SNAPSHOT_PUBLIC_KEY_FILE=''
-  LDAP_SNAPSHOT_PUBLIC_KEY_DIR=''
-  if [ -d "${verification_key}" ] && [ ! -L "${verification_key}" ]; then
-    LDAP_SNAPSHOT_PUBLIC_KEY_DIR=${verification_key}
-  else
-    LDAP_SNAPSHOT_PUBLIC_KEY_FILE=${verification_key}
-  fi
-  export LDAP_EXPECTED_DIRECTORY_ID LDAP_SNAPSHOT_DIR LDAP_SNAPSHOT_PUBLIC_KEY_DIR
-  export LDAP_SNAPSHOT_PUBLIC_KEY_FILE
-
+  validate_runtime_configuration || return $?
+  python3 "${script_dir}/runtime_limits.py" "$$" || return $?
   umask 077
   mkdir -p "${runtime_dir}" || return "${EXIT_INTERNAL}"
   preflight_workspace=$(mktemp -d "${runtime_dir}/preflight.XXXXXX") || return "${EXIT_INTERNAL}"

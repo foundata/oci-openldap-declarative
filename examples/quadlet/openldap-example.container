@@ -8,12 +8,11 @@ Image=quay.io/foundata/openldap-declarative@sha256:00000000000000000000000000000
 Pull=never
 ContainerName=openldap-example
 UserNS=keep-id:uid=1001,gid=1001
+User=1001:1001
 Network=openldap-example.network
 NetworkAlias=ldap
 
-Environment=LDAP_EXPECTED_DIRECTORY_ID=example-app
-Environment=LDAP_LISTEN_HOST=0.0.0.0
-Environment=LDAP_TRANSPORT=ldap
+EnvironmentFile=%h/.local/share/openldap-declarative/example-app/ldap.env
 
 # Install these private files below the rootless service account's home.
 Volume=%h/.local/share/openldap-declarative/example-app/snapshot:/snapshot:ro,Z

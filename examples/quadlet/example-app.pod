@@ -1,0 +1,9 @@
+[Unit]
+Description=Application and LDAP shared network namespace
+
+[Pod]
+PodName=example-app
+UserNS=keep-id:uid=1001,gid=1001
+
+[Install]
+WantedBy=default.target

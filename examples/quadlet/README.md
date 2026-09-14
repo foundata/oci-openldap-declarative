@@ -13,8 +13,10 @@ admin/CI terminal and an LDAP-host terminal open separately. Paths under
 - [Transfer a snapshot (admin/CI)](#transfer-a-snapshot)
 - [Preflight and activate (LDAP host)](#preflight-and-activate)
 - [Verify and connect an application (LDAP host)](#verify-and-connect-an-application)
+- [Shared application pod (LDAP host)](#shared-application-pod)
 - [Renewals and image updates](#renewals-and-image-updates)
   - [Generate and transfer (admin/CI)](#generate-and-transfer)
+  - [Deployment retries](#deployment-retries)
   - [Activate and update the runtime (LDAP host)](#activate-and-update-the-runtime)
 - [TLS and signing-key rotation](#tls-and-signing-key-rotation)
   - [TLS (LDAP host)](#tls)
@@ -50,6 +52,7 @@ install -d -m 0700 "${service}/incoming" "${units}" \
   "${HOME}/.local/libexec" "${HOME}/.config/systemd/user"
 install -m 0600 examples/quadlet/*.container examples/quadlet/*.network \
   examples/quadlet/*.volume "${units}/"
+install -m 0600 examples/quadlet/ldap.env "${service}/ldap.env"
 sed -i "s|^Image=.*|Image=${runtime}|" "${units}/openldap-example.container"
 install -m 0700 examples/systemd/openldap-expiry-backstop "${HOME}/.local/libexec/"
 install -m 0600 examples/systemd/openldap-example-backstop.* \
@@ -57,6 +60,10 @@ install -m 0600 examples/systemd/openldap-example-backstop.* \
 systemctl --user daemon-reload
 podman volume create --ignore openldap-example-state
 ```
+
+Edit `ldap.env` for this directory. Quadlet and preflight read this same file;
+use literal `KEY=value` lines without shell expansion or plaintext secrets.
+Keep container paths identical in both invocations.
 
 The example maps your host UID/GID to container UID/GID `1001`. It uses a
 read-only filesystem, restricted capabilities, 256 MiB RAM and no published
@@ -115,13 +122,12 @@ revision=1
   podman run --rm --userns=keep-id:uid=1001,gid=1001 --network none \
     --read-only --read-only-tmpfs=false --cap-drop all \
     --security-opt no-new-privileges --memory 256m --cpus 1 --pids-limit 128 \
+    --env-file "${service}/ldap.env" \
     --tmpfs /run/openldap:rw,noexec,nosuid,nodev,mode=1777 \
     --volume "${candidate}:/snapshot:ro,Z" \
     --volume "${root}/snapshot.pub:/run/credentials/snapshot-public-key:ro,z" \
     --volume openldap-example-state:/state:ro \
-    --entrypoint /usr/local/lib/openldap-declarative/preflight-snapshot.sh \
-    "${runtime}" /snapshot /run/credentials/snapshot-public-key \
-    example-app /state/highest-revision
+    --entrypoint openldap-preflight "${runtime}"
   test ! -e "${service}/retired-before-${revision}"
   systemctl --user stop openldap-example-backstop.timer openldap-example-backstop.service
   systemctl --user stop openldap-example.service
@@ -142,10 +148,9 @@ expired. For LDAPS, include the target TLS settings and certificate mounts in
 preflight too.
 
 Search limits default to 500 results and 10 seconds. Set
-`Environment=LDAP_SEARCH_SIZE_LIMIT=1000` and
-`Environment=LDAP_SEARCH_TIME_LIMIT=30` in the container unit to change them;
-pass matching `--env` values to preflight. Each accepts a positive integer up
-to 2147483647 or `unlimited`. Restart after changing a unit setting.
+`LDAP_SEARCH_SIZE_LIMIT=1000` and `LDAP_SEARCH_TIME_LIMIT=30` in `ldap.env`
+to change them for both startup and preflight. Each accepts a positive integer
+up to 2147483647 or `unlimited`. Restart after changing settings.
 
 Activation briefly stops LDAP while replacing the snapshot directory. Do not
 use a symlink for the active snapshot: the host backstop rejects it. A failed
@@ -172,29 +177,100 @@ Use the application bind password for the search and Alice's password for
 `ldapwhoami`. Expect Alice's UUID, membership in `staff`, and a successful bind
 returning her DN. Logs: `journalctl --user -u openldap-example.service -n 50`.
 
-Add `Network=openldap-example.network` to the application's Quadlet:
+Add `Network=openldap-example.network` to the application's Quadlet.
 
-|      Application setting      | Value |
-| ----------------------------- | ----- |
-| LDAP URL                      | `ldap://ldap:1389` |
-| Base DN                       | `dc=example-app,dc=services,dc=example,dc=org` |
-| Bind DN                       | `uid=application,ou=services,dc=example-app,dc=services,dc=example,dc=org` |
-| Bind password                 | Original password used for the bind account's verifier |
-| Login attribute               | `uid` |
-| Persistent identity attribute | `entryUUID` |
-| Group membership attribute    | `memberOf` |
+For users/groups YAML, replace `<base_dn>` below with the definition's `base_dn`.
+Custom LDIF supplies its own layout and attribute mappings.
+
+| Application setting | Value |
+| ------------------- | ----- |
+| LDAP URL | `ldap://ldap:1389`; shared pod: `ldap://127.0.0.1:1389` |
+| Directory base | `<base_dn>` |
+| Bind DN | `uid=application,ou=services,<base_dn>`; use your bind account's username |
+| Bind password | Original password used for the bind account's verifier |
+| User search base / scope | `ou=people,<base_dn>` / subtree; excludes bind accounts |
+| User filter | `(objectClass=inetOrgPerson)` |
+| Login attribute | `uid` |
+| Persistent identity attribute | `entryUUID`; retain this mapping across username/email changes |
+| Group search base / scope | `ou=groups,<base_dn>` / subtree |
+| Group filter / name | `(objectClass=groupOfNames)` / `cn` |
+| Group members | `member` on the group contains full user DNs, not usernames |
+| User's groups | `memberOf` on the user contains full group DNs |
+| First / last / display name | `givenName` / `sn` / `displayName` |
+| Email / phone | `mail` / `telephoneNumber` |
+
+For group-limited login, use
+`(&(objectClass=inetOrgPerson)(memberOf=cn=staff,ou=groups,<base_dn>))`.
+Configure role mapping in the application. Update DN-based group mappings after
+a group rename. Optional profile attributes may be absent.
 
 The internal network has no external connectivity. An application needing
 external access needs its own additional network. Publish LDAP ports only when
 required, bound to host `127.0.0.1` for host-local clients.
 
+## Shared application pod (LDAP host)<a id="shared-application-pod"></a>
+
+Use a [shared pod](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
+instead of the separate network when the application connects to LDAP
+through pod-local `127.0.0.1`. Install the pod unit:
+
+```bash
+install -m 0600 examples/quadlet/example-app.pod "${units}/"
+```
+
+Before activation, adjust the units and shared settings:
+
+1. In `openldap-example.container`, replace `UserNS=`, `Network=` and
+   `NetworkAlias=` with `Pod=example-app.pod`. Keep `User=1001:1001`, the existing
+   mounts, resource limits and hardening.
+2. In `ldap.env`, set `LDAP_LISTEN_HOST=127.0.0.1`.
+3. In the application's `.container`, set `Pod=example-app.pod` and remove its
+   `Network=` and `UserNS=` settings. Set `User=` to the account expected by its
+   image; the pod's `keep-id` mapping otherwise defaults processes to UID 1001.
+   Match each data volume's ownership to its process user (`:U` is suitable for
+   an exclusively owned named volume).
+4. Put any application `PublishPort=` settings in `example-app.pod`; do not
+   publish LDAP. Connect the application to `ldap://127.0.0.1:1389`.
+
+Run `systemctl --user daemon-reload`, then preflight and activate as above before
+starting the application unit.
+Preflight remains a separate container outside the pod, with fresh scratch
+storage and read-only state. The VM/host's `localhost:1389` is not this endpoint.
+Changing an existing pod's namespace settings requires recreating its containers;
+plan application downtime and retain its data volumes.
+
 ## Renewals and image updates
 
 ### Generate and transfer (admin/CI)<a id="generate-and-transfer"></a>
 
-Increment the directory's YAML revision, regenerate before soft expiry and
-transfer to a new staging directory. Replaying an existing artifact does not
-renew it. For a release update, use the new generator digest on admin/CI.
+Use one serialized admin/CI job per directory:
+
+1. Allocate and retain the next `revision` in the definition. Configuration
+   management or CI owns this counter; the generator does not increment it.
+2. Record the source revision, credential versions and generator/runtime digests.
+3. Generate once into a new `revision-N` directory. Retain that exact signed
+   artifact privately, with its manifest digest and expiry times.
+4. Transfer, preflight, activate and verify. Record which artifact reached each
+   LDAP host. Schedule renewal early enough to finish before soft expiry.
+
+Unchanged source still needs a new revision and fresh artifact for renewal.
+Replaying existing bytes does not extend expiry. Alert on generation/deployment
+failures and the [runtime status](../../README.md#usage-ops-status), not just the
+CI job's schedule.
+
+### Deployment retries
+
+| Situation | Action |
+| --------- | ------ |
+| Transfer interrupted | Resume copying the retained artifact into its unactivated candidate directory; rerun preflight. |
+| Preflight rejected input | Leave the active service unchanged. Correct settings or generate corrected data under a new revision. |
+| Activation result uncertain | Inspect active status and revision state. If the exact manifest is already active and healthy, do not restart again. |
+| Artifact lost after deployment, or renewal due | Allocate a new revision and generate again. Do not recreate an accepted revision from source. |
+
+Retry deployment with the same artifact, not another generator invocation:
+timestamps and password salts can change the manifest even with unchanged YAML.
+Never reset revision state to make a retry succeed. Retain the candidate and logs
+after a failed activation until recovery is complete.
 
 ### Activate and update the runtime (LDAP host)<a id="activate-and-update-the-runtime"></a>
 
@@ -208,8 +284,8 @@ before activation. Keep the existing revision-state volume.
 
 ### TLS (LDAP host)<a id="tls"></a>
 
-For LDAPS, add read-only certificate/key mounts and `LDAP_TRANSPORT=ldaps` or
-`both` to the container unit. Match those settings in preflight. Clients must
+For LDAPS, add read-only certificate/key mounts to runtime and preflight, and
+set `LDAP_TRANSPORT=ldaps` or `both` in `ldap.env`. Clients must
 validate the server name and CA; restart after certificate renewal. See
 [runtime inputs](../../README.md#runtime-inputs) for paths and ports.
 Custom LDIF must declare certificate paths and TLS policy in its signed
@@ -218,9 +294,10 @@ Custom LDIF must declare certificate paths and TLS policy in its signed
 ### Signing-key rotation (admin/CI and LDAP host)<a id="signing-key-rotation"></a>
 
 1. On admin/CI, create the new keypair and transfer only its public key.
-2. On the LDAP host, configure runtime and preflight with a directory containing
-   old and new `*.pub` keys using `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`; do not also
-   set `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`. Restart with that trust set.
+2. On the LDAP host, mount a directory containing old and new `*.pub` keys
+   read-only into runtime and preflight. Set `LDAP_SNAPSHOT_PUBLIC_KEY_DIR` in
+   `ldap.env` to its container path; do not also set
+   `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`. Restart with that trust set.
 3. On admin/CI, sign the next revision with the new key and transfer the
    snapshot.
 4. On the LDAP host, preflight and activate it, updating the backstop key as

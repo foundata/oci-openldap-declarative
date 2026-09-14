@@ -54,6 +54,7 @@ RUN apt-get update \
     /etc/ldap/slapd.d/* \
     /usr/share/man/* \
     /var/lib/apt/lists/* \
+    /var/cache/debconf/* \
     /var/lib/ldap/* \
   && if getent passwd 1001 >/dev/null || getent group 1001 >/dev/null; then \
     printf '%s\n' 'UID or GID 1001 already exists in the pinned base image' >&2; \
@@ -69,7 +70,9 @@ RUN apt-get update \
   && install -d -o root -g root -m 0555 \
     /run/credentials \
     /snapshot \
-    /tls
+    /tls \
+  && ln -s /usr/local/lib/openldap-declarative/preflight-snapshot.sh \
+    /usr/local/bin/openldap-preflight
 
 ENV LDAP_RUNTIME_DIR="/run/openldap" \
     PYTHONDONTWRITEBYTECODE="1" \
