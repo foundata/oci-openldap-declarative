@@ -41,6 +41,7 @@ main() {
   uv run --frozen ruff format --check . || return 1
   uv run --frozen ruff check . || return 1
   uv run --frozen mypy || return 1
+  uv run --frozen python hack/implementation.py --check || return 1
   uv run --frozen pytest || return 1
   for schema_file in schema/*.json; do
     jq -e . "${schema_file}" >/dev/null || return 1

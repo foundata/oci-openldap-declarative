@@ -149,9 +149,14 @@ class Generator:
 
 @pytest.fixture(scope="module")
 def generator(podman: Podman, store: Store, images: Images) -> Generator:
-    path = store.workspace / "generator"
+    return prepare_generator(
+        podman, images.require_generator(), store.workspace / "generator"
+    )
+
+
+def prepare_generator(podman: Podman, image: str, path: Path) -> Generator:
     path.mkdir()
-    prepared = Generator(podman, images.require_generator(), path)
+    prepared = Generator(podman, image, path)
     shutil.copytree(EXAMPLES, prepared.inputs)
     prepared.credentials.mkdir()
     prepared.output.mkdir()
@@ -200,6 +205,38 @@ def test_generator_image_boundary(generator: Generator) -> None:
 
 def test_generator_image_privileges(podman: Podman, images: Images) -> None:
     assert_image_privileges(podman, images.require_generator(), {"/output"})
+
+
+# Verifies: IP0008
+def test_initialized_definition_generates_and_authenticates(
+    generator: Generator, podman: Podman, images: Images, store: Store
+) -> None:
+    arguments = ("--directory-id", "initialized", "--base-dn", APP_BASE)
+    result = generator.container(*arguments, entrypoint="openldap-init")
+    assert result.returncode == 0, result.stderr
+    definition = generator.output / "directory.yaml"
+    source = definition.read_bytes()
+    assert definition.stat().st_mode & 0o777 == 0o600
+    result = generator.container(*arguments, entrypoint="openldap-init")
+    assert result.returncode == 2 and definition.read_bytes() == source
+    shutil.copyfile(definition, generator.inputs / "initialized.yaml")
+    for account in ("alice", "application"):
+        result = generator.container(
+            entrypoint="openldap-password", stdin=f"TEST-ONLY-{account}"
+        )
+        assert result.returncode == 0, result.stderr
+        credential = generator.credentials / f"{account}.hash"
+        credential.write_text(result.stdout)
+        credential.chmod(0o600)
+    result = generator.run("initialized", source="initialized.yaml")
+    assert result.returncode == 0, result.stderr
+    service = RuntimeService(
+        podman, images.require_runtime(), generator, f"{store.prefix}-initialized"
+    )
+    service.start(generator.output / "initialized")
+    assert service.bind(ALICE_DN, "TEST-ONLY-alice").returncode == 0
+    assert service.bind(APPLICATION_DN, "TEST-ONLY-application").returncode == 0
+    podman.stop(service.name)
 
 
 @pytest.fixture(scope="module")
@@ -1154,6 +1191,7 @@ def test_equivalent_base_dns(
 @pytest.mark.parametrize(
     "field", ["password", "password_file", "password_hash", "password_hash_file"]
 )
+# Verifies: IP0007
 def test_all_credential_forms_with_vault(generator: Generator, field: str) -> None:
     verifier = "{ARGON2}" + PasswordHasher(
         memory_cost=19456, time_cost=2, parallelism=1
@@ -1193,6 +1231,7 @@ def test_all_credential_forms_with_vault(generator: Generator, field: str) -> No
 
 
 @pytest.mark.parametrize("failure", ["missing", "wrong", "tampered", "unknown-label"])
+# Verifies: IP0007
 def test_vault_failures_leave_no_snapshot(generator: Generator, failure: str) -> None:
     encrypted = generator.encrypt("TEST-ONLY-secret-not-for-logs")
     arguments = ["--vault", "directory@/run/credentials/vault-password"]
@@ -1628,7 +1667,6 @@ def test_custom_module_loading_and_server_side_sorting(
         "LDAP_TLS_KEY_FILE=/tls/cert.key",
         "LDAP_TLS_CA_FILE=/tls/ca.pem",
         "LDAP_ADMIN_PASSWORD_FILE=/keys/missing",
-        "LDAP_ADMIN_PASSWORD=TEST-ONLY-rejected",
         "LDAP_SEARCH_SIZE_LIMIT=",
     ],
 )

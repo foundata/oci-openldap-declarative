@@ -777,6 +777,7 @@ def test_runtime_image_privileges(podman: Podman, images: Images) -> None:
         ("512:512", None, ["512", "512"]),
     ],
 )
+# Verifies: IP0006
 def test_inherited_nofile_is_bounded(
     runtime: Runtime, nofile: str | None, cap: str | None, expected: list[str] | None
 ) -> None:
@@ -878,6 +879,7 @@ def test_snapshot_copy_budget_boundary(
     ) in logs
 
 
+# Verifies: IP0005
 def test_valid_snapshot_serves_and_stops_cleanly(
     runtime: Runtime, workspace: RuntimeWorkspace
 ) -> None:
@@ -1130,6 +1132,47 @@ def test_recovery_password_files_bind_the_root_dn(
     assert runtime.stop(container) == 0
 
 
+@pytest.mark.parametrize(
+    ("setting", "valid"),
+    [
+        (f"LDAP_EXPECTED_BASE_DN={BASE_DN}", True),
+        ("LDAP_EXPECTED_BASE_DN=dc=wrong", False),
+        ("LDAP_EXPECTED_BASE_DN=", False),
+        (f"LDAP_BASE_DN={BASE_DN}", False),
+        ("LDAP_DOMAIN=example.org", False),
+        ("LDAP_ADMIN_PASSWORD=TEST-ONLY-secret", False),
+    ],
+)
+# Verifies: IP0002
+def test_runtime_assertions_match_preflight(
+    runtime: Runtime,
+    workspace: RuntimeWorkspace,
+    tmp_path: Path,
+    setting: str,
+    valid: bool,
+) -> None:
+    scratch = tmp_path / "scratch"
+    state = tmp_path / "state"
+    scratch.mkdir()
+    state.mkdir()
+    result = runtime.preflight(
+        workspace.path / "valid", state, scratch, extra_arguments=("--env", setting)
+    )
+    assert result.returncode == (0 if valid else 64), result.stderr
+    assert not list(state.iterdir()) and not list(scratch.iterdir())
+    assert "TEST-ONLY-secret" not in result.stdout + result.stderr
+    name = setting.split("=", 1)[0].lower() + (
+        "-valid" if valid else "-" + str(len(setting))
+    )
+    container = runtime.create(name, "valid", extra_environment=setting)
+    if valid:
+        runtime.start_healthy(container)
+        assert runtime.stop(container) == 0
+    else:
+        runtime.expect_exit(container, 64, setting.split("=", 1)[0])
+        assert "TEST-ONLY-secret" not in runtime.podman.logs(container.name)
+
+
 def test_default_runtime_has_no_network_recovery_password(runtime: Runtime) -> None:
     container = runtime.create("no-recovery", "valid")
     runtime.start_healthy(container)
@@ -1172,6 +1215,7 @@ def test_shutdown_during_initialization_exits_cleanly(runtime: Runtime) -> None:
     )
 
 
+# Verifies: IP0003
 def test_revision_state_rejects_replay_and_conflicts(
     runtime: Runtime, workspace: RuntimeWorkspace
 ) -> None:
@@ -1932,6 +1976,7 @@ REJECTIONS = {
 
 
 @pytest.mark.parametrize("case", list(REJECTIONS.values()), ids=list(REJECTIONS))
+# Verifies: IP0001, IP0002
 def test_rejected_input_never_opens_a_listener(
     runtime: Runtime,
     workspace: RuntimeWorkspace,
@@ -1950,6 +1995,7 @@ def test_rejected_input_never_opens_a_listener(
     runtime.expect_exit(container, case.status, case.message)
 
 
+# Verifies: IP0004
 def test_hard_expiry_stops_slapd_with_status_78(
     runtime: Runtime, workspace: RuntimeWorkspace
 ) -> None:

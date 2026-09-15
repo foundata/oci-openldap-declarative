@@ -41,40 +41,6 @@ cleanup_initialization() {
   remove_verified_snapshot "${runtime_dir}" || true
 }
 
-validate_compatibility_inputs() {
-  base_dn="${1}"
-  validation_errors=0
-
-  if [ -n "${LDAP_BASE_DN:-}" ] && [ "${LDAP_BASE_DN}" != "${base_dn}" ]; then
-    log_error 'LDAP_BASE_DN contradicts the signed snapshot manifest'
-    validation_errors=$((validation_errors + 1))
-  fi
-
-  if [ -n "${LDAP_DOMAIN:-}" ]; then
-    if ! printf '%s\n' "${LDAP_DOMAIN}" | grep -E -q '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$'; then
-      log_error 'LDAP_DOMAIN has an invalid compatibility value'
-      validation_errors=$((validation_errors + 1))
-    else
-      derived_base_dn=dc=$(printf '%s' "${LDAP_DOMAIN}" | sed 's/\./,dc=/g')
-      if [ "${derived_base_dn}" != "${base_dn}" ]; then
-        log_error 'LDAP_DOMAIN contradicts the signed snapshot manifest'
-        validation_errors=$((validation_errors + 1))
-      fi
-    fi
-  fi
-
-  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] && [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
-    log_error 'LDAP_ADMIN_PASSWORD_FILE and LDAP_ADMIN_PASSWORD are mutually exclusive'
-    validation_errors=$((validation_errors + 1))
-  fi
-
-  if [ "${validation_errors}" -ne 0 ]; then
-    return "${EXIT_USAGE}"
-  fi
-
-  return 0
-}
-
 validate_custom_inputs() {
   if [ "${runtime_dir}" != /run/openldap ]; then
     log_error 'Custom LDIF requires LDAP_RUNTIME_DIR=/run/openldap'
@@ -82,7 +48,7 @@ validate_custom_inputs() {
   fi
   for setting in LDAP_SEARCH_SIZE_LIMIT LDAP_SEARCH_TIME_LIMIT \
     LDAP_TLS_CERT_FILE LDAP_TLS_KEY_FILE LDAP_TLS_CA_FILE \
-    LDAP_ADMIN_PASSWORD_FILE LDAP_ADMIN_PASSWORD; do
+    LDAP_ADMIN_PASSWORD_FILE; do
     if printenv "${setting}" >/dev/null 2>&1; then
       log_error "${setting} conflicts with administrator-owned custom LDIF configuration"
       return "${EXIT_USAGE}"
@@ -120,16 +86,6 @@ prepare_root_password() {
       return "${EXIT_INTERNAL}"
     fi
     unset password_value
-  elif [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
-    if [ -z "${LDAP_ADMIN_PASSWORD}" ]; then
-      log_error 'LDAP_ADMIN_PASSWORD must not be empty'
-      return "${EXIT_USAGE}"
-    fi
-    log_warning 'LDAP_ADMIN_PASSWORD is deprecated; use LDAP_ADMIN_PASSWORD_FILE'
-    if ! printf '%s' "${LDAP_ADMIN_PASSWORD}" >"${root_password_input}"; then
-      return "${EXIT_INTERNAL}"
-    fi
-    unset LDAP_ADMIN_PASSWORD
   fi
 
   if [ ! -s "${root_password_input}" ]; then
@@ -200,6 +156,7 @@ append_tls_configuration() {
   return 0
 }
 
+# Implements: IP0005
 write_base_configuration() {
   base_dn="${1}"
   root_password_hash="${2}"
@@ -414,12 +371,12 @@ main() {
   else
     validate_search_limits || exit $?
   fi
-  validate_compatibility_inputs "${base_dn}" || exit $?
+  validate_expected_base_dn "${base_dn}" || exit $?
   validate_directory_inputs "${base_dn}" || exit $?
   reset_runtime_database || exit $?
   root_password_hash=''
   if [ "${input_type}" = users-groups ]; then
-    if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] || [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
+    if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ]; then
       prepare_root_password || exit $?
       root_password_hash=$(hash_root_password) || exit $?
     fi

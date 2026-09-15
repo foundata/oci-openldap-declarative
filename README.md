@@ -153,15 +153,17 @@ set +x # Disable tracing before handling secrets.
 umask 077 # New files are owner-only; new directories are owner-accessible only.
 
 # directory.yaml and referenced LDIF/schema; mounted at /input.
+# Private Git is suitable for reviewed hash-only or Vault-encrypted sources, not plaintext secrets.
 data="${HOME}/directory-data"
 
-# Private Git is suitable for reviewed hash-only or Vault-encrypted sources, not plaintext secrets.
-private="${HOME}/.config/openldap-declarative" # Signing/Vault keys and credential files; never commit.
-
+# Signing/Vault keys and credential files; never commit.
 # Mounted at /run/credentials on admin/CI; deploy only snapshot.pub from this directory.
-output="${HOME}/.local/share/openldap-declarative/generated" # Signed revision-* directories; mounted at /output.
+private="${HOME}/.config/openldap-declarative"
 
+# Signed revision-* directories; mounted at /output.
 # Deploy one complete revision directory to the LDAP host; it contains verifiers, so keep it private.
+output="${HOME}/.local/share/openldap-declarative/generated"
+
 install -d -m 0700 "${data}" "${private}" "${output}" # Restrict these host directories to their owner.
 
 hash_password() (
@@ -170,9 +172,9 @@ hash_password() (
     quay.io/foundata/openldap-declarative-generator:latest)
   set +x
   set -euo pipefail
-  # Read password input literally, without terminal echo and
-  # Keep the password out of child-process environments
+  # Read password input literally, without terminal echo.
   read -r -s -p "$1: " password
+  # Keep the password out of child-process environments.
   export -n password
   printf '\n' >&2
   test -n "${password}" # Reject empty passwords.
@@ -195,52 +197,34 @@ for directory searches.
 
 It provides a fixed layout and managed read-only policy; use
 [custom LDIF](#usage-prepare-native-ldif) when you need another layout or
-control over OpenLDAP configuration. Start with one user and bind account:
+control over OpenLDAP configuration. Create a new definition and its credential
+files:
 
 ```bash
-# hash_password() was defined in the previous section's snippet
-user_hash=$(hash_password "Alice password")
-bind_hash=$(hash_password "Application bind password")
-
 generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \
   quay.io/foundata/openldap-declarative-generator:latest)
-uuids=$(podman run --rm --network none --entrypoint python3 "${generator}" \
-  -c 'import uuid; print(*(uuid.uuid4() for _ in range(4)))')
-read -r directory_uuid user_uuid group_uuid bind_uuid <<<"${uuids}"
+podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
+  --network none --read-only --read-only-tmpfs=false \
+  --cap-drop all --security-opt no-new-privileges \
+  --volume "${data}:/output:Z" --entrypoint openldap-init "${generator}" \
+  --directory-id example-app \
+  --base-dn 'dc=example-app,dc=services,dc=example,dc=org' \
+  --organization 'Example Company'
 
-cat > "${data}/directory.yaml" <<YAML
-format_version: 1
-directory_id: "example-app"
-base_dn: "dc=example-app,dc=services,dc=example,dc=org"
-revision: 1
-soft_ttl_seconds: 21600
-hard_ttl_seconds: 43200
-input_type: "users-groups"
-entry_uuid: "${directory_uuid}"
-organization: "Example Company"
-users:
-  - entry_uuid: "${user_uuid}"
-    username: "alice"
-    display_name: "Alice Example"
-    last_name: "Example"
-    email: "alice@example.org"
-    active: true
-    password_hash: '${user_hash}'
-groups:
-  - entry_uuid: "${group_uuid}"
-    groupname: "staff"
-    members: ["alice"]
-bind_accounts:
-  - entry_uuid: "${bind_uuid}"
-    username: "application"
-    password_hash: '${bind_hash}'
-YAML
-unset user_hash bind_hash
-chmod 0600 "${data}/directory.yaml"
+# hash_password() was defined above. Refuse to replace existing credential files.
+(set -C; hash_password "Alice password" > "${private}/alice.hash")
+(set -C; hash_password "Application bind password" > "${private}/application.hash")
 ```
 
-Generate UUIDs once and preserve them in the definition. All active users are
-included. See the [larger example](examples/generator/directory.yaml) for
+`openldap-init` writes owner-only `/output/directory.yaml` and refuses an
+existing file or symlink. It creates user `alice`, group `staff` and bind account
+`application`, with fresh UUIDv4 identities and UUID-based membership. Use
+`--username`, `--groupname`, `--bind-username` or `--output` to change those defaults;
+credential paths follow the account names. It creates no passwords or keys.
+
+Review the definition, especially `last_name` (initially the username), and add
+profile fields as needed. Preserve its UUIDs across edits and rebuilds.
+All active users are included. See the [larger example](examples/generator/directory.yaml) for
 profile fields, inactive users and credential files. Continue with
 [signing and generation](#usage-snapshot).
 
@@ -632,7 +616,7 @@ password_hash: !vault |
   ...encrypted payload...
 ```
 
-`$ANSIBLE_VAULT` is fixed; `ldapvault` is your key ID and you can chose it
+`$ANSIBLE_VAULT` is fixed; `ldapvault` is your key ID and you can choose it
 freely. The bundled `ansible-vault` CLI handles encryption and decryption. You
 do *not* need Ansible on the host or as your configuration-management tool.
 
@@ -661,8 +645,9 @@ unset hash
 ```
 
 Create and back up `vault-password` once per key; do not overwrite an existing
-key when encrypting another field. Replace the user's `password_hash` field
-with the generated block, indented at the same level as its other fields.
+key when encrypting another field. Replace the user's existing credential field
+(`password_hash_file` in the setup example) with the generated `password_hash`
+block, indented at the same level as its other fields.
 
 Add this to the [generator arguments](#usage-snapshot-generate):
 
@@ -777,8 +762,7 @@ For pod-local `localhost`, use the
 | `LDAP_SNAPSHOT_PUBLIC_KEY_FILE`            | `/run/credentials/snapshot-public-key` | One minisign public key. |
 | `LDAP_SNAPSHOT_PUBLIC_KEY_DIR`             | none                                   | `*.pub` keys; mutually exclusive with file input. |
 | `LDAP_ADMIN_PASSWORD_FILE`                 | none                                   | YAML only: optional original-password file for recovery. |
-| `LDAP_ADMIN_PASSWORD`                      | none                                   | YAML only: deprecated; conflicts with the file input. |
-| `LDAP_BASE_DN` / `LDAP_DOMAIN`             | none                                   | Compatibility checks; must agree with the manifest. |
+| `LDAP_EXPECTED_BASE_DN`                    | none                                   | Optional exact-match assertion against the signed base DN; never overrides it. |
 
 Search limits accept integers from `1` through `2147483647`, or `unlimited`.
 Set them in the guide's `ldap.env` (Quadlet `EnvironmentFile=` and Podman
@@ -793,8 +777,8 @@ its descriptor limit, so raising this ceiling requires reviewing the container's
 memory budget. The ceiling does not reserve memory or guarantee capacity.
 
 For custom LDIF, configure search limits, TLS certificates and any administrator
-credentials in LDIF. Setting `LDAP_SEARCH_*`, `LDAP_TLS_*` file inputs or either
-`LDAP_ADMIN_PASSWORD*` input fails rather than overriding the signed
+credentials in LDIF. Setting `LDAP_SEARCH_*`, `LDAP_TLS_*` file inputs or
+`LDAP_ADMIN_PASSWORD_FILE` fails rather than overriding the signed
 configuration. Listener selection and `LDAP_LOG_LEVEL` remain runtime-owned for
 both paths.
 

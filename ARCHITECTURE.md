@@ -13,6 +13,10 @@ and future changes are tracked separately, preferably as
 until the implementation, tests and corresponding contract changes are merged
 together.
 
+Selected contracts have stable `IPnnnn` anchors. The generated
+[implementation matrix](docs/implementation.md) links them to code and tests;
+untagged requirements still apply.
+
 
 ## Table of contents
 
@@ -84,6 +88,15 @@ LDAP clients       LDAP clients       LDAP clients
 An administrator or configuration-management system MAY generate and deploy
 application-specific definitions and snapshots. Configuration management is not
 a required component. Deployment can be local or remote.
+
+<a id="IP0008"></a><!-- Definition initialization -->
+The generator's `openldap-init` command MUST create a version-1 users/groups
+definition with fresh UUIDv4 identities for the base, one user, one group and
+one bind account. Membership MUST reference the user UUID. Credentials MUST
+be hash-file references under `/run/credentials`; the command MUST NOT create
+passwords or keys. It MUST validate the definition before publishing an
+owner-only file, refuse existing paths (including symlinks and concurrent
+creators), and leave no partial definition after failure.
 
 ## Directory definitions<a id="definitions"></a>
 
@@ -254,8 +267,13 @@ classes, binary values and attributes reserved by the simplified model.
 
 ### Stable identifiers<a id="identifiers"></a>
 
+<a id="IP0002"></a><!-- Deployment assertions -->
 `directory_id` identifies the deployment target. It MUST match the runtime's
 `LDAP_EXPECTED_DIRECTORY_ID`; it is independent of LDAP DNs.
+An optional `LDAP_EXPECTED_BASE_DN` MUST exactly match the signed base DN;
+it MUST NOT override it. An empty or mismatching assertion MUST fail startup
+and preflight with exit 64. Removed inputs `LDAP_BASE_DN`, `LDAP_DOMAIN` and
+`LDAP_ADMIN_PASSWORD` MUST be rejected with exit 64, including empty values.
 
 In users/groups YAML, the base entry, every user, group and bind account MUST
 declare `entry_uuid`. Values MUST be canonical lowercase RFC-variant UUIDs
@@ -319,6 +337,7 @@ arguments and terminal input MUST be rejected.
 YAML string values MAY use labeled Ansible Vault scalars:
 `!vault` with the standard `$ANSIBLE_VAULT;1.2;AES256;KEYID` header.
 
+<a id="IP0007"></a><!-- Vault decryption -->
 - Decryption MUST occur only in the generator, through the official
   `ansible-vault` CLI from `ansible-core`.
 - Key IDs MUST select an explicitly supplied password source exactly. Missing
@@ -342,6 +361,7 @@ A snapshot MUST contain `manifest.json`, its detached minisign signature and
 only the listed LDIF files. Each file record declares its `data`, `schema` or
 `config` kind and SHA-256 digest.
 
+<a id="IP0001"></a><!-- Snapshot signature verification -->
 The signed manifest MUST cover directory identity, base DN, revision, input
 type, applicable read-attribute policy, base `entry_uuid` (null for custom LDIF)
 and timestamps. The runtime MUST reject unknown fields, duplicate paths, invalid
@@ -364,6 +384,7 @@ byte before checking its size and digest. Oversized input MUST fail with exit
 
 ### Startup and preflight<a id="startup"></a>
 
+<a id="IP0006"></a><!-- Open-file resource ceiling -->
 Before running OpenLDAP tools, startup and preflight MUST cap their soft and
 hard open-file limits at `LDAP_MAX_OPEN_FILES` (default `4096`), preserving
 any lower inherited limits. The setting MUST accept integers from `1` through
@@ -410,7 +431,7 @@ separate from disposable configuration, sockets and MDB files.
   `LDAP_LOG_LEVEL`. Custom LDIF MUST NOT contain `olcLogLevel`. The runtime MUST
   reject `LDAP_SEARCH_SIZE_LIMIT`, `LDAP_SEARCH_TIME_LIMIT`,
   `LDAP_TLS_CERT_FILE`, `LDAP_TLS_KEY_FILE`, `LDAP_TLS_CA_FILE`,
-  `LDAP_ADMIN_PASSWORD_FILE` and `LDAP_ADMIN_PASSWORD` for custom LDIF.
+  `LDAP_ADMIN_PASSWORD_FILE` for custom LDIF.
   Corresponding settings belong to LDIF.
 - Configuration MUST use attribute names without options. Modules MUST use
   packaged basenames and `/usr/lib/ldap`; snapshot-provided binaries and
@@ -438,6 +459,7 @@ deployment-owned.
 
 ### LDAP access<a id="access"></a>
 
+<a id="IP0005"></a><!-- Managed access policy -->
 For users/groups YAML, ordinary accounts MUST NOT write directory entries,
 read password hashes or access `cn=config`. Anonymous directory searches MUST
 be denied. Authenticated
@@ -463,11 +485,13 @@ MUST NOT be used by applications. Its modifications disappear on rebuild.
 
 ### Expiry and revision state<a id="expiry"></a>
 
+<a id="IP0003"></a><!-- Revision rollback protection -->
 - Revisions MUST be integers from 1 through 9,007,199,254,740,991 and MUST
   increase for each newly generated snapshot, including unchanged-data renewals.
 - Exact artifact replay MAY restart a directory but MUST NOT extend its
   lifetime.
 - Generation time MUST NOT be more than five minutes ahead of the runtime clock.
+<a id="IP0004"></a><!-- Expiry enforcement -->
 - Soft expiry warns; hard expiry MUST stop LDAP with exit code 78.
 - `soft_ttl_seconds` MUST be less than `hard_ttl_seconds`.
   `expiry_offset_seconds` subtracts from both deadlines and MUST be in

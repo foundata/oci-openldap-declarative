@@ -37,6 +37,7 @@ die() {
   exit "${exit_code}"
 }
 
+# Implements: IP0002
 validate_runtime_configuration() {
   validation_errors=0
 
@@ -75,15 +76,26 @@ validate_runtime_configuration() {
     validation_errors=$((validation_errors + 1))
   fi
 
-  if [ -n "${LDAP_ADMIN_PASSWORD_FILE:-}" ] && [ "${LDAP_ADMIN_PASSWORD+x}" = x ]; then
-    log_error 'LDAP_ADMIN_PASSWORD_FILE and LDAP_ADMIN_PASSWORD are mutually exclusive'
-    validation_errors=$((validation_errors + 1))
-  fi
+  for removed_setting in LDAP_ADMIN_PASSWORD LDAP_DOMAIN LDAP_BASE_DN; do
+    if printenv "${removed_setting}" >/dev/null 2>&1; then
+      log_error "${removed_setting} is not supported"
+      validation_errors=$((validation_errors + 1))
+    fi
+  done
 
   if [ "${validation_errors}" -ne 0 ]; then
     return "${EXIT_USAGE}"
   fi
 
+  return 0
+}
+
+# Implements: IP0002
+validate_expected_base_dn() {
+  if [ "${LDAP_EXPECTED_BASE_DN+x}" = x ] && [ "${LDAP_EXPECTED_BASE_DN}" != "${1}" ]; then
+    log_error 'LDAP_EXPECTED_BASE_DN does not match the signed snapshot manifest'
+    return "${EXIT_USAGE}"
+  fi
   return 0
 }
 

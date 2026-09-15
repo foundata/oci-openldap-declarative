@@ -88,6 +88,7 @@ class Vault:
             self.passwords[label] = secret
         return self.passwords[label]
 
+    # Implements: IP0007
     def decrypt(self, scalar: VaultScalar) -> DecryptedString:
         self.count += 1
         if self.count > MAX_VAULT_VALUES:

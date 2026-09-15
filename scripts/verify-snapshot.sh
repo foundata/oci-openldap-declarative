@@ -109,6 +109,7 @@ prepare_verification_keys() {
   return 0
 }
 
+# Implements: IP0001
 verify_signature() {
   temporary_manifest=$(mktemp "${LDAP_RUNTIME_DIR:-/run/openldap}/verified-manifest.XXXXXX") || return "${EXIT_INTERNAL}"
   if ! cp "${MANIFEST_FILE}" "${temporary_manifest}"; then
@@ -185,6 +186,7 @@ validate_manifest_schema() {
   return 0
 }
 
+# Implements: IP0002
 validate_manifest_identity() {
   manifest_directory_id=$(jq -r '.directory_id' "${VERIFIED_MANIFEST_FILE}") || return "${EXIT_SNAPSHOT}"
 

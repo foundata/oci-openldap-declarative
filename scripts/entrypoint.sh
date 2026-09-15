@@ -46,6 +46,7 @@ build_listener_urls() {
   printf '%s\n' "${listener_urls}"
 }
 
+# Implements: IP0004
 watch_snapshot_expiry() {
   parent_pid="${1}"
   expires_epoch=$(jq -r '.expires_at | fromdateiso8601' "${verified_manifest_file}") || return "${EXIT_INTERNAL}"
@@ -92,6 +93,7 @@ run_startup_phase() {
   return "${startup_phase_status}"
 }
 
+# Implements: IP0004
 expire_snapshot() {
   snapshot_expired=1
   log_error 'The active directory snapshot has expired; stopping slapd'
@@ -188,6 +190,7 @@ supervise_slapd() {
   return 0
 }
 
+# Implements: IP0001
 main() {
   umask 077
   trap forward_shutdown TERM INT HUP

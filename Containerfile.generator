@@ -60,7 +60,9 @@ RUN apt-get update \
     > /usr/local/share/openldap-declarative/package-versions.txt \
   && rm /usr/local/share/openldap-declarative/package-versions.unsorted \
   && rm -rf \
+    /usr/bin/ansible-test \
     /usr/lib/python3/dist-packages/ansible/galaxy/data \
+    /usr/lib/python3/dist-packages/ansible_test \
     /usr/share/ieee-data \
     /usr/share/locale \
     /usr/share/man/* \
@@ -90,6 +92,7 @@ COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/schema/ /usr/local/s
 COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/available/ /usr/local/share/openldap-declarative/schema/available/
 COPY --from=schema-builder --chown=0:0 --chmod=0444 /export/copyright /usr/share/doc/slapd-schema/copyright
 COPY --chown=0:0 --chmod=0555 generator/password.py /usr/local/bin/openldap-password
+COPY --chown=0:0 --chmod=0555 generator/initialize.py /usr/local/bin/openldap-init
 COPY --chown=0:0 --chmod=0444 generator/vault.py /usr/local/lib/openldap-declarative/generator/vault.py
 COPY --chown=0:0 --chmod=0444 scripts/directory_data.py /usr/local/lib/openldap-declarative/scripts/directory_data.py
 COPY --chown=0:0 --chmod=0444 scripts/server_config.py /usr/local/lib/openldap-declarative/scripts/server_config.py

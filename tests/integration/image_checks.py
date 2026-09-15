@@ -18,7 +18,8 @@ def assert_image_package_data(podman: Podman, image: str) -> None:
         "-ec",
         """
 for path in /usr/share/locale /usr/share/ieee-data /var/cache/apt \\
-  /usr/lib/python3/dist-packages/ansible/galaxy/data; do
+  /usr/lib/python3/dist-packages/ansible/galaxy/data \\
+  /usr/lib/python3/dist-packages/ansible_test /usr/bin/ansible-test; do
   test ! -e "$path"
   test ! -L "$path"
 done

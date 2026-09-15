@@ -13,6 +13,7 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 - [Project structure](#project-structure)
 - [Development standards](#development-standards)
 - [Testing](#testing)
+  - [Resource workloads](#resource-workloads)
 - [Pin updates](#pin-updates)
 - [Qualification and releases](#qualification-and-releases)
   - [Prepare the release host](#release-host)
@@ -129,15 +130,16 @@ runtime envelope without interpreting arbitrary ACL policy. Runtime does not
 contain PyYAML, Argon2 generation bindings or Ansible Vault.
 
 The generator image contains source parsing, the `openldap-password` Argon2id
-helper, OpenSSL, [minisign](https://github.com/jedisct1/minisign) and
+helper, the `openldap-init` definition initializer, OpenSSL,
+[minisign](https://github.com/jedisct1/minisign) and
 `ansible-core` for its official `ansible-vault` CLI. The password helper and
 snapshot generation share the hashing implementation. The signed snapshot is the
 boundary between the images; no generator process or source-decryption key is
 needed on the LDAP host. Debian package installation uses
 `--no-install-recommends` to exclude the full Ansible collection bundle.
 Both images omit package caches, logs, translations and Python bytecode; `C.UTF-8`
-and Python sources remain. The generator omits unused Galaxy scaffolding and
-IEEE MAC-address lookup data.
+and Python sources remain. The generator omits Ansible test tooling, unused
+Galaxy scaffolding and IEEE MAC-address lookup data.
 
 For additive YAML fields, the generator parses schema definitions with
 `python-ldap`. A build-only stage exports the loaded schema through a temporary
@@ -158,6 +160,7 @@ generator/                       # snapshot generator, Python, offline only
 generator/extensions.py          # additive YAML fields and schema-aware checks
 generator/export_schema.py       # build-only export of slapd's built-in schema
 generator/password.py            # stdin-only openldap-password command
+generator/initialize.py          # exclusive users/groups definition creation
 generator/vault.py               # isolated Ansible Vault CLI adapter
 scripts/                         # runtime verification and startup
 scripts/directory_data.py        # shared LDIF, schema and verifier validation
@@ -188,6 +191,19 @@ hack/check.sh                    # direct repository check
 
 
 ## Testing<a id="testing"></a>
+
+The [implementation matrix](docs/implementation.md) indexes selected architecture
+contracts. Put `# Implements: IPnnnn` or `# Verifies: IPnnnn` immediately before
+the relevant function (after Python decorators). Keep IDs stable; do not reuse
+retired IDs. After changing tagged code or tests, regenerate and check it:
+
+```sh
+uv run python hack/implementation.py
+uv run python hack/implementation.py --check
+```
+
+The check rejects missing code/test references, unknown IDs and stale links.
+Reviewers must still check that the linked tests exercise the contract.
 
 `hack/check.sh` runs the direct repository check: shell, Containerfiles, and
 Python formatting/lint/type checks, plus the unit tests below `tests/unit`.
@@ -244,6 +260,52 @@ for image in runtime generator; do
   conclear pins check --image "$image"
 done
 ```
+
+
+### Resource workloads<a id="resource-workloads"></a>
+
+Opt-in workloads run twice each: small and 2,000-user directories with four
+concurrent clients, 64 MiB Argon2 hashes with two clients, and generation from
+2,000 hashes, 100 passwords or 64 Vault values. Each client performs ten
+bind/search pairs. They use the declared 256 MiB ceilings and need cgroup v2
+with memory and task peak counters:
+
+```sh
+test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-footprint.XXXXXX")
+uv run --frozen pytest tests/integration/test_footprint.py \
+  --mode=developer-build --run-dir "$test_run" --run-benchmarks
+cat "$test_run/footprints.jsonl"
+```
+
+The harness removes its containers, keys and storage; the report remains.
+Reports contain image IDs, architecture, workload settings, memory/task peaks
+and sampled open-file counts. Whole-container memory includes charged page
+cache. Later runs can reuse pages charged elsewhere, so compare both runs and
+retain margin. Runtime figures include an in-container Python load client;
+generator runs use a small wrapper to retain their peak counter after exit.
+Unreadable file-descriptor counts are `null`, not zero.
+
+These workloads are not maximum-capacity or throughput guarantees. Test your
+own directory size, hash parameters and concurrency before reducing limits.
+They do not run during ordinary integration or release qualification unless
+`--run-benchmarks` is explicitly selected.
+
+Native amd64 baseline, 2026-09-15, one CPU, two runs per workload:
+
+| Workload | Peak memory (MiB) | Peak tasks | Sampled open files (max) |
+| --- | ---: | ---: | ---: |
+| LDAP: 2 users, 4 clients, 19 MiB Argon2 | 103.0-134.3 | 15 | 35 |
+| LDAP: 2,000 users, 4 clients, 19 MiB Argon2 | 104.9-123.8 | 15 | 39 |
+| LDAP: 2,000 users, 2 clients, 64 MiB Argon2 | 155.8-156.3 | 13 | 31 |
+| Generate: 2,000 password hashes | 39.6-40.1 | 3 | 6 |
+| Generate: 100 plaintext passwords | 41.0-41.1 | 3 | 6 |
+| Generate: 64 Vault-encrypted hashes | 55.4-55.5 | 4 | 15 |
+
+All workloads completed without OOM events. The 256 MiB ceilings retain at
+least 99 MiB above these observed peaks; task and descriptor limits are also
+unchanged. Recheck them with ConClear's observed footprint during multi-platform
+qualification. Vault generation took 49-51 seconds; each scalar invokes the
+Vault CLI separately.
 
 
 ## Pin updates<a id="pin-updates"></a>

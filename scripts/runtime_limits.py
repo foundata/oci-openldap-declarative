@@ -9,6 +9,7 @@ import resource
 import sys
 
 
+# Implements: IP0006
 def open_files_cap() -> int:
     value = os.environ.get("LDAP_MAX_OPEN_FILES", "4096")
     if not re.fullmatch(r"[1-9][0-9]{0,9}", value) or int(value) > 2147483647:
@@ -16,6 +17,7 @@ def open_files_cap() -> int:
     return int(value)
 
 
+# Implements: IP0006
 def clamp_open_files(pid: int, cap: int) -> None:
     current = resource.prlimit(pid, resource.RLIMIT_NOFILE)
     soft, hard = (

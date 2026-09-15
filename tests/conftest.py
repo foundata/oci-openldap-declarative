@@ -22,3 +22,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="existing directory for isolated Podman storage in developer-build "
         "mode; defaults to a pytest temporary directory",
     )
+    group.addoption(
+        "--run-benchmarks",
+        action="store_true",
+        help="run resource workloads against the selected images",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if not config.getoption("--run-benchmarks"):
+        for item in items:
+            if "benchmark" in item.keywords:
+                item.add_marker(pytest.mark.skip(reason="requires --run-benchmarks"))

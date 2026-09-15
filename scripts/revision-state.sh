@@ -6,6 +6,7 @@ set -u
 
 # shellcheck disable=SC2034,SC2154  # Sourced constants and result variables are shared with callers.
 
+# Implements: IP0003
 validate_snapshot_revision() {
   revision_manifest_file=${1}
   revision_state_path=${2}
@@ -56,6 +57,7 @@ validate_snapshot_revision() {
   return 0
 }
 
+# Implements: IP0003
 record_snapshot_revision() {
   revision_manifest_file=${1}
   revision_state_path=${2}
