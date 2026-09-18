@@ -175,9 +175,9 @@ hack/check.sh                    # direct repository check
 ## Development standards<a id="development-standards"></a>
 
 - Follow the foundata
-  [shell](https://github.com/foundata/guidelines/blob/master/shell-scripting-style-guide.md)
+  [shell](https://github.com/foundata/guidelines/blob/main/shell-scripting-style-guide.md)
   and
-  [Python](https://github.com/foundata/guidelines/blob/master/python-style-guide.md)
+  [Python](https://github.com/foundata/guidelines/blob/main/python-style-guide.md)
   style guides.
 - Keep runtime and generator behavior fail closed. Do not add release skips,
   mutable-tag fallbacks or trust overrides.
@@ -186,7 +186,7 @@ hack/check.sh                    # direct repository check
   and digests. Only explicit developer modes may build images.
 - Keep credentials, snapshot keys, release profiles and retained test resources
   outside the checkout.
-- [Use scoped commits](https://github.com/foundata/guidelines/blob/master/git-commits.md)
+- [Use scoped commits](https://github.com/foundata/guidelines/blob/main/git-commits.md)
   in the form `<scope>: <lowercase imperative description>`.
 
 
