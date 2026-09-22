@@ -44,6 +44,7 @@ The project provides two images:
 
 - [Examples, use cases](#examples)
   - [Application-specific LDAP, sidecar containers](#example-app-ldap)
+    - [Nextcloud directory](#example-nextcloud)
 - [Where actions run](#usage-hosts)
 - [Image: `quay.io/foundata/openldap-declarative-generator` (admin host / CI)](#image-generator)
   - [Tags](#tags-generator)
@@ -94,6 +95,99 @@ application's runtime network path, supporting
 
 Trade-off: account removals take effect only after a new snapshot is deployed
 or the current one expires.
+
+#### Nextcloud directory<a id="example-nextcloud"></a>
+
+This `directory.yaml` defines three users, two groups and a search account.
+The filters below admit `john` and `jane`; `andreas` is denied even though he
+also belongs to the allow group.
+
+```yaml
+format_version: 1
+input_type: "users-groups"
+directory_id: "nextcloud"
+base_dn: "dc=example,dc=org"
+entry_uuid: "c5fa5db6-3963-44c2-9834-9409d1ab9f86"
+organization: "Example"
+revision: 1
+soft_ttl_seconds: 21600
+hard_ttl_seconds: 43200
+
+users:
+  - entry_uuid: "003ffd6f-3074-457f-9740-2547970687be"
+    username: "john"
+    last_name: "Example"
+    active: true
+    password_hash_file: "/run/credentials/john.hash"
+  - entry_uuid: "df0ee4d6-fd01-48b6-9c66-713c52b5ed5a"
+    username: "jane"
+    last_name: "Example"
+    active: true
+    password_hash_file: "/run/credentials/jane.hash"
+  - entry_uuid: "62d4e3af-b3f5-454f-8293-70d7eb92bf85"
+    username: "andreas"
+    last_name: "Example"
+    active: true
+    password_hash_file: "/run/credentials/andreas.hash"
+
+groups:
+  - entry_uuid: "73113c3f-7a96-4268-82a4-fd09154d8364"
+    groupname: "nextcloud-allow"
+    members: ["john", "jane", "andreas"]
+  - entry_uuid: "87787418-237b-45f5-936d-7ee34b497db2"
+    groupname: "nextcloud-deny"
+    members: ["andreas"]
+
+bind_accounts:
+  - entry_uuid: "843828e3-1e61-4114-b0a1-b0f4914f55a7"
+    username: "nextcloud"
+    password_hash_file: "/run/credentials/nextcloud.hash"
+```
+
+Generate your own [UUIDs](#usage-admin-identities) once and preserve them.
+Use the [password helper](#usage-prepare) to create the four `.hash` files in
+`${private}`, then [sign and generate](#usage-snapshot) this definition instead
+of running `openldap-init`. Deploy with `LDAP_EXPECTED_DIRECTORY_ID=nextcloud`.
+
+Enable Nextcloud's **LDAP user and group backend** and configure its
+[LDAP settings](https://docs.nextcloud.com/server/stable/admin_manual/configuration_user/user_auth_ldap.html):
+
+| Setting | Value |
+| --- | --- |
+| Host / port | The LDAP endpoint from your [deployment](#usage-rootless-podman). |
+| Base DN | `dc=example,dc=org` |
+| User DN / password | `uid=nextcloud,ou=services,dc=example,dc=org` and its original password, not the hash. |
+| Base user tree | `ou=people,dc=example,dc=org` |
+| Base group tree | `ou=groups,dc=example,dc=org` |
+| User / group display name field | `cn` |
+| Group member association | `member` |
+| UUID attribute for users / groups | `entryUUID`; configure before the first import. |
+
+Select **Edit LDAP Query** on each relevant tab. **Users** filter:
+
+```text
+(&(objectClass=inetOrgPerson)(memberOf=cn=nextcloud-allow,ou=groups,dc=example,dc=org)(!(memberOf=cn=nextcloud-deny,ou=groups,dc=example,dc=org)))
+```
+
+**Login Attributes** filter, including the same restrictions because a custom
+login filter can override the user filter (`%uid` is Nextcloud's login placeholder):
+
+```text
+(&(objectClass=inetOrgPerson)(memberOf=cn=nextcloud-allow,ou=groups,dc=example,dc=org)(!(memberOf=cn=nextcloud-deny,ou=groups,dc=example,dc=org))(uid=%uid))
+```
+
+**Groups** filter to expose only the allow group:
+
+```text
+(&(objectClass=groupOfNames)(cn=nextcloud-allow))
+```
+
+Keep the default UUID-based internal username. Test the connection and verify
+that `john` and `jane` can log in while `andreas` cannot. These filters enforce
+Nextcloud access only: group names have no built-in meaning to LDAP, and
+`andreas` can still bind directly. Set `active: false` and redeploy to remove
+his LDAP entry entirely. Existing application sessions and caches may outlive
+the directory change.
 
 
 ## Where actions run<a id="usage-hosts"></a>
