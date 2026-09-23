@@ -68,9 +68,9 @@ def store(
 ) -> Iterator[Store]:
     if input_manifest is not None:
         scratch = os.environ.get("CC_HOOK_SCRATCH", "")
-        base = Path(scratch)
-        if not scratch or not base.is_dir() or base.is_symlink():
-            pytest.fail("ConClear modes require CC_HOOK_SCRATCH")
+        base = Path(scratch) if scratch else tmp_path_factory.mktemp("conclear-test")
+        if not base.is_dir() or base.is_symlink():
+            pytest.fail("CC_HOOK_SCRATCH must name an existing directory")
     else:
         run_dir = request.config.getoption("--run-dir")
         if run_dir is None:

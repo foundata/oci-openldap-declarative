@@ -248,6 +248,11 @@ uv run --frozen pytest tests/integration --mode=developer-build --run-dir "$test
 rm -rf "$test_run"
 ```
 
+Set `CC_PLATFORM=linux/arm64` before a developer-build test to build and run
+arm64 images on a native worker or a host with QEMU binfmt support. ConClear
+supplies this platform for exact-image tests. Hook scratch storage uses
+`CC_HOOK_SCRATCH` when supplied, otherwise pytest's temporary directory.
+
 Without `--run-dir` the suite uses a pytest temporary directory. Set
 `KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then
 reports its JSONL resource manifest and the inspection command instead of

@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import shutil
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
 from tests.integration import harness
+from tests.integration.conftest import store as store_fixture
 from tests.integration.harness import Podman, Store
 
 
@@ -168,3 +172,73 @@ def test_cleanup_removes_owned_namespace_dependents_first(
     isolated.finish("/unused/podman")
     assert len(removals) == 1
     assert not isolated.workspace.exists()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_conclear_scratch_is_optional_but_always_owned(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: bool,
+) -> None:
+    monkeypatch.setattr(harness, "selinux_enforcing", lambda: False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/unused/podman")
+    cleaned: list[Path] = []
+    monkeypatch.setattr(Store, "finish", lambda self, binary: cleaned.append(self.base))
+    if explicit:
+        monkeypatch.setenv("CC_HOOK_SCRATCH", str(tmp_path))
+    else:
+        monkeypatch.delenv("CC_HOOK_SCRATCH", raising=False)
+    monkeypatch.delenv("KEEP_TEST_RESOURCES", raising=False)
+    fixture = inspect.unwrap(store_fixture)(
+        cast(pytest.FixtureRequest, Mock()),
+        "conclear",
+        tmp_path / "manifest.json",
+        tmp_path_factory,
+    )
+    isolated = next(fixture)
+    assert (isolated.base == tmp_path) is explicit
+    assert isolated.owned(isolated.workspace)
+    fixture.close()
+    assert cleaned == [isolated.base]
+
+
+def test_explicit_invalid_conclear_scratch_is_rejected(
+    tmp_path: Path,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CC_HOOK_SCRATCH", str(tmp_path / "missing"))
+    fixture = inspect.unwrap(store_fixture)(
+        cast(pytest.FixtureRequest, Mock()),
+        "conclear",
+        tmp_path / "manifest.json",
+        tmp_path_factory,
+    )
+    with pytest.raises(pytest.fail.Exception, match="existing directory"):
+        next(fixture)
+
+
+@pytest.mark.parametrize("platform", [None, "linux/arm64"])
+def test_developer_build_uses_the_requested_platform(
+    isolated: Store, monkeypatch: pytest.MonkeyPatch, platform: str | None
+) -> None:
+    if platform:
+        monkeypatch.setenv("CC_PLATFORM", platform)
+    else:
+        monkeypatch.delenv("CC_PLATFORM", raising=False)
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(shutil, "which", lambda name: "/unused/podman")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "revision\n", ""),
+    )
+    monkeypatch.setattr(Podman, "run", lambda self, *args, **kwargs: calls.append(args))
+    Podman(isolated).build_image("test-image", isolated.workspace)
+    command = calls[0]
+    assert command[0] == "build"
+    if platform:
+        assert command[command.index("--platform") + 1] == platform
+    else:
+        assert "--platform" not in command

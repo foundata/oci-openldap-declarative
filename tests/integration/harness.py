@@ -416,8 +416,10 @@ class Podman:
         ).stdout.strip()
         self.store.record("developer-image", image_name)
         file_arguments = ["--file", str(containerfile)] if containerfile else []
+        platform = os.environ.get("CC_PLATFORM")
         self.run(
             "build",
+            *(["--platform", platform] if platform else []),
             "--pull=always",
             "--tag",
             image_name,
