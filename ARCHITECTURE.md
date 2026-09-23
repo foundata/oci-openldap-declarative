@@ -352,6 +352,9 @@ YAML string values MAY use labeled Ansible Vault scalars:
   files and encryption embedded inside LDIF are not supported.
 - The source limit is 1 MiB, with at most 256 encrypted values of 32 KiB each.
   Each decryption subprocess MUST have a 30-second timeout.
+- Repeated identical ciphertext MAY reuse a successful decryption within one
+  generator invocation. Every occurrence MUST still count toward the value limit;
+  cached values MUST NOT be persisted or shared across invocations.
 - Errors MUST NOT echo passwords, decrypted credential values or Vault keys.
 
 ## Snapshot contract<a id="snapshots"></a>

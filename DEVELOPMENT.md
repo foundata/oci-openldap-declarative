@@ -216,6 +216,11 @@ schema imports, authentication, access policy and snapshot lifecycle.
 Input-schema checks apply after Vault decryption; OpenLDAP's offline import is
 the schema authority.
 
+The runtime compatibility suite executes the README's YAML setup, password
+helper, signing and generation snippets with private paths and exact test images,
+then checks offline preflight and LDAP binds/searches. It does not exercise
+systemd deployment; Quadlet checks remain separate.
+
 Extension unit tests use small schema fixtures and do not need host OpenLDAP
 schema files. Container tests exercise the actual packaged schemas, custom
 auxiliary classes, Vault-encrypted attribute values, read access and offline
@@ -345,8 +350,13 @@ Native amd64 baseline, 2026-09-15, one CPU, two runs per workload:
 All workloads completed without OOM events. The 256 MiB ceilings retain at
 least 99 MiB above these observed peaks; task and descriptor limits are also
 unchanged. Recheck them with ConClear's observed footprint during multi-platform
-qualification. Vault generation took 49-51 seconds; each scalar invokes the
-Vault CLI separately.
+qualification. The original Vault workload took 49-51 seconds for 64 uses of
+one ciphertext. Successful repeated ciphertext is now decrypted once per
+invocation, in memory. Distinct ciphertext still invokes the official CLI
+separately; no decrypted temporary files or persistent cache are introduced.
+On 2026-09-23, the same repeated-value workload took 2.23-2.26 seconds with
+54.6-55.2 MiB peak memory, four tasks and 13 sampled open files (native amd64,
+two runs). This does not measure 64 independently encrypted credentials.
 
 
 ## Pin updates<a id="pin-updates"></a>

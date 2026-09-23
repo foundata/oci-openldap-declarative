@@ -5,8 +5,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 import uuid
 from dataclasses import dataclass
 from io import BytesIO
@@ -29,6 +32,7 @@ from tests.integration.image_checks import (
     assert_image_privileges,
 )
 from tests.integration.lifecycle import LDAP_URI, LDAPI_URI, wait_until_healthy
+from tests.readme_examples import bash_example
 from tests.validate_snapshot_manifest import validate_manifest
 
 pytestmark = pytest.mark.integration
@@ -1986,3 +1990,127 @@ def test_vault_snapshot_authenticates(
     assert running.bind(APPLICATION_DN, "TEST-ONLY-vault-bind").returncode == 0
     assert running.bind(APPLICATION_DN, "TEST-ONLY-app-bind").returncode != 0
     podman.stop(running.name)
+
+
+def test_readme_yaml_workflow(podman: Podman, store: Store, images: Images) -> None:
+    image = images.require_generator()
+    runtime_image = images.require_runtime()
+    home = store.workspace / "readme-home"
+    home.mkdir()
+    document = (PROJECT / "README.md").read_text()
+    snippets = [
+        bash_example(document, anchor)
+        for anchor in (
+            "usage-prepare",
+            "usage-prepare-yaml",
+            "usage-snapshot-keys",
+            "usage-snapshot-generate",
+        )
+    ]
+    registry_assignment = (
+        "generator=$(podman image inspect --format '{{index .RepoDigests 0}}' \\\n"
+        "    quay.io/foundata/openldap-declarative-generator:latest)"
+    )
+    # Follow DEVELOPMENT.md's exact-image substitution, including the helper.
+    snippets = [
+        snippet.replace(registry_assignment, f"generator={shlex.quote(image)}").replace(
+            registry_assignment.replace("    quay", "  quay"),
+            f"generator={shlex.quote(image)}",
+        )
+        for snippet in snippets
+    ]
+    assert all("podman image inspect" not in snippet for snippet in snippets)
+    script = (
+        "set -euo pipefail\n"
+        'podman() { "$README_PYTHON" "$README_WRAPPER" "$@"; }\n' + "\n".join(snippets)
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        input="TEST-ONLY-readme-alice\nTEST-ONLY-readme-application\n",
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+        cwd=PROJECT,
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "PYTHONPATH": str(PROJECT),
+            "README_ORIGINAL_HOME": str(Path.home()),
+            "README_RUN_DIR": str(store.base),
+            "README_SUITE": store.suite,
+            "README_PYTHON": sys.executable,
+            "README_WRAPPER": str(PROJECT / "tests/fixtures/readme_podman.py"),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    credentials = home / ".config/openldap-declarative"
+    output = home / ".local/share/openldap-declarative/generated"
+    definition = yaml.safe_load((home / "directory-data/directory.yaml").read_text())
+    snapshot = output / "revision-1"
+    validate_manifest(SCHEMA, snapshot / "manifest.json")
+    for name in ("snapshot.key", "alice.hash", "application.hash"):
+        assert (credentials / name).stat().st_mode & 0o777 == 0o600
+    preflight_state = home / "preflight-state"
+    preflight_state.mkdir()
+    checked = podman.run_container(
+        "--rm",
+        "--userns=keep-id:uid=1001,gid=1001",
+        "--network=none",
+        "--read-only",
+        "--read-only-tmpfs=false",
+        "--cap-drop=all",
+        "--security-opt=no-new-privileges",
+        "--memory=256m",
+        "--pids-limit=128",
+        "--env=LDAP_EXPECTED_DIRECTORY_ID=example-app",
+        "--tmpfs",
+        "/run/openldap:rw,noexec,nosuid,nodev,mode=1777",
+        "--volume",
+        f"{snapshot}:/snapshot:ro,Z",
+        "--volume",
+        f"{credentials / 'snapshot.pub'}:/run/credentials/snapshot-public-key:ro,Z",
+        "--volume",
+        f"{preflight_state}:/state:ro,Z",
+        "--entrypoint=openldap-preflight",
+        runtime_image,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert not list(preflight_state.iterdir())
+    # Adapt only the workspace paths; the snapshot is the README command's output.
+    generated = Generator(podman, image, home)
+    shutil.copytree(credentials, home / "credentials")
+    service = RuntimeService(podman, runtime_image, generated, f"{store.prefix}-readme")
+    try:
+        service.start(snapshot)
+        assert service.bind(ALICE_DN, "TEST-ONLY-readme-alice").returncode == 0
+        assert (
+            service.bind(APPLICATION_DN, "TEST-ONLY-readme-application").returncode == 0
+        )
+        assert service.bind(ALICE_DN, "TEST-ONLY-wrong").returncode != 0
+        found = podman.exec(
+            service.name,
+            "ldapsearch",
+            "-LLL",
+            "-x",
+            "-H",
+            LDAP_URI,
+            "-D",
+            APPLICATION_DN,
+            "-w",
+            "TEST-ONLY-readme-application",
+            "-b",
+            APP_BASE,
+            "(uid=alice)",
+            "uid",
+            "entryUUID",
+            "memberOf",
+            "userPassword",
+        ).stdout
+        assert f"entryUUID: {definition['users'][0]['entry_uuid']}" in found
+        assert f"memberOf: cn=staff,ou=groups,{APP_BASE}" in found
+        assert "userPassword:" not in found
+    finally:
+        if podman.container_exists(service.name):
+            podman.stop(service.name)

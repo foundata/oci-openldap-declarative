@@ -218,3 +218,62 @@ def test_decrypted_strings_are_not_reparsed_as_yaml(
     source = tmp_path / "source.yaml"
     source.write_text("foo: !vault encrypted\n")
     assert load_yaml(source, context="source") == {"foo": "false"}
+
+
+def test_repeated_values_decrypt_once_without_bypassing_the_count_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[object] = []
+
+    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, b"false", b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    vault = Vault([f"id@{secret(tmp_path)}"])
+    value = VaultScalar("$ANSIBLE_VAULT;1.2;AES256;id\n00\n")
+    resolved = vault.resolve({"items": [value] * 256})
+    assert resolved == {"items": ["false"] * 256}
+    assert all(isinstance(item, DecryptedString) for item in resolved["items"])
+    assert len(calls) == 1
+    with pytest.raises(ConfigurationError, match="256 encrypted-value limit"):
+        vault.decrypt(value)
+    assert len(calls) == 1
+
+
+def test_cache_is_exact_and_local_to_the_vault_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[object] = []
+
+    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, b"secret", b"")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    references = [f"first@{secret(tmp_path)}", f"second@{secret(tmp_path, 'second')}"]
+    vault = Vault(references)
+    for label, payload in (("first", "00"), ("first", "01"), ("second", "00")):
+        value = VaultScalar(f"$ANSIBLE_VAULT;1.2;AES256;{label}\n{payload}\n")
+        vault.decrypt(value)
+        vault.decrypt(value)
+    assert len(calls) == 3
+    Vault(references).decrypt(value)
+    assert len(calls) == 4
+
+
+def test_failed_decryption_is_not_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[object] = []
+
+    def run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 1, b"PRIVATE", b"PRIVATE")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    vault = Vault([f"id@{secret(tmp_path)}"])
+    for _ in range(2):
+        with pytest.raises(ConfigurationError, match="Vault decryption failed"):
+            vault.decrypt(VaultScalar("$ANSIBLE_VAULT;1.2;AES256;id\n00\n"))
+    assert len(calls) == 2 and not vault.decrypted

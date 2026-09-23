@@ -35,6 +35,7 @@ class Vault:
     def __init__(self, references: list[str]) -> None:
         self.sources: dict[str, str] = {}
         self.passwords: dict[str, bytes] = {}
+        self.decrypted: dict[bytes, DecryptedString] = {}
         self.count = 0
         for reference in references:
             label, separator, source = reference.partition("@")
@@ -112,6 +113,8 @@ class Vault:
             )
         label = fields[3]
         secret = self.password(label)
+        if ciphertext in self.decrypted:
+            return self.decrypted[ciphertext]
         with tempfile.TemporaryDirectory(prefix="openldap-vault-") as directory:
             home = Path(directory)
             config = home / "ansible.cfg"
@@ -169,9 +172,11 @@ class Vault:
         if len(result.stdout) > MAX_VAULT_BYTES:
             raise ConfigurationError("decrypted Vault value exceeds the size limit")
         try:
-            return DecryptedString(result.stdout.decode("utf-8"))
+            plaintext = DecryptedString(result.stdout.decode("utf-8"))
         except UnicodeError:
             raise ConfigurationError("decrypted Vault value must be UTF-8") from None
+        self.decrypted[ciphertext] = plaintext
+        return plaintext
 
     def resolve(self, value: Any) -> Any:
         if isinstance(value, VaultScalar):
