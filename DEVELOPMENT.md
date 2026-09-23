@@ -252,6 +252,8 @@ Set `CC_PLATFORM=linux/arm64` before a developer-build test to build and run
 arm64 images on a native worker or a host with QEMU binfmt support. ConClear
 supplies this platform for exact-image tests. Hook scratch storage uses
 `CC_HOOK_SCRATCH` when supplied, otherwise pytest's temporary directory.
+For slow emulation, pass `--ldap-readiness-timeout=120`; the default is 20
+seconds. This changes only the test wait, not container limits or health checks.
 
 Without `--run-dir` the suite uses a pytest temporary directory. Set
 `KEEP_TEST_RESOURCES=true` only while diagnosing a failure; the suite then

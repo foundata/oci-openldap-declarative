@@ -99,8 +99,10 @@ def store(
 
 
 @pytest.fixture(scope="session")
-def podman(store: Store) -> Podman:
-    return Podman(store)
+def podman(store: Store, request: pytest.FixtureRequest) -> Podman:
+    return Podman(
+        store, readiness_timeout=request.config.getoption("--ldap-readiness-timeout")
+    )
 
 
 @pytest.fixture(scope="session")

@@ -242,12 +242,13 @@ class Store:
 class Podman:
     """Run Podman against the isolated store and journal created resources."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, *, readiness_timeout: float = 20.0) -> None:
         binary = shutil.which("podman")
         if binary is None:
             pytest.fail("podman is not available")
         self.binary = binary
         self.store = store
+        self.readiness_timeout = readiness_timeout
 
     def run(
         self,

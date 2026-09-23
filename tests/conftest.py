@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import argparse
+import math
+
 import pytest
 
 MODES = ("conclear", "conclear-generator", "conclear-runtime", "developer-build")
 
 
+def positive_timeout(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("timeout must be a positive number") from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive finite number")
+    return seconds
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("openldap", "OpenLDAP container suites")
+    group.addoption(
+        "--ldap-readiness-timeout",
+        type=positive_timeout,
+        default=20.0,
+        help="seconds to wait for LDAP initialization/readiness (increase for emulation)",
+    )
     group.addoption(
         "--mode",
         choices=MODES,

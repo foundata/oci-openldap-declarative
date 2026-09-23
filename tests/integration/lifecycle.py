@@ -11,12 +11,11 @@ from tests.integration.harness import Podman
 LIB = "/usr/local/lib/openldap-declarative"
 LDAP_URI = "ldap://127.0.0.1:1389"
 LDAPI_URI = "ldapi://%2Frun%2Fopenldap%2Fldapi"
-READINESS_DEADLINE = 20.0
 POLL_INTERVAL = 0.25
 
 
 def wait_until_healthy(podman: Podman, name: str) -> None:
-    deadline = time.monotonic() + READINESS_DEADLINE
+    deadline = time.monotonic() + podman.readiness_timeout
     while time.monotonic() < deadline:
         if podman.state(name) != "running":
             pytest.fail(f"{name} stopped before becoming healthy:\n{podman.logs(name)}")
@@ -27,7 +26,7 @@ def wait_until_healthy(podman: Podman, name: str) -> None:
 
 
 def wait_until_initializing(podman: Podman, name: str) -> None:
-    deadline = time.monotonic() + READINESS_DEADLINE
+    deadline = time.monotonic() + podman.readiness_timeout
     while time.monotonic() < deadline:
         if podman.state(name) != "running":
             pytest.fail(f"{name} stopped before initializing:\n{podman.logs(name)}")
