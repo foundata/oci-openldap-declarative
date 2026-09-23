@@ -1,0 +1,3 @@
+====== LDAP application smoke test ======
+
+Public smoke marker: public-7fbf6a89

@@ -1062,7 +1062,7 @@ class RuntimeService:
         podman.create_volume(self.runtime_volume)
         podman.create_volume(self.state_volume)
 
-    def start(self, snapshot: Path, *options: str) -> None:
+    def start(self, snapshot: Path, *options: str, network: str = "none") -> None:
         public_key = self.generator.credentials / "snapshot.pub"
         if self.podman.container_exists(self.name):
             self.podman.stop(self.name)
@@ -1073,7 +1073,7 @@ class RuntimeService:
             self.name,
             "--userns=keep-id:uid=1001,gid=1001",
             "--network",
-            "none",
+            network,
             "--read-only",
             "--read-only-tmpfs=false",
             "--ulimit",

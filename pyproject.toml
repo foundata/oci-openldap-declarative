@@ -26,6 +26,7 @@ filterwarnings = ["error"]
 markers = [
   "integration: needs rootless Podman, an image source and real time",
   "benchmark: opt-in resource workloads; measurements are not capacity guarantees",
+  "application: opt-in HTTP smoke test with a pinned external LDAP consumer",
 ]
 strict = true
 testpaths = ["tests/unit"]

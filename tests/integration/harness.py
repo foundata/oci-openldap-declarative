@@ -210,7 +210,9 @@ class Store:
             ):
                 pytest.fail(f"refusing to remove unowned volume: {volume['Name']}")
         for container in container_ids:
-            podman.run("rm", "--force", "--", container["Id"])
+            # Namespace owners may precede their dependents. All were validated above.
+            if podman.container_exists(container["Id"]):
+                podman.run("rm", "--force", "--depend", "--", container["Id"])
         for volume in volume_records:
             podman.run("volume", "rm", "--", volume["Name"])
         # Podman bind-mounts the overlay directory in this namespace. Unmount only

@@ -13,6 +13,7 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 - [Project structure](#project-structure)
 - [Development standards](#development-standards)
 - [Testing](#testing)
+  - [Application smoke test](#application-smoke-test)
   - [Resource workloads](#resource-workloads)
 - [Pin updates](#pin-updates)
 - [Qualification and releases](#qualification-and-releases)
@@ -260,6 +261,46 @@ for image in runtime generator; do
   conclear pins check --image "$image"
 done
 ```
+
+
+### Application smoke test<a id="application-smoke-test"></a>
+
+The opt-in DokuWiki test submits real HTTP login forms and checks group-based
+page access, username changes, membership removal and deactivation across four
+signed snapshots. Each assertion uses a fresh session; existing application
+sessions and caches are not a revocation guarantee. No browser or external
+database is needed.
+
+```sh
+test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-application.XXXXXX")
+uv run --frozen pytest tests/integration/test_application.py \
+  --mode=developer-build --run-dir "$test_run" --run-application-tests
+```
+
+Our images use the usual developer-build or exact ConClear inputs. The external
+consumer uses per-platform digests in `tests/fixtures/dokuwiki/image.json` and
+runs with 256 MiB memory and one CPU. Only HTTP is published, on a random
+loopback port; LDAP shares the wiki's network namespace. Logs remain under the
+run directory; the harness cleans up containers, credentials and storage.
+This test is skipped in ordinary integration and release runs.
+
+By default the pinned wiki image is pulled into the private test store. To
+reuse it without registry access, prepare an OCI layout outside the checkout
+with Skopeo, then pass `--dokuwiki-image-layout "$cache"` to pytest:
+
+```sh
+arch=amd64 # Use arm64 for that target platform.
+cache="${XDG_CACHE_HOME:-$HOME/.cache}/openldap-tests/dokuwiki-$arch"
+pin=$(jq -r --arg arch "$arch" \
+  '.repository + "@" + .digests[$arch]' tests/fixtures/dokuwiki/image.json)
+mkdir -p "$(dirname "$cache")"
+skopeo copy --preserve-digests "docker://$pin" "oci:$cache:dokuwiki"
+```
+
+The test verifies the imported digest and architecture before launch. A stale
+cache fails explicitly, without a network fallback. Refresh it when reviewing
+pin updates. Neither route uses the default Podman store. The cached layout
+is read-only input and is not removed by test cleanup.
 
 
 ### Resource workloads<a id="resource-workloads"></a>

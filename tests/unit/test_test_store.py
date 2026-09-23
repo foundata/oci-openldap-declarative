@@ -123,3 +123,48 @@ def test_cleanup_refuses_unlabelled_resources_before_deletion(
         isolated.finish("/unused/podman")
     assert calls == []
     assert isolated.workspace.is_dir()
+
+
+def test_cleanup_removes_owned_namespace_dependents_first(
+    isolated: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("wiki", "ldap"):
+        isolated.record("container", name)
+    existing = {"wiki-id", "ldap-id"}
+    removals: list[tuple[str, ...]] = []
+
+    def output(self: Podman, *arguments: str, **kwargs: object) -> str:
+        if arguments[0] == "ps":
+            return json.dumps([{"Id": "wiki-id"}, {"Id": "ldap-id"}])
+        if arguments[:2] == ("volume", "ls"):
+            return "[]"
+        assert arguments[0] == "inspect"
+        return json.dumps(
+            [
+                {
+                    "Name": arguments[1].removesuffix("-id"),
+                    "Config": {"Labels": {harness.OWNER_LABEL: isolated.run_key}},
+                }
+            ]
+        )
+
+    def run(
+        self: Podman, *arguments: str, **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        code = 0
+        if arguments[:2] == ("container", "exists"):
+            code = 0 if arguments[2] in existing else 1
+        elif arguments[0] == "rm":
+            removals.append(arguments)
+            assert arguments == ("rm", "--force", "--depend", "--", "wiki-id")
+            existing.clear()
+        else:
+            assert arguments[0] == "unshare"
+        return subprocess.CompletedProcess(list(arguments), code, "", "")
+
+    monkeypatch.setattr(shutil, "which", lambda name: "/unused/podman")
+    monkeypatch.setattr(Podman, "output", output)
+    monkeypatch.setattr(Podman, "run", run)
+    isolated.finish("/unused/podman")
+    assert len(removals) == 1
+    assert not isolated.workspace.exists()

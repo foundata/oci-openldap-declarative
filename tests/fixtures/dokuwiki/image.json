@@ -1,0 +1,7 @@
+{
+  "repository": "docker.io/dokuwiki/dokuwiki",
+  "digests": {
+    "amd64": "sha256:f8cd0d1360b54604628a98657859446c940e76e84fcee382fe3e57053d9409b8",
+    "arm64": "sha256:1832e7d520c80bbac6ce974ec39da02d9ca7db3b273b2e1275d2b7dbbad632c8"
+  }
+}

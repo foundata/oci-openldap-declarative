@@ -27,6 +27,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         action="store_true",
         help="run resource workloads against the selected images",
     )
+    group.addoption(
+        "--run-application-tests",
+        action="store_true",
+        help="run the opt-in DokuWiki LDAP consumer test",
+    )
+    group.addoption(
+        "--dokuwiki-image-layout",
+        default=None,
+        help="cached OCI layout with a dokuwiki tag; must match the pinned platform digest",
+    )
 
 
 def pytest_collection_modifyitems(
@@ -36,3 +46,9 @@ def pytest_collection_modifyitems(
         for item in items:
             if "benchmark" in item.keywords:
                 item.add_marker(pytest.mark.skip(reason="requires --run-benchmarks"))
+    if not config.getoption("--run-application-tests"):
+        for item in items:
+            if "application" in item.keywords:
+                item.add_marker(
+                    pytest.mark.skip(reason="requires --run-application-tests")
+                )
