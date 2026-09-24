@@ -107,6 +107,15 @@ def test_release_tags_publish_exact_versions_and_latest() -> None:
         assert image["release"]["moving_tags"] == ["latest"]
 
 
+def test_release_version_is_checked_against_changelog() -> None:
+    with (ROOT / "conclear.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    assert config["project"]["version_sources"] == [
+        {"kind": "changelog", "path": "CHANGELOG.md"}
+    ]
+    assert (ROOT / "CHANGELOG.md").is_file()
+
+
 def test_qualification_hooks_allow_bounded_emulation_waits() -> None:
     with (ROOT / "conclear.toml").open("rb") as stream:
         config = tomllib.load(stream)

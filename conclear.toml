@@ -4,6 +4,10 @@ schema_version = 1
 name = "oci-openldap-declarative"
 source = "https://foundata.com/en/projects/oci-openldap-declarative/#source"
 
+[[project.version_sources]]
+kind = "changelog"
+path = "CHANGELOG.md"
+
 [[images]]
 id = "runtime"
 repository = "quay.io/foundata/openldap-declarative"

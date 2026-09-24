@@ -418,6 +418,11 @@ The maintainer performing a release also needs:
 - write access to both Quay repositories
 - a durable, backed-up archive directory, both described below.
 
+Prepare the release entry in [CHANGELOG.md](CHANGELOG.md), replacing any
+`Unreleased` date marker with the release date (`YYYY-MM-DD`). Its first
+versioned heading must match `--version`; ConClear rejects mismatches with
+`CC0005`.
+
 ConClear builds the selected commit's tracked tree in isolation. Commit reviewed
 code, documentation and `conclear.toml` first.
 

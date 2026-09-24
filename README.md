@@ -982,6 +982,7 @@ snapshot. The runtime does not export those changes back into your source.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) covers local builds, tests and releases.
 Production deployments must use qualified release images.
+[CHANGELOG.md](CHANGELOG.md) records user-facing changes.
 [ARCHITECTURE.md](ARCHITECTURE.md) defines the behavioral contract.
 Editor schemas: [directory](schema/directory-v1.schema.json) and
 [snapshot manifest](schema/snapshot-manifest-v1.schema.json).
