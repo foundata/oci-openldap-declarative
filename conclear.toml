@@ -55,12 +55,12 @@ mounts = [
 
 [[images.hooks]]
 name = "runtime-integration"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_runtime.py", "--mode=conclear", "--ldap-readiness-timeout=120"]
+command = ["uv", "run", "--locked", "pytest", "tests/integration/test_runtime.py", "--mode=conclear", "--ldap-readiness-timeout=120"]
 timeout_seconds = 3600
 
 [[images.hooks]]
 name = "same-revision-generator-compatibility"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-runtime", "--ldap-readiness-timeout=120"]
+command = ["uv", "run", "--locked", "pytest", "tests/integration/test_generator.py", "--mode=conclear-runtime", "--ldap-readiness-timeout=120"]
 timeout_seconds = 3600
 
 [[images.pins]]
@@ -121,7 +121,7 @@ mounts = [
 
 [[images.hooks]]
 name = "generator-integration"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-generator", "--ldap-readiness-timeout=120"]
+command = ["uv", "run", "--locked", "pytest", "tests/integration/test_generator.py", "--mode=conclear-generator", "--ldap-readiness-timeout=120"]
 timeout_seconds = 3600
 
 [[images.pins]]

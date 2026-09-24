@@ -38,14 +38,13 @@ main() {
   hadolint Containerfile Containerfile.generator || return 1
 
   printf '%s\n' 'Checking Python and JSON contracts'
-  # --frozen below uses uv.lock as it is; this asserts it still matches
-  # pyproject.toml, so a changed dependency cannot pass against a stale lock.
-  uv lock --check || return 1
-  uv run --frozen ruff format --check . || return 1
-  uv run --frozen ruff check . || return 1
-  uv run --frozen mypy || return 1
-  uv run --frozen python hack/implementation.py --check || return 1
-  uv run --frozen pytest || return 1
+  # --locked refuses to run when uv.lock no longer matches pyproject.toml, so
+  # a changed dependency cannot pass against a stale lock.
+  uv run --locked ruff format --check . || return 1
+  uv run --locked ruff check . || return 1
+  uv run --locked mypy || return 1
+  uv run --locked python hack/implementation.py --check || return 1
+  uv run --locked pytest || return 1
   for schema_file in schema/*.json; do
     jq -e . "${schema_file}" >/dev/null || return 1
   done

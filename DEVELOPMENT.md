@@ -65,7 +65,7 @@ Clone the repository and install the locked test dependencies:
 ```sh
 git clone git@github.com:foundata/oci-openldap-declarative.git
 cd oci-openldap-declarative
-uv sync --frozen
+uv sync --locked
 ```
 
 This is enough to run `hack/check.sh` and the unit suite; see
@@ -245,7 +245,7 @@ developer images into an isolated store:
 
 ```sh
 test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-test.XXXXXX")
-uv run --frozen pytest tests/integration --mode=developer-build --run-dir "$test_run"
+uv run --locked pytest tests/integration --mode=developer-build --run-dir "$test_run"
 rm -rf "$test_run"
 ```
 
@@ -288,7 +288,7 @@ database is needed.
 
 ```sh
 test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-application.XXXXXX")
-uv run --frozen pytest tests/integration/test_application.py \
+uv run --locked pytest tests/integration/test_application.py \
   --mode=developer-build --run-dir "$test_run" --run-application-tests
 ```
 
@@ -328,7 +328,7 @@ with memory and task peak counters:
 
 ```sh
 test_run=$(mktemp -d "${TMPDIR:-/tmp}/openldap-footprint.XXXXXX")
-uv run --frozen pytest tests/integration/test_footprint.py \
+uv run --locked pytest tests/integration/test_footprint.py \
   --mode=developer-build --run-dir "$test_run" --run-benchmarks
 cat "$test_run/footprints.jsonl"
 ```
