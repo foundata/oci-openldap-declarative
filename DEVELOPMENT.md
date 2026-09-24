@@ -36,16 +36,16 @@ is in [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Rootless Buildah and Podman** for container tests.
 - **[ConClear](https://foundata.com/en/projects/conclear/)** for OCI checks, pin
   checks, qualification and releases. `hack/check.sh` and developer-build tests
-  do not need it. Install the exact release approved for your build environment;
-  these instructions use the 1.0.0 CLI:
+  do not need it. Install the release approved for your build environment:
 
   ```sh
-  uv tool install 'conclear==1.0.0'
+  uv tool install conclear
   conclear version --format json
   ```
 
-  If that version is not published yet, install an approved wheel with
-  `uv tool install /absolute/path/to/conclear-1.0.0-py3-none-any.whl`, built
+  Pin that release with `uv tool install 'conclear==<version>'`, or install an
+  approved wheel with
+  `uv tool install /absolute/path/to/conclear-<version>-py3-none-any.whl`, built
   through ConClear's
   [distribution release procedure](https://github.com/foundata/conclear/blob/main/DEVELOPMENT.md#release-procedure).
   Check the reported source and guide revisions; release commands must not use
@@ -397,10 +397,28 @@ boundary.
 
 ## Qualification and releases<a id="qualification-and-releases"></a>
 
+A release of this project consists of:
+
+- one Semantic Versioning `X.Y.Z` version, shared by both images
+- the `X.Y.Z` and `latest` tags on `quay.io/foundata/openldap-declarative` and
+  on `quay.io/foundata/openldap-declarative-generator`, each a `linux/amd64` and
+  `linux/arm64` index
+- a signed SPDX inventory and SLSA provenance statement for every published
+  digest
+- one retained release archive per image, holding the source, configuration,
+  evidence and attestations a later rescan needs.
+
+The maintainer performing a release also needs:
+
+- ConClear and its qualification tools, as described under
+  [prerequisites](#prerequisites)
+- a protected release profile outside this repository, carrying the approved
+  builder identity and Cosign signing authority
+- write access to both Quay repositories
+- a durable, backed-up archive directory, both described below.
+
 ConClear builds the selected commit's tracked tree in isolation. Commit reviewed
-code, documentation and `conclear.toml` first. Use the same source revision and
-release version for `runtime` and `generator`; both declare `linux/amd64` and
-`linux/arm64`.
+code, documentation and `conclear.toml` first.
 
 ### Prepare the release host<a id="release-host"></a>
 
@@ -424,7 +442,7 @@ user, then set these values in the release terminal:
 
 ```sh
 revision=$(git rev-parse HEAD)
-version=1.0.0
+version="CHANGEME version" # major.minor.patch
 profile=foundata
 archives=/srv/archives/conclear
 conclear config show --version "$version"
