@@ -1702,7 +1702,8 @@ def test_custom_configuration_digest_and_expiry_remain_enforced(
     config_path.write_text(config_path.read_text() + "\n# unsigned edit\n")
     result = custom_preflight(generator, podman, images, snapshot)
     assert result.returncode == 65 and "digest" in result.stderr
-    snapshot = custom_snapshot(generator, "custom-expiry", hard_ttl=12)
+    # Allow generation and emulated startup before checking expiry of a live service.
+    snapshot = custom_snapshot(generator, "custom-expiry", hard_ttl=120)
     running = RuntimeService(
         podman, images.require_runtime(), generator, f"{store.prefix}-custom-expiry"
     )
