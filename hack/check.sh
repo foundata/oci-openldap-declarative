@@ -38,6 +38,9 @@ main() {
   hadolint Containerfile Containerfile.generator || return 1
 
   printf '%s\n' 'Checking Python and JSON contracts'
+  # --frozen below uses uv.lock as it is; this asserts it still matches
+  # pyproject.toml, so a changed dependency cannot pass against a stale lock.
+  uv lock --check || return 1
   uv run --frozen ruff format --check . || return 1
   uv run --frozen ruff check . || return 1
   uv run --frozen mypy || return 1
