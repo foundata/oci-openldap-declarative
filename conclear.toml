@@ -55,13 +55,13 @@ mounts = [
 
 [[images.hooks]]
 name = "runtime-integration"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_runtime.py", "--mode=conclear"]
-timeout_seconds = 1800
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_runtime.py", "--mode=conclear", "--ldap-readiness-timeout=120"]
+timeout_seconds = 3600
 
 [[images.hooks]]
 name = "same-revision-generator-compatibility"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-runtime"]
-timeout_seconds = 1800
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-runtime", "--ldap-readiness-timeout=120"]
+timeout_seconds = 3600
 
 [[images.pins]]
 reference = "docker.io/library/debian:13-slim"
@@ -121,8 +121,8 @@ mounts = [
 
 [[images.hooks]]
 name = "generator-integration"
-command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-generator"]
-timeout_seconds = 1800
+command = ["uv", "run", "--frozen", "pytest", "tests/integration/test_generator.py", "--mode=conclear-generator", "--ldap-readiness-timeout=120"]
+timeout_seconds = 3600
 
 [[images.pins]]
 reference = "docker.io/library/debian:13-slim"

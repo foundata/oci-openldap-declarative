@@ -107,6 +107,17 @@ def test_release_tags_publish_exact_versions_and_latest() -> None:
         assert image["release"]["moving_tags"] == ["latest"]
 
 
+def test_qualification_hooks_allow_bounded_emulation_waits() -> None:
+    with (ROOT / "conclear.toml").open("rb") as stream:
+        config = tomllib.load(stream)
+    hooks = [hook for image in config["images"] for hook in image["hooks"]]
+    assert len(hooks) == 3
+    for hook in hooks:
+        assert "--ldap-readiness-timeout=120" in hook["command"]
+        assert hook["timeout_seconds"] == 3600
+        assert hook.get("required", True)
+
+
 def test_public_image_metadata_uses_project_page() -> None:
     project_url = "https://foundata.com/en/projects/oci-openldap-declarative/"
     for name in ("Containerfile", "Containerfile.generator"):
