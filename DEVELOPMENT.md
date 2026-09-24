@@ -132,15 +132,15 @@ contain PyYAML, Argon2 generation bindings or Ansible Vault.
 
 The generator image contains source parsing, the `openldap-password` Argon2id
 helper, the `openldap-init` definition initializer, OpenSSL,
-[minisign](https://github.com/jedisct1/minisign) and
-`ansible-core` for its official `ansible-vault` CLI. The password helper and
-snapshot generation share the hashing implementation. The signed snapshot is the
-boundary between the images; no generator process or source-decryption key is
-needed on the LDAP host. Debian package installation uses
-`--no-install-recommends` to exclude the full Ansible collection bundle.
-Both images omit package caches, logs, translations and Python bytecode; `C.UTF-8`
-and Python sources remain. The generator omits Ansible test tooling, unused
-Galaxy scaffolding and IEEE MAC-address lookup data.
+[minisign](https://github.com/jedisct1/minisign) and `ansible-core` for its
+official `ansible-vault` CLI. The password helper and snapshot generation share
+the hashing implementation. The signed snapshot is the boundary between the
+images; no generator process or source-decryption key is needed on the LDAP
+host. Debian package installation uses `--no-install-recommends` to exclude the
+full Ansible collection bundle. Both images omit package caches, logs,
+translations and Python bytecode; `C.UTF-8` and Python sources remain. The
+generator omits Ansible test tooling, unused Galaxy scaffolding and IEEE
+MAC-address lookup data.
 
 For additive YAML fields, the generator parses schema definitions with
 `python-ldap`. A build-only stage exports the loaded schema through a temporary
@@ -193,10 +193,11 @@ hack/check.sh                    # direct repository check
 
 ## Testing<a id="testing"></a>
 
-The [implementation matrix](docs/implementation.md) indexes selected architecture
-contracts. Put `# Implements: IPnnnn` or `# Verifies: IPnnnn` immediately before
-the relevant function (after Python decorators). Keep IDs stable; do not reuse
-retired IDs. After changing tagged code or tests, regenerate and check it:
+The [implementation matrix](docs/implementation.md) indexes selected
+architecture contracts. Put `# Implements: IPnnnn` or `# Verifies: IPnnnn`
+immediately before the relevant function (after Python decorators). Keep IDs
+stable; do not reuse retired IDs. After changing tagged code or tests,
+regenerate and check it:
 
 ```sh
 uv run python hack/implementation.py
@@ -217,9 +218,9 @@ Input-schema checks apply after Vault decryption; OpenLDAP's offline import is
 the schema authority.
 
 The runtime compatibility suite executes the README's YAML setup, password
-helper, signing and generation snippets with private paths and exact test images,
-then checks offline preflight and LDAP binds/searches. It does not exercise
-systemd deployment; Quadlet checks remain separate.
+helper, signing and generation snippets with private paths and exact test
+images, then checks offline preflight and LDAP binds/searches. It does not
+exercise systemd deployment; Quadlet checks remain separate.
 
 Extension unit tests use small schema fixtures and do not need host OpenLDAP
 schema files. Container tests exercise the actual packaged schemas, custom
@@ -347,14 +348,14 @@ They do not run during ordinary integration or release qualification unless
 
 Native amd64 baseline, 2026-09-15, one CPU, two runs per workload:
 
-| Workload | Peak memory (MiB) | Peak tasks | Sampled open files (max) |
-| --- | ---: | ---: | ---: |
-| LDAP: 2 users, 4 clients, 19 MiB Argon2 | 103.0-134.3 | 15 | 35 |
-| LDAP: 2,000 users, 4 clients, 19 MiB Argon2 | 104.9-123.8 | 15 | 39 |
-| LDAP: 2,000 users, 2 clients, 64 MiB Argon2 | 155.8-156.3 | 13 | 31 |
-| Generate: 2,000 password hashes | 39.6-40.1 | 3 | 6 |
-| Generate: 100 plaintext passwords | 41.0-41.1 | 3 | 6 |
-| Generate: 64 Vault-encrypted hashes | 55.4-55.5 | 4 | 15 |
+|                  Workload                   | Peak memory (MiB) | Peak tasks | Sampled open files (max) |
+| ------------------------------------------- | ----------------: | ---------: | -----------------------: |
+| LDAP: 2 users, 4 clients, 19 MiB Argon2     |       103.0-134.3 |         15 |                       35 |
+| LDAP: 2,000 users, 4 clients, 19 MiB Argon2 |       104.9-123.8 |         15 |                       39 |
+| LDAP: 2,000 users, 2 clients, 64 MiB Argon2 |       155.8-156.3 |         13 |                       31 |
+| Generate: 2,000 password hashes             |         39.6-40.1 |          3 |                        6 |
+| Generate: 100 plaintext passwords           |         41.0-41.1 |          3 |                        6 |
+| Generate: 64 Vault-encrypted hashes         |         55.4-55.5 |          4 |                       15 |
 
 All workloads completed without OOM events. The 256 MiB ceilings retain at
 least 99 MiB above these observed peaks; task and descriptor limits are also

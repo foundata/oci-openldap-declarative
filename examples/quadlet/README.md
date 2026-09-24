@@ -179,25 +179,25 @@ returning her DN. Logs: `journalctl --user -u openldap-example.service -n 50`.
 
 Add `Network=openldap-example.network` to the application's Quadlet.
 
-For users/groups YAML, replace `<base_dn>` below with the definition's `base_dn`.
-Custom LDIF supplies its own layout and attribute mappings.
+For users/groups YAML, replace `<base_dn>` below with the definition's
+`base_dn`. Custom LDIF supplies its own layout and attribute mappings.
 
-| Application setting | Value |
-| ------------------- | ----- |
-| LDAP URL | `ldap://ldap:1389`; shared pod: `ldap://127.0.0.1:1389` |
-| Directory base | `<base_dn>` |
-| Bind DN | `uid=application,ou=services,<base_dn>`; use your bind account's username |
-| Bind password | Original password used for the bind account's verifier |
-| User search base / scope | `ou=people,<base_dn>` / subtree; excludes bind accounts |
-| User filter | `(objectClass=inetOrgPerson)` |
-| Login attribute | `uid` |
+|      Application setting      | Value |
+| ----------------------------- | ----- |
+| LDAP URL                      | `ldap://ldap:1389`; shared pod: `ldap://127.0.0.1:1389` |
+| Directory base                | `<base_dn>` |
+| Bind DN                       | `uid=application,ou=services,<base_dn>`; use your bind account's username |
+| Bind password                 | Original password used for the bind account's verifier |
+| User search base / scope      | `ou=people,<base_dn>` / subtree; excludes bind accounts |
+| User filter                   | `(objectClass=inetOrgPerson)` |
+| Login attribute               | `uid` |
 | Persistent identity attribute | `entryUUID`; retain this mapping across username/email changes |
-| Group search base / scope | `ou=groups,<base_dn>` / subtree |
-| Group filter / name | `(objectClass=groupOfNames)` / `cn` |
-| Group members | `member` on the group contains full user DNs, not usernames |
-| User's groups | `memberOf` on the user contains full group DNs |
-| First / last / display name | `givenName` / `sn` / `displayName` |
-| Email / phone | `mail` / `telephoneNumber` |
+| Group search base / scope     | `ou=groups,<base_dn>` / subtree |
+| Group filter / name           | `(objectClass=groupOfNames)` / `cn` |
+| Group members                 | `member` on the group contains full user DNs, not usernames |
+| User's groups                 | `memberOf` on the user contains full group DNs |
+| First / last / display name   | `givenName` / `sn` / `displayName` |
+| Email / phone                 | `mail` / `telephoneNumber` |
 
 For group-limited login, use
 `(&(objectClass=inetOrgPerson)(memberOf=cn=staff,ou=groups,<base_dn>))`.
@@ -210,9 +210,10 @@ required, bound to host `127.0.0.1` for host-local clients.
 
 ## Shared application pod (LDAP host)<a id="shared-application-pod"></a>
 
-Use a [shared pod](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
-instead of the separate network when the application connects to LDAP
-through pod-local `127.0.0.1`. Install the pod unit:
+Use a
+[shared pod](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
+instead of the separate network when the application connects to LDAP through
+pod-local `127.0.0.1`. Install the pod unit:
 
 ```bash
 install -m 0600 examples/quadlet/example-app.pod "${units}/"
@@ -221,8 +222,8 @@ install -m 0600 examples/quadlet/example-app.pod "${units}/"
 Before activation, adjust the units and shared settings:
 
 1. In `openldap-example.container`, replace `UserNS=`, `Network=` and
-   `NetworkAlias=` with `Pod=example-app.pod`. Keep `User=1001:1001`, the existing
-   mounts, resource limits and hardening.
+   `NetworkAlias=` with `Pod=example-app.pod`. Keep `User=1001:1001`, the
+   existing mounts, resource limits and hardening.
 2. In `ldap.env`, set `LDAP_LISTEN_HOST=127.0.0.1`.
 3. In the application's `.container`, set `Pod=example-app.pod` and remove its
    `Network=` and `UserNS=` settings. Set `User=` to the account expected by its
@@ -232,12 +233,12 @@ Before activation, adjust the units and shared settings:
 4. Put any application `PublishPort=` settings in `example-app.pod`; do not
    publish LDAP. Connect the application to `ldap://127.0.0.1:1389`.
 
-Run `systemctl --user daemon-reload`, then preflight and activate as above before
-starting the application unit.
-Preflight remains a separate container outside the pod, with fresh scratch
-storage and read-only state. The VM/host's `localhost:1389` is not this endpoint.
-Changing an existing pod's namespace settings requires recreating its containers;
-plan application downtime and retain its data volumes.
+Run `systemctl --user daemon-reload`, then preflight and activate as above
+before starting the application unit. Preflight remains a separate container
+outside the pod, with fresh scratch storage and read-only state. The VM/host's
+`localhost:1389` is not this endpoint. Changing an existing pod's namespace
+settings requires recreating its containers; plan application downtime and
+retain its data volumes.
 
 ## Renewals and image updates
 
@@ -247,7 +248,8 @@ Use one serialized admin/CI job per directory:
 
 1. Allocate and retain the next `revision` in the definition. Configuration
    management or CI owns this counter; the generator does not increment it.
-2. Record the source revision, credential versions and generator/runtime digests.
+2. Record the source revision, credential versions and generator/runtime
+   digests.
 3. Generate once into a new `revision-N` directory. Retain that exact signed
    artifact privately, with its manifest digest and expiry times.
 4. Transfer, preflight, activate and verify. Record which artifact reached each
@@ -255,22 +257,22 @@ Use one serialized admin/CI job per directory:
 
 Unchanged source still needs a new revision and fresh artifact for renewal.
 Replaying existing bytes does not extend expiry. Alert on generation/deployment
-failures and the [runtime status](../../README.md#usage-ops-status), not just the
-CI job's schedule.
+failures and the [runtime status](../../README.md#usage-ops-status), not just
+the CI job's schedule.
 
 ### Deployment retries
 
-| Situation | Action |
-| --------- | ------ |
-| Transfer interrupted | Resume copying the retained artifact into its unactivated candidate directory; rerun preflight. |
-| Preflight rejected input | Leave the active service unchanged. Correct settings or generate corrected data under a new revision. |
-| Activation result uncertain | Inspect active status and revision state. If the exact manifest is already active and healthy, do not restart again. |
+|                   Situation                    | Action |
+| ---------------------------------------------- | ------ |
+| Transfer interrupted                           | Resume copying the retained artifact into its unactivated candidate directory; rerun preflight. |
+| Preflight rejected input                       | Leave the active service unchanged. Correct settings or generate corrected data under a new revision. |
+| Activation result uncertain                    | Inspect active status and revision state. If the exact manifest is already active and healthy, do not restart again. |
 | Artifact lost after deployment, or renewal due | Allocate a new revision and generate again. Do not recreate an accepted revision from source. |
 
 Retry deployment with the same artifact, not another generator invocation:
 timestamps and password salts can change the manifest even with unchanged YAML.
-Never reset revision state to make a retry succeed. Retain the candidate and logs
-after a failed activation until recovery is complete.
+Never reset revision state to make a retry succeed. Retain the candidate and
+logs after a failed activation until recovery is complete.
 
 ### Activate and update the runtime (LDAP host)<a id="activate-and-update-the-runtime"></a>
 

@@ -118,9 +118,8 @@ def render(root: Path) -> str:
         "This indexes the tagged contracts in ARCHITECTURE.md. Untagged requirements",
         "still apply. Links establish traceability, not test coverage or qualification.",
         "",
-        "| Promise | Production code | Verification tests |",
-        "| --- | --- | --- |",
     ]
+    rows = [["Promise", "Production code", "Verification tests"]]
     for identifier, promise in sorted(promises.items()):
         if not promise.implementations or not promise.tests:
             raise ValueError(
@@ -129,7 +128,32 @@ def render(root: Path) -> str:
         label = f"[{identifier}: {promise.title}](../ARCHITECTURE.md#{identifier})"
         code = ", ".join(reference.link() for reference in promise.implementations)
         tests = ", ".join(reference.link() for reference in promise.tests)
-        output.append(f"| {label} | {code} | {tests} |")
+        rows.append([label, code, tests])
+    # Align the committed table the way the Markdown rule set expects: every
+    # column but the last padded to its widest cell, the header centered, and
+    # the trailing column left ragged.
+    last = len(rows[0]) - 1
+    widths = [
+        len(rows[0][column])
+        if column == last
+        else max(len(row[column]) for row in rows)
+        for column in range(len(rows[0]))
+    ]
+
+    def row_line(cells: list[str], *, centered: bool = False) -> str:
+        padded = []
+        for column, cell in enumerate(cells):
+            if column == last:
+                padded.append(cell)
+            elif centered:
+                padded.append(cell.center(widths[column]))
+            else:
+                padded.append(cell.ljust(widths[column]))
+        return "| " + " | ".join(padded) + " |"
+
+    output.append(row_line(rows[0], centered=True))
+    output.append("| " + " | ".join("-" * width for width in widths) + " |")
+    output.extend(row_line(row) for row in rows[1:])
     return "\n".join(output) + "\n"
 
 

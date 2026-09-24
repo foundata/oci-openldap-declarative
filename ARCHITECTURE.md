@@ -338,6 +338,7 @@ YAML string values MAY use labeled Ansible Vault scalars:
 `!vault` with the standard `$ANSIBLE_VAULT;1.2;AES256;KEYID` header.
 
 <a id="IP0007"></a><!-- Vault decryption -->
+
 - Decryption MUST occur only in the generator, through the official
   `ansible-vault` CLI from `ansible-core`.
 - Key IDs MUST select an explicitly supplied password source exactly. Missing
@@ -353,8 +354,8 @@ YAML string values MAY use labeled Ansible Vault scalars:
 - The source limit is 1 MiB, with at most 256 encrypted values of 32 KiB each.
   Each decryption subprocess MUST have a 30-second timeout.
 - Repeated identical ciphertext MAY reuse a successful decryption within one
-  generator invocation. Every occurrence MUST still count toward the value limit;
-  cached values MUST NOT be persisted or shared across invocations.
+  generator invocation. Every occurrence MUST still count toward the value
+  limit; cached values MUST NOT be persisted or shared across invocations.
 - Errors MUST NOT echo passwords, decrypted credential values or Vault keys.
 
 ## Snapshot contract<a id="snapshots"></a>
@@ -489,6 +490,7 @@ MUST NOT be used by applications. Its modifications disappear on rebuild.
 ### Expiry and revision state<a id="expiry"></a>
 
 <a id="IP0003"></a><!-- Revision rollback protection -->
+
 - Revisions MUST be integers from 1 through 9,007,199,254,740,991 and MUST
   increase for each newly generated snapshot, including unchanged-data renewals.
 - Exact artifact replay MAY restart a directory but MUST NOT extend its

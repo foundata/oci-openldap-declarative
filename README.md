@@ -152,15 +152,15 @@ of running `openldap-init`. Deploy with `LDAP_EXPECTED_DIRECTORY_ID=nextcloud`.
 Enable Nextcloud's **LDAP user and group backend** and configure its
 [LDAP settings](https://docs.nextcloud.com/server/stable/admin_manual/configuration_user/user_auth_ldap.html):
 
-| Setting | Value |
-| --- | --- |
-| Host / port | The LDAP endpoint from your [deployment](#usage-rootless-podman). |
-| Base DN | `dc=example,dc=org` |
-| User DN / password | `uid=nextcloud,ou=services,dc=example,dc=org` and its original password, not the hash. |
-| Base user tree | `ou=people,dc=example,dc=org` |
-| Base group tree | `ou=groups,dc=example,dc=org` |
-| User / group display name field | `cn` |
-| Group member association | `member` |
+|              Setting              | Value |
+| --------------------------------- | ----- |
+| Host / port                       | The LDAP endpoint from your [deployment](#usage-rootless-podman). |
+| Base DN                           | `dc=example,dc=org` |
+| User DN / password                | `uid=nextcloud,ou=services,dc=example,dc=org` and its original password, not the hash. |
+| Base user tree                    | `ou=people,dc=example,dc=org` |
+| Base group tree                   | `ou=groups,dc=example,dc=org` |
+| User / group display name field   | `cn`  |
+| Group member association          | `member` |
 | UUID attribute for users / groups | `entryUUID`; configure before the first import. |
 
 Select **Edit LDAP Query** on each relevant tab. **Users** filter:
@@ -170,7 +170,8 @@ Select **Edit LDAP Query** on each relevant tab. **Users** filter:
 ```
 
 **Login Attributes** filter, including the same restrictions because a custom
-login filter can override the user filter (`%uid` is Nextcloud's login placeholder):
+login filter can override the user filter (`%uid` is Nextcloud's login
+placeholder):
 
 ```text
 (&(objectClass=inetOrgPerson)(memberOf=cn=nextcloud-allow,ou=groups,dc=example,dc=org)(!(memberOf=cn=nextcloud-deny,ou=groups,dc=example,dc=org))(uid=%uid))
@@ -311,15 +312,17 @@ podman run --rm --userns=keep-id --user "$(id -u):$(id -g)" \
 ```
 
 `openldap-init` writes owner-only `/output/directory.yaml` and refuses an
-existing file or symlink. It creates user `alice`, group `staff` and bind account
-`application`, with fresh UUIDv4 identities and UUID-based membership. Use
-`--username`, `--groupname`, `--bind-username` or `--output` to change those defaults;
-credential paths follow the account names. It creates no passwords or keys.
+existing file or symlink. It creates user `alice`, group `staff` and bind
+account `application`, with fresh UUIDv4 identities and UUID-based membership.
+Use `--username`, `--groupname`, `--bind-username` or `--output` to change those
+defaults; credential paths follow the account names. It creates no passwords or
+keys.
 
 Review the definition, especially `last_name` (initially the username), and add
-profile fields as needed. Preserve its UUIDs across edits and rebuilds.
-All active users are included. See the [larger example](examples/generator/directory.yaml) for
-profile fields, inactive users and credential files. Continue with
+profile fields as needed. Preserve its UUIDs across edits and rebuilds. All
+active users are included. See the
+[larger example](examples/generator/directory.yaml) for profile fields, inactive
+users and credential files. Continue with
 [signing and generation](#usage-snapshot).
 
 
@@ -790,14 +793,12 @@ Vault passwords and the private signing key stay on the
 [admin host](#image-generator).
 
 
-<!-- rumdl-disable-next-line MD080 -->
 ### Tags<a id="tags-ldap"></a>
 
 - `latest`: a moving tag updated by the release process.
 - `<version>`: a specific release version.
 
 
-<!-- rumdl-disable-next-line MD080 -->
 ### How to use<a id="usage-ldap"></a>
 
 Run these steps in Bash as the service account on the LDAP host:
