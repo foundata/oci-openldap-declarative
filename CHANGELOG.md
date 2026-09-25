@@ -11,17 +11,11 @@ and the project adheres to
 - Nothing worth mentioning right now.
 
 
-## [1.0.0] - Unreleased
+## [1.0.0] - 2026-09-25
 
 ### Added
 
-- Runtime and generator images for `linux/amd64` and `linux/arm64`.
-- Signed directory snapshots from users/groups YAML or custom LDIF, with
-  password-hash inputs and inline Ansible Vault support.
-- Snapshot verification, deployment-target and revision checks, expiry
-  supervision and database rebuilds on startup. The YAML path is read-only by
-  default; custom LDIF owns its server configuration and write policy.
-- Password and initialization helpers, deployment examples and preflight checks.
+- First public release, added all functionality and files.
 
 [unreleased]: https://github.com/foundata/oci-openldap-declarative/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/foundata/oci-openldap-declarative/releases/tag/v1.0.0
